@@ -41,6 +41,7 @@ func Run(st store.Store) {
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Capture", NewCaptureTab(state, w)),
 		container.NewTabItem("Flows", NewFlowsTab(state, w)),
+		container.NewTabItem("Terminal", NewTerminalTab(state, w)),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
 

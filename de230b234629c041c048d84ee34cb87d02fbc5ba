@@ -1,0 +1,87 @@
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 15-16,176-190,210,236-238,292-299,389-390,421-426
+frontend/dist/assets/index-DhowNUxm.js
+  936d2bd656d204f8 1-7,17
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/assets/index-BoY5bfZC.css
+  936d2bd656d204f8 1
+internal/wailsgui/app.go
+  936d2bd656d204f8 187,206-215,473-474
+frontend/dist/assets/index-BoY5bfZC.css
+  936d2bd656d204f8 1
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/assets/index-DhowNUxm.js
+  936d2bd656d204f8 1-7,17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "de230b234629c041c048d84ee34cb87d02fbc5ba",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 97,
+      "total_deletions": 59,
+      "accepted_lines": 93,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap/frontend/dist/assets/index-BKo2MF2k.js": {
+          "deletions": 17
+        },
+        "cmd/cap/frontend/dist/assets/index-BoY5bfZC.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 20,
+          "deletions": 11,
+          "accepted_lines": 16
+        },
+        "frontend/dist/assets/index-BoY5bfZC.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-D79X4X3r.css": {
+          "deletions": 1
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/frontend/dist/assets/index-DhowNUxm.js": {
+          "additions": 17,
+          "accepted_lines": 17
+        },
+        "cmd/cap/frontend/dist/assets/index-D79X4X3r.css": {
+          "deletions": 1
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 37,
+          "deletions": 8,
+          "accepted_lines": 37
+        },
+        "frontend/dist/assets/index-DhowNUxm.js": {
+          "additions": 17,
+          "accepted_lines": 17
+        },
+        "frontend/dist/assets/index-BKo2MF2k.js": {
+          "deletions": 17
+        }
+      }
+    }
+  }
+}

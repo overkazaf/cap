@@ -12,8 +12,12 @@
   let bodyFormat = 'auto'
   let signResults = []
   let replayResult = null
-  let listWidth = 45 // percent
+  let listWidth = 45
   let dragging = false
+  let exportHeight = 200
+  let exportDragging = false
+  let viewMode = 'list' // 'list' or 'grouped'
+  let apiGroups = []
   let showReplayEditor = false
   let replayURL = ''
   let replayBody = ''
@@ -173,6 +177,29 @@
     }
   }
 
+  async function loadGroups() {
+    try { apiGroups = await window.go.wailsgui.App.GetAPIGroups() || [] } catch(e) { console.error(e) }
+  }
+
+  function toggleView() {
+    viewMode = viewMode === 'list' ? 'grouped' : 'list'
+    if (viewMode === 'grouped') loadGroups()
+  }
+
+  function startExportDrag(e) {
+    exportDragging = true
+    e.preventDefault()
+    const startY = e.clientY
+    const startH = exportHeight
+    const onMove = (ev) => {
+      if (!exportDragging) return
+      exportHeight = Math.max(80, Math.min(500, startH - (ev.clientY - startY)))
+    }
+    const onUp = () => { exportDragging = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   function startDrag(e) {
     dragging = true
     e.preventDefault()
@@ -203,6 +230,9 @@
     </select>
     <input type="text" placeholder="Search..." bind:value={filterSearch} on:input={loadFlows} class="filter-input wide" />
     <span class="flow-count">{flows.length}</span>
+    <button class="btn-view" class:btn-view-active={viewMode === 'grouped'} on:click={toggleView} title="Toggle API grouping">
+      {viewMode === 'grouped' ? '☰ Flat' : '⊞ Group'}
+    </button>
     <button class="btn-clear" on:click={clearFlows} title="Clear all flows">✕ Clear</button>
   </div>
 
@@ -217,18 +247,41 @@
         <span class="col-time">Time</span>
       </div>
       <div class="list-body">
-        {#each flows as f}
-          <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} on:click={() => selectFlow(f)}>
-            <span class="col-method {methodClass(f.method)}">{f.method}</span>
-            <span class="col-status {statusClass(f.status)}">{f.status}</span>
-            <span class="col-host">{f.host}</span>
-            <span class="col-path" title={f.url}>{f.path}</span>
-            <span class="col-latency">{f.latency_ms}</span>
-            <span class="col-time">{f.time}</span>
-          </button>
-        {/each}
-        {#if flows.length === 0}
-          <div class="empty">No flows. Start the proxy and generate traffic.</div>
+        {#if viewMode === 'grouped'}
+          {#each apiGroups as group}
+            <div class="group-header">
+              <span class="group-host">{group.host}</span>
+              <span class="group-prefix">{group.prefix}</span>
+              <span class="group-count">{group.count}</span>
+            </div>
+            {#each group.endpoints || [] as ep}
+              <button class="flow-row group-row" on:click={() => { filterHost = group.host; filterSearch = ep.path; viewMode = 'list'; loadFlows() }}>
+                <span class="col-method {methodClass(ep.method)}">{ep.method}</span>
+                <span class="col-status"></span>
+                <span class="col-host"></span>
+                <span class="col-path">{ep.path}</span>
+                <span class="col-latency">{ep.avg_ms}</span>
+                <span class="col-time">×{ep.count}</span>
+              </button>
+            {/each}
+          {/each}
+          {#if apiGroups.length === 0}
+            <div class="empty">No API groups. Capture some traffic first.</div>
+          {/if}
+        {:else}
+          {#each flows as f}
+            <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} on:click={() => selectFlow(f)}>
+              <span class="col-method {methodClass(f.method)}">{f.method}</span>
+              <span class="col-status {statusClass(f.status)}">{f.status}</span>
+              <span class="col-host">{f.host}</span>
+              <span class="col-path" title={f.url}>{f.path}</span>
+              <span class="col-latency">{f.latency_ms}</span>
+              <span class="col-time">{f.time}</span>
+            </button>
+          {/each}
+          {#if flows.length === 0}
+            <div class="empty">No flows. Start the proxy and generate traffic.</div>
+          {/if}
         {/if}
       </div>
     </div>
@@ -370,7 +423,9 @@
           {/if}
         </div>
 
-        <div class="export-section">
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="export-drag" on:mousedown={startExportDrag}></div>
+        <div class="export-section" style="height: {exportHeight}px">
           <div class="export-bar">
             <span class="export-label">EXPORT</span>
             {#each languages as lang}
@@ -410,6 +465,12 @@
   .filter-input.wide { flex: 1; }
   .filter-select { cursor: pointer; }
   .flow-count { font-size: 11px; color: #52525b; }
+  .btn-view {
+    padding: 4px 10px; font-size: 11px; border: 1px solid #3f3f46;
+    background: transparent; color: #71717a; border-radius: 4px; cursor: pointer; font-family: inherit;
+  }
+  .btn-view:hover { background: #1a1a22; color: #a1a1aa; }
+  .btn-view-active { background: #1e3a5f; border-color: #38bdf8; color: #7dd3fc; }
   .btn-clear {
     padding: 4px 10px; font-size: 11px; border: 1px solid #3f3f46;
     background: transparent; color: #71717a; border-radius: 4px; cursor: pointer; font-family: inherit;
@@ -454,6 +515,15 @@
   .status-3xx { color: #fbbf24; }
   .status-4xx { color: #fb923c; }
   .status-5xx { color: #f87171; }
+
+  .group-header {
+    display: flex; gap: 8px; padding: 6px 12px; background: #0d0d14;
+    border-bottom: 1px solid #1e1e24; font-size: 11px; align-items: center;
+  }
+  .group-host { color: #38bdf8; font-weight: 600; }
+  .group-prefix { color: #71717a; flex: 1; }
+  .group-count { color: #52525b; font-size: 10px; }
+  .group-row { padding-left: 24px; }
 
   .empty { padding: 40px; text-align: center; color: #3f3f46; font-size: 13px; }
 
@@ -528,7 +598,11 @@
     margin: 0; padding: 8px 12px; user-select: text;
   }
 
-  .export-section { border-top: 1px solid #1e1e24; max-height: 200px; display: flex; flex-direction: column; }
+  .export-drag {
+    height: 5px; cursor: row-resize; background: #1e1e24; flex-shrink: 0;
+  }
+  .export-drag:hover, .export-drag:active { background: #38bdf8; }
+  .export-section { display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
   .export-bar {
     display: flex; align-items: center; gap: 4px; padding: 5px 10px;
     background: #0d0d12; border-bottom: 1px solid #1e1e24;

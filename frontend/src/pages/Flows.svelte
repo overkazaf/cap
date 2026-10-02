@@ -12,6 +12,8 @@
   let bodyFormat = 'auto'
   let signResults = []
   let replayResult = null
+  let listWidth = 45 // percent
+  let dragging = false
   let showReplayEditor = false
   let replayURL = ''
   let replayBody = ''
@@ -171,6 +173,21 @@
     }
   }
 
+  function startDrag(e) {
+    dragging = true
+    e.preventDefault()
+    const onMove = (ev) => {
+      if (!dragging) return
+      const container = document.querySelector('.main-split')
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      listWidth = Math.max(20, Math.min(80, ((ev.clientX - rect.left) / rect.width) * 100))
+    }
+    const onUp = () => { dragging = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   let interval
   onMount(() => { loadFlows(); interval = setInterval(loadFlows, 2000) })
   onDestroy(() => clearInterval(interval))
@@ -190,7 +207,7 @@
   </div>
 
   <div class="main-split">
-    <div class="flow-list">
+    <div class="flow-list" style="width: {listWidth}%">
       <div class="list-header">
         <span class="col-method">MTD</span>
         <span class="col-status">ST</span>
@@ -215,6 +232,9 @@
         {/if}
       </div>
     </div>
+
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="drag-handle" on:mousedown={startDrag}></div>
 
     {#if selectedFlow}
       <div class="detail-panel">
@@ -269,12 +289,14 @@
           </div>
         {/if}
 
-        {#if selectedFlow.sign_params && selectedFlow.sign_params.length > 0}
-          <div class="sign-badge">
-            <span>🔐 Sign: {selectedFlow.sign_params.join(', ')}</span>
-            <button class="btn-analyze" on:click={analyzeSign}>Analyze Algorithm</button>
-          </div>
-        {/if}
+        <div class="sign-badge">
+          {#if selectedFlow.sign_params && selectedFlow.sign_params.length > 0}
+            <span>🔐 Detected: {selectedFlow.sign_params.join(', ')}</span>
+          {:else}
+            <span>🔍 Sign Analysis</span>
+          {/if}
+          <button class="btn-analyze" on:click={analyzeSign}>Analyze Algorithm</button>
+        </div>
 
         {#if signResults.length > 0}
           <div class="sign-results">
@@ -364,6 +386,8 @@
         </div>
       </div>
     {:else}
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="drag-handle" on:mousedown={startDrag}></div>
       <div class="detail-empty">
         <div class="detail-empty-icon">📡</div>
         <div>Select a flow to inspect</div>
@@ -394,7 +418,12 @@
 
   .main-split { flex: 1; display: flex; min-height: 0; }
 
-  .flow-list { width: 45%; border-right: 1px solid #1e1e24; display: flex; flex-direction: column; }
+  .flow-list { border-right: none; display: flex; flex-direction: column; flex-shrink: 0; }
+  .drag-handle {
+    width: 5px; cursor: col-resize; background: #1e1e24;
+    transition: background 0.15s; flex-shrink: 0;
+  }
+  .drag-handle:hover, .drag-handle:active { background: #38bdf8; }
   .list-header {
     display: flex; padding: 6px 12px; font-size: 10px; color: #52525b;
     text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #1e1e24; background: #0d0d12;

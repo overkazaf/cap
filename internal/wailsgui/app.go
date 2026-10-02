@@ -184,7 +184,7 @@ func (a *App) GetFlowDetail(id string) (*FlowDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FlowDetail{
+	detail := &FlowDetail{
 		FlowSummary: FlowSummary{
 			ID:       f.ID,
 			Method:   f.Method,
@@ -203,7 +203,16 @@ func (a *App) GetFlowDetail(id string) (*FlowDetail, error) {
 		Tags:        f.Tags,
 		SignParams:  f.SignParams,
 		SourceRef:   f.SourceRef,
-	}, nil
+	}
+
+	if len(detail.SignParams) == 0 {
+		detected := agent.DetectSignParams(f)
+		if len(detected) > 0 {
+			detail.SignParams = detected
+		}
+	}
+
+	return detail, nil
 }
 
 func (a *App) ClearFlows() error {
@@ -461,8 +470,8 @@ func (a *App) GetSettings() map[string]string {
 	return a.settings
 }
 
-func (a *App) SetSetting(key, value string) error {
-	a.settings[key] = value
+func (a *App) SetSetting(key string, value interface{}) error {
+	a.settings[key] = fmt.Sprintf("%v", value)
 	return saveSettings(filepath.Join(a.certDir, "settings.json"), a.settings)
 }
 

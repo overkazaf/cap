@@ -1,0 +1,65 @@
+internal/importer/importer.go
+  936d2bd656d204f8 1-62
+internal/importer/charles.go
+  936d2bd656d204f8 1-80
+internal/importer/har.go
+  936d2bd656d204f8 1-98
+internal/grouping/grouping.go
+  936d2bd656d204f8 1-241
+internal/importer/har_test.go
+  936d2bd656d204f8 1-145
+internal/grouping/grouping_test.go
+  936d2bd656d204f8 1-153
+internal/importer/charles_test.go
+  936d2bd656d204f8 1-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "884478914da6e07b0bdc56a420b62fac399df28b",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 905,
+      "total_deletions": 0,
+      "accepted_lines": 905,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/importer/charles.go": {
+          "additions": 80,
+          "accepted_lines": 80
+        },
+        "internal/importer/charles_test.go": {
+          "additions": 126,
+          "accepted_lines": 126
+        },
+        "internal/importer/importer.go": {
+          "additions": 62,
+          "accepted_lines": 62
+        },
+        "internal/importer/har.go": {
+          "additions": 98,
+          "accepted_lines": 98
+        },
+        "internal/importer/har_test.go": {
+          "additions": 145,
+          "accepted_lines": 145
+        },
+        "internal/grouping/grouping.go": {
+          "additions": 241,
+          "accepted_lines": 241
+        },
+        "internal/grouping/grouping_test.go": {
+          "additions": 153,
+          "accepted_lines": 153
+        }
+      }
+    }
+  }
+}

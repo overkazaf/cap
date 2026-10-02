@@ -1,0 +1,33 @@
+internal/gui/flows_tab.go
+  936d2bd656d204f8 80-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "8c1319b1e61951af9720e8f2b99cda46a1f7316f",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 29,
+      "total_deletions": 1,
+      "accepted_lines": 7,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/zz_flowstab_smoke_test.go": {
+          "additions": 22
+        },
+        "internal/gui/flows_tab.go": {
+          "additions": 7,
+          "deletions": 1,
+          "accepted_lines": 7
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+internal/gui/terminal_tab.go
+  936d2bd656d204f8 1-64
+go.mod
+  936d2bd656d204f8 7
+internal/gui/terminal.go
+  936d2bd656d204f8 1-355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "223768e03664e9e7d6779b9ea2ba5ca24bc015aa",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 512,
+      "total_deletions": 26,
+      "accepted_lines": 420,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/terminal.go": {
+          "additions": 363,
+          "deletions": 8,
+          "accepted_lines": 355
+        },
+        "internal/gui/terminal_tab.go": {
+          "additions": 65,
+          "deletions": 1,
+          "accepted_lines": 64
+        },
+        "go.mod": {
+          "additions": 2,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/gui/zz_terminal_smoke_test.go": {
+          "additions": 82,
+          "deletions": 16
+        }
+      }
+    }
+  }
+}

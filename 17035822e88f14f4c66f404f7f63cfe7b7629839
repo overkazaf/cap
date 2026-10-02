@@ -1,0 +1,50 @@
+internal/gui/flows_tab.go
+  936d2bd656d204f8 13-14,17-18,28,41,46-47,50-51,53-55,57-58,66-68,72-96,98,100,119-125,128,141-147,149-150,154-180,185,190,205,209,214,220,236-237,239,251-256,258-282,285-315,317-332,348-350,358,369-370,456
+internal/gui/capture_tab.go
+  936d2bd656d204f8 1-267
+internal/gui/theme.go
+  936d2bd656d204f8 10-20,23,26-27,30-31,35-36,39-43,45,47-55,72-121
+internal/gui/app.go
+  936d2bd656d204f8 7,14-15,17-18,22-39,42,47-51,53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "17035822e88f14f4c66f404f7f63cfe7b7629839",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 574,
+      "total_deletions": 103,
+      "accepted_lines": 574,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/theme.go": {
+          "additions": 86,
+          "deletions": 16,
+          "accepted_lines": 86
+        },
+        "internal/gui/capture_tab.go": {
+          "additions": 267,
+          "accepted_lines": 267
+        },
+        "internal/gui/flows_tab.go": {
+          "additions": 188,
+          "deletions": 80,
+          "accepted_lines": 188
+        },
+        "internal/gui/app.go": {
+          "additions": 33,
+          "deletions": 7,
+          "accepted_lines": 33
+        }
+      }
+    }
+  }
+}

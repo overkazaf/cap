@@ -1,0 +1,85 @@
+internal/compare/compare.go
+  936d2bd656d204f8 1-46
+internal/compare/compare_test.go
+  936d2bd656d204f8 1-316
+internal/compare/types.go
+  936d2bd656d204f8 1-120
+internal/compare/latency.go
+  936d2bd656d204f8 1-44
+internal/compare/summary.go
+  936d2bd656d204f8 1-44
+internal/compare/internal_test.go
+  936d2bd656d204f8 1-79
+internal/compare/body_test.go
+  936d2bd656d204f8 1-137
+internal/compare/headers.go
+  936d2bd656d204f8 1-75
+internal/compare/body.go
+  936d2bd656d204f8 1-227
+internal/compare/edge_test.go
+  936d2bd656d204f8 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "07a6f512edd1dbe41a3ee335258f05886dda8903",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 1157,
+      "total_deletions": 29,
+      "accepted_lines": 1128,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/compare/internal_test.go": {
+          "additions": 79,
+          "accepted_lines": 79
+        },
+        "internal/compare/headers.go": {
+          "additions": 75,
+          "accepted_lines": 75
+        },
+        "internal/compare/latency.go": {
+          "additions": 44,
+          "accepted_lines": 44
+        },
+        "internal/compare/summary.go": {
+          "additions": 44,
+          "accepted_lines": 44
+        },
+        "internal/compare/compare_test.go": {
+          "additions": 321,
+          "deletions": 5,
+          "accepted_lines": 316
+        },
+        "internal/compare/edge_test.go": {
+          "additions": 40,
+          "accepted_lines": 40
+        },
+        "internal/compare/body.go": {
+          "additions": 227,
+          "accepted_lines": 227
+        },
+        "internal/compare/types.go": {
+          "additions": 120,
+          "accepted_lines": 120
+        },
+        "internal/compare/body_test.go": {
+          "additions": 161,
+          "deletions": 24,
+          "accepted_lines": 137
+        },
+        "internal/compare/compare.go": {
+          "additions": 46,
+          "accepted_lines": 46
+        }
+      }
+    }
+  }
+}

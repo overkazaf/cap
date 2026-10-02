@@ -1,0 +1,49 @@
+internal/proto/proto_test.go
+  936d2bd656d204f8 1-195
+internal/stats/stats.go
+  936d2bd656d204f8 1-193
+internal/proto/proto.go
+  936d2bd656d204f8 1-271
+internal/stats/stats_test.go
+  936d2bd656d204f8 1-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "60813903483dad52926b9c4cb61f4acea09cac5d",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 897,
+      "total_deletions": 33,
+      "accepted_lines": 864,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/stats/stats.go": {
+          "additions": 196,
+          "deletions": 3,
+          "accepted_lines": 193
+        },
+        "internal/proto/proto_test.go": {
+          "additions": 195,
+          "accepted_lines": 195
+        },
+        "internal/stats/stats_test.go": {
+          "additions": 205,
+          "accepted_lines": 205
+        },
+        "internal/proto/proto.go": {
+          "additions": 301,
+          "deletions": 30,
+          "accepted_lines": 271
+        }
+      }
+    }
+  }
+}

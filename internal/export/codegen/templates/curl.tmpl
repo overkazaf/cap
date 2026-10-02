@@ -1,0 +1,4 @@
+curl -X '{{.Method}}' \
+  '{{.URL}}'{{range sortedHeaders .ReqHeaders}} \
+  -H '{{.K}}: {{escapeShell .V}}'{{end}}{{if hasBody .}} \
+  --data-raw '{{escapeShell (jsonPretty .ReqBody)}}'{{end}}

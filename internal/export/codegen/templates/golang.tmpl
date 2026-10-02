@@ -1,0 +1,33 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+{{- if hasBody .}}
+	"strings"
+{{- end}}
+)
+
+func main() {
+{{- if hasBody .}}
+	body := strings.NewReader({{printf "%q" (printf "%s" .ReqBody)}})
+	req, err := http.NewRequest({{printf "%q" .Method}}, {{printf "%q" .URL}}, body)
+{{- else}}
+	req, err := http.NewRequest({{printf "%q" .Method}}, {{printf "%q" .URL}}, nil)
+{{- end}}
+	if err != nil {
+		panic(err)
+	}
+{{- range sortedHeaders .ReqHeaders}}
+	req.Header.Set({{printf "%q" .K}}, {{printf "%q" .V}})
+{{- end}}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	fmt.Printf("Status: %d\n%s\n", resp.StatusCode, data)
+}

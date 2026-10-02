@@ -1,0 +1,73 @@
+internal/cli/root.go
+  936d2bd656d204f8 1-32
+internal/cli/flows.go
+  936d2bd656d204f8 1-82
+cmd/cap/main.go
+  936d2bd656d204f8 6-7,11
+internal/cli/start.go
+  936d2bd656d204f8 1-115
+go.mod
+  936d2bd656d204f8 7,17
+internal/cli/android.go
+  936d2bd656d204f8 1-102
+internal/cli/helpers.go
+  936d2bd656d204f8 1-43
+internal/cli/export.go
+  936d2bd656d204f8 1-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "30754684fc61db5111307d976a08f4d68053aefd",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 493,
+      "total_deletions": 7,
+      "accepted_lines": 492,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/cli/helpers.go": {
+          "additions": 43,
+          "accepted_lines": 43
+        },
+        "internal/cli/android.go": {
+          "additions": 102,
+          "accepted_lines": 102
+        },
+        "internal/cli/start.go": {
+          "additions": 115,
+          "accepted_lines": 115
+        },
+        "internal/cli/export.go": {
+          "additions": 113,
+          "accepted_lines": 113
+        },
+        "internal/cli/flows.go": {
+          "additions": 82,
+          "accepted_lines": 82
+        },
+        "go.mod": {
+          "additions": 3,
+          "deletions": 1,
+          "accepted_lines": 2
+        },
+        "cmd/cap/main.go": {
+          "additions": 3,
+          "deletions": 6,
+          "accepted_lines": 3
+        },
+        "internal/cli/root.go": {
+          "additions": 32,
+          "accepted_lines": 32
+        }
+      }
+    }
+  }
+}

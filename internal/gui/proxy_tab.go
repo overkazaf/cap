@@ -15,7 +15,7 @@ import (
 )
 
 // defaultProxyAddr pre-fills the listen-address field when the tab is built.
-const defaultProxyAddr = "127.0.0.1:8080"
+const defaultProxyAddr = "0.0.0.0:8080"
 
 // NewProxyTab builds the "Proxy" tab: address/cert-dir configuration, a
 // start/stop/clear control row, a status bar, and a live-scrolling log of

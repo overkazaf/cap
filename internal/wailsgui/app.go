@@ -13,6 +13,12 @@ import (
 	"time"
 
 	"github.com/overkazaf/cap/internal/android"
+	"github.com/overkazaf/cap/internal/compare"
+	"github.com/overkazaf/cap/internal/grouping"
+	"github.com/overkazaf/cap/internal/importer"
+	"github.com/overkazaf/cap/internal/proto"
+	"github.com/overkazaf/cap/internal/sequence"
+	"github.com/overkazaf/cap/internal/stats"
 	"github.com/overkazaf/cap/internal/export/agent"
 	"github.com/overkazaf/cap/internal/export/codegen"
 	"github.com/overkazaf/cap/internal/plugin"
@@ -503,5 +509,102 @@ func (a *App) GetHostIP() string {
 }
 
 func (a *App) GetVersion() string {
-	return "0.1.0"
+	return "0.2.0"
+}
+
+// ==================== API Grouping ====================
+
+func (a *App) GetAPIGroups() []grouping.APIGroup {
+	flows, _ := a.store.ListFlows(types.FlowFilter{Limit: 5000})
+	return grouping.GroupFlows(flows)
+}
+
+// ==================== Import ====================
+
+func (a *App) ImportHARFile(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	flows, err := importer.ImportHAR(f)
+	if err != nil {
+		return 0, err
+	}
+	for _, fl := range flows {
+		a.store.SaveFlow(fl)
+	}
+	return len(flows), nil
+}
+
+// ==================== Compare ====================
+
+func (a *App) CompareFlows(idA, idB string) (*compare.Comparison, error) {
+	fA, err := a.store.GetFlow(idA)
+	if err != nil {
+		return nil, fmt.Errorf("flow %s: %w", idA, err)
+	}
+	fB, err := a.store.GetFlow(idB)
+	if err != nil {
+		return nil, fmt.Errorf("flow %s: %w", idB, err)
+	}
+	return compare.Compare(fA, fB), nil
+}
+
+// ==================== Protobuf ====================
+
+func (a *App) DecodeProtobuf(flowID string, isReq bool) (string, error) {
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return "", err
+	}
+	body := f.RespBody
+	if isReq {
+		body = f.ReqBody
+	}
+	if len(body) == 0 {
+		return "(empty)", nil
+	}
+	if !proto.IsProtobuf(body) {
+		return "(not protobuf data)", nil
+	}
+	fields, err := proto.Decode(body)
+	if err != nil {
+		return "", err
+	}
+	return proto.FormatFields(fields, ""), nil
+}
+
+// ==================== Traffic Stats ====================
+
+func (a *App) GetTrafficStats() *stats.Summary {
+	flows, _ := a.store.ListFlows(types.FlowFilter{Limit: 10000})
+	return stats.Compute(flows)
+}
+
+// ==================== Sequences ====================
+
+func (a *App) CreateSequence(name string, flowIDs []string) error {
+	var flows []*types.Flow
+	for _, id := range flowIDs {
+		f, err := a.store.GetFlow(id)
+		if err != nil {
+			return err
+		}
+		flows = append(flows, f)
+	}
+	seq := sequence.FromFlows(name, flows)
+	return sequence.Save(seq, filepath.Join(a.certDir, "sequences"))
+}
+
+func (a *App) ListSequences() ([]string, error) {
+	return sequence.ListSaved(filepath.Join(a.certDir, "sequences"))
+}
+
+func (a *App) ReplaySequence(name string) (*sequence.ReplayResult, error) {
+	seq, err := sequence.Load(name, filepath.Join(a.certDir, "sequences"))
+	if err != nil {
+		return nil, err
+	}
+	return sequence.Replay(seq, sequence.ReplayOptions{Timeout: 30 * time.Second})
 }

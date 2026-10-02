@@ -1,0 +1,53 @@
+internal/types/ws.go
+  936d2bd656d204f8 1-30
+internal/capture/ws_test.go
+  936d2bd656d204f8 1-204
+internal/capture/ws.go
+  936d2bd656d204f8 1-197
+internal/capture/sse_test.go
+  936d2bd656d204f8 1-171
+internal/capture/sse.go
+  936d2bd656d204f8 1-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "af00011eb165a5eb01e7b675682d50f817b9fd08",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 733,
+      "total_deletions": 0,
+      "accepted_lines": 733,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/capture/sse_test.go": {
+          "additions": 171,
+          "accepted_lines": 171
+        },
+        "internal/capture/sse.go": {
+          "additions": 131,
+          "accepted_lines": 131
+        },
+        "internal/capture/ws_test.go": {
+          "additions": 204,
+          "accepted_lines": 204
+        },
+        "internal/types/ws.go": {
+          "additions": 30,
+          "accepted_lines": 30
+        },
+        "internal/capture/ws.go": {
+          "additions": 197,
+          "accepted_lines": 197
+        }
+      }
+    }
+  }
+}

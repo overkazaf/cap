@@ -1,0 +1,30 @@
+internal/gui/flows_tab.go
+  936d2bd656d204f8 4-10,12,14-15,17-26,29-32,34-72,74-389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "f8e133b6292c3165edc6ec0cc9f2fe2b38bf55f9",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 384,
+      "total_deletions": 4,
+      "accepted_lines": 381,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/flows_tab.go": {
+          "additions": 384,
+          "deletions": 4,
+          "accepted_lines": 381
+        }
+      }
+    }
+  }
+}

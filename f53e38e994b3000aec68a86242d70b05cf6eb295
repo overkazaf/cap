@@ -1,0 +1,53 @@
+cmd/cap/main.go
+  936d2bd656d204f8 1-18
+internal/types/flow.go
+  936d2bd656d204f8 1-44
+.gitignore
+  936d2bd656d204f8 1-6
+internal/store/store.go
+  936d2bd656d204f8 1-13
+go.mod
+  936d2bd656d204f8 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "f53e38e994b3000aec68a86242d70b05cf6eb295",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 84,
+      "total_deletions": 0,
+      "accepted_lines": 84,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/store/store.go": {
+          "additions": 13,
+          "accepted_lines": 13
+        },
+        "go.mod": {
+          "additions": 3,
+          "accepted_lines": 3
+        },
+        "internal/types/flow.go": {
+          "additions": 44,
+          "accepted_lines": 44
+        },
+        ".gitignore": {
+          "additions": 6,
+          "accepted_lines": 6
+        },
+        "cmd/cap/main.go": {
+          "additions": 18,
+          "accepted_lines": 18
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,236 @@
+internal/cli/flows.go
+  936d2bd656d204f8 11
+internal/gui/export_tab.go
+  936d2bd656d204f8 1-10
+cmd/cap/main.go
+  936d2bd656d204f8 7
+internal/export/codegen/codegen.go
+  936d2bd656d204f8 15
+internal/proxy/proxy.go
+  936d2bd656d204f8 25
+internal/cli/android.go
+  936d2bd656d204f8 8-9
+internal/gui/proxy_tab.go
+  936d2bd656d204f8 1-10
+internal/export/agent/detect.go
+  936d2bd656d204f8 9
+internal/cli/root.go
+  936d2bd656d204f8 29
+internal/context/context_test.go
+  936d2bd656d204f8 8-9
+internal/export/agent/agent.go
+  936d2bd656d204f8 13
+internal/store/sqlite/codec.go
+  936d2bd656d204f8 6
+internal/export/codegen/codegen_test.go
+  936d2bd656d204f8 7-8
+internal/cli/start.go
+  936d2bd656d204f8 11-13
+internal/context/matcher.go
+  936d2bd656d204f8 6
+internal/proxy/proxy_test.go
+  936d2bd656d204f8 18-19
+internal/gui/flows_tab.go
+  936d2bd656d204f8 1-10
+internal/cli/gui.go
+  936d2bd656d204f8 1-29
+internal/android/adb_test.go
+  936d2bd656d204f8 8
+internal/cli/export.go
+  936d2bd656d204f8 10-13
+internal/cli/helpers.go
+  936d2bd656d204f8 7
+internal/context/context.go
+  936d2bd656d204f8 6
+internal/export/agent/agent_test.go
+  936d2bd656d204f8 10-11
+go.mod
+  936d2bd656d204f8 1,17,32,35,41,47-48,53
+internal/store/sqlite/sqlite.go
+  936d2bd656d204f8 15-16
+internal/gui/state.go
+  936d2bd656d204f8 1-65
+internal/store/store.go
+  936d2bd656d204f8 3
+internal/gui/android_tab.go
+  936d2bd656d204f8 1-10
+internal/gui/app.go
+  936d2bd656d204f8 1-28
+internal/store/sqlite/sqlite_test.go
+  936d2bd656d204f8 9-10
+internal/context/jadx.go
+  936d2bd656d204f8 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "59b065ecd590ced2de7641b424cf631b6caa2f50",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 211,
+      "total_deletions": 40,
+      "accepted_lines": 205,
+      "overriden_lines": 2,
+      "per_file_stats": {
+        "internal/cli/start.go": {
+          "additions": 3,
+          "deletions": 3,
+          "accepted_lines": 3
+        },
+        "internal/proxy/proxy_test.go": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "internal/export/agent/agent.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/export/agent/detect.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/gui/android_tab.go": {
+          "additions": 10,
+          "accepted_lines": 10
+        },
+        "internal/gui/state.go": {
+          "additions": 68,
+          "deletions": 3,
+          "accepted_lines": 65
+        },
+        "internal/gui/app.go": {
+          "additions": 29,
+          "deletions": 1,
+          "accepted_lines": 28
+        },
+        "internal/context/matcher.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/gui/proxy_tab.go": {
+          "additions": 10,
+          "accepted_lines": 10
+        },
+        "internal/context/jadx.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/gui/flows_tab.go": {
+          "additions": 10,
+          "accepted_lines": 10
+        },
+        "internal/cli/export.go": {
+          "additions": 4,
+          "deletions": 4,
+          "accepted_lines": 4
+        },
+        "internal/cli/helpers.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/cli/flows.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/store/sqlite/codec.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/context/context.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "go.mod": {
+          "additions": 9,
+          "deletions": 1,
+          "accepted_lines": 8,
+          "overriden_lines": 2
+        },
+        "internal/export/agent/agent_test.go": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "internal/proxy/proxy.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/cli/gui.go": {
+          "additions": 30,
+          "deletions": 1,
+          "accepted_lines": 29
+        },
+        "internal/export/codegen/codegen.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/context/context_test.go": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "internal/cli/android.go": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "internal/export/codegen/codegen_test.go": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "internal/cli/root.go": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "internal/store/sqlite/sqlite.go": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/main.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/android/adb_test.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "internal/store/sqlite/sqlite_test.go": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "internal/gui/export_tab.go": {
+          "additions": 10,
+          "accepted_lines": 10
+        },
+        "internal/store/store.go": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

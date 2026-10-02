@@ -37,6 +37,13 @@ Existing tools (Burp Suite, mitmproxy, HTTP Toolkit) are built for web security 
 | SSE stream capture | ✗ | △ | ✗ | **✓** |
 | Request replay + diff | ✓ Repeater | ✗ | ✗ | **✓** |
 | Embedded terminal | ✗ | ✗ | ✗ | **✓ multi-tab PTY** |
+| API auto-grouping | ✗ | ✗ | ✗ | **✓ host + path prefix** |
+| Flow comparison | ✗ | ✗ | ✗ | **✓ side-by-side diff** |
+| Sequence replay | ✗ | ✗ | ✗ | **✓ token propagation** |
+| Protobuf decode | ✗ addon | △ addon | ✗ | **✓ schema-less** |
+| Traffic dashboard | ✗ | ✗ | ✗ | **✓ P95/timeline/errors** |
+| HAR/Charles import | ✓ | ✓ | ✓ | **✓** |
+| Plugin system | ✓ BApp | ✓ addon | ✗ | **✓ live editor** |
 | Single binary | ✗ JVM | ✗ Python | ✗ Electron | **✓ Go** |
 | Open source | ✗ ($449/yr) | ✓ | △ core only | **✓ MIT** |
 
@@ -222,11 +229,33 @@ Scans for:
 - Maps URL patterns to source file, class, method, and line number
 
 ### Desktop GUI
-Native Wails-based desktop app (single binary, no Electron):
-- **Capture tab**: proxy start/stop + Android device connect
-- **Flows tab**: filterable table + detail panel + inline code export
-- **Terminal tab**: multi-tab embedded shell (PTY)
-- 4 color themes: Dark, Light, Mocha (Catppuccin), Nord
+Native Wails-based desktop app (Go + Svelte, single binary, no Electron):
+- **Capture**: proxy start/stop + Android device connect
+- **Flows**: filterable table, detail panel, inline export, replay with modification, body viewer (JSON/hex/raw), sign analysis
+- **Terminal**: multi-tab embedded shell with command history
+- **Plugins**: live code editor with examples, save/load/test
+- **Settings**: theme, font, proxy, Android, export configuration
+
+### API Auto-Grouping
+Automatically groups captured flows by host and path prefix — see your target app's full API structure at a glance.
+
+### Flow Comparison
+Select two flows and see a structured side-by-side diff: URL, headers, JSON body keys, latency percentage change.
+
+### Request Sequence Replay
+Record a sequence of flows (login → fetch → submit), save it, replay with automatic token/cookie propagation between steps.
+
+### Protobuf Auto-Decode
+Schema-less protobuf decoder — automatically detects and decodes binary protobuf responses without needing a .proto file.
+
+### Traffic Dashboard
+Aggregated statistics: requests by host/status/method, P95 latency, error rate, top slowest endpoints, per-minute timeline.
+
+### HAR/Charles Import
+Import existing captures from HAR files or Charles proxy XML exports — zero migration friction.
+
+### Plugin System
+Built-in plugin editor with 3 example plugins. Write JavaScript-style analysis scripts, test against captured flows, save and toggle on/off.
 
 ## Install
 
@@ -279,8 +308,17 @@ internal/
 ├── sign/           Length analysis, pattern matching, brute-force verify
 ├── replay/         HTTP replay, request modification, response diff
 ├── capture/        WebSocket frame parser, SSE stream parser
+├── compare/        Side-by-side flow comparison with structured diff
+├── grouping/       API auto-grouping by host + path prefix
+├── importer/       HAR and Charles proxy XML import
+├── proto/          Schema-less protobuf wire format decoder
+├── sequence/       Request sequence record/replay with variable propagation
+├── stats/          Traffic statistics (P95, error rate, timeline)
+├── plugin/         Plugin engine with save/load/toggle
+├── wailsgui/       Wails backend bindings for all modules
 ├── cli/            Cobra commands: start/flows/export/android/gui
-└── gui/            Wails tabs: capture, flows, terminal, theme system
+└── gui/            Legacy Fyne GUI (deprecated, use Wails)
+frontend/           Svelte SPA (Capture, Flows, Terminal, Plugins, Settings)
 ```
 
 ## License

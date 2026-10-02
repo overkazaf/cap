@@ -15,10 +15,28 @@ import (
 	"github.com/creack/pty"
 )
 
-var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[\?[0-9;]*[a-zA-Z]|\x1b[=>]`)
+var (
+	ansiOSC   = regexp.MustCompile(`\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
+	ansiCSI   = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+	ansiOther = regexp.MustCompile(`\x1b[()#][0-9A-Za-z]|\x1b[=>M78]`)
+)
 
 func stripANSI(s string) string {
-	return ansiRegex.ReplaceAllString(s, "")
+	s = ansiOSC.ReplaceAllString(s, "")
+	s = ansiCSI.ReplaceAllString(s, "")
+	s = ansiOther.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r == '\x1b' || r < 0x20:
+			return -1
+		default:
+			return r
+		}
+	}, s)
 }
 
 type TermSession struct {
@@ -27,6 +45,7 @@ type TermSession struct {
 	lines []string
 	mu    sync.Mutex
 	done  chan struct{}
+	once  sync.Once
 
 	OnOutput func(line string)
 	OnExit   func()
@@ -97,17 +116,13 @@ func (ts *TermSession) Write(input string) {
 	ts.ptmx.Write([]byte(input + "\n"))
 }
 
-func (ts *TermSession) GetLines() []string {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	cp := make([]string, len(ts.lines))
-	copy(cp, ts.lines)
-	return cp
-}
-
 func (ts *TermSession) Close() {
-	ts.ptmx.Close()
-	ts.cmd.Process.Kill()
+	ts.once.Do(func() {
+		ts.ptmx.Close()
+		if ts.cmd.Process != nil {
+			ts.cmd.Process.Kill()
+		}
+	})
 }
 
 func (ts *TermSession) IsDone() bool {

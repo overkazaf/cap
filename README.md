@@ -14,6 +14,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/capture-tab.png" alt="cap GUI" width="800">
+</p>
+
 ## Why cap?
 
 Existing tools (Burp Suite, mitmproxy, HTTP Toolkit) are built for web security testing — not for **reverse engineering mobile apps**. Cap fills the gap:
@@ -21,7 +25,7 @@ Existing tools (Burp Suite, mitmproxy, HTTP Toolkit) are built for web security 
 | Capability | Burp Suite | mitmproxy | HTTP Toolkit | **cap** |
 |------------|:----------:|:---------:|:------------:|:-------:|
 | CLI-first automation | ✗ GUI only | ✓ mitmdump | ✗ GUI only | **✓** |
-| Native desktop GUI | ✗ Java/Swing | △ mitmweb (basic) | ✓ Electron | **✓ Fyne (native)** |
+| Native desktop GUI | ✗ Java/Swing | △ mitmweb (basic) | ✓ Electron | **✓ Wails (native)** |
 | LLM/Agent-ready output | ✗ XML/HAR | △ HAR (verbose) | △ HAR | **✓ compact JSONL** |
 | Multi-language codegen | ✗ | △ curl + Python | ✗ | **✓ 5 languages** |
 | Sign param auto-detect | ✗ | ✗ | ✗ | **✓** |
@@ -44,7 +48,7 @@ Existing tools (Burp Suite, mitmproxy, HTTP Toolkit) are built for web security 
 flowchart TB
     subgraph Client["Client Layer"]
         CLI["cap CLI<br/>(cobra)"]
-        GUI["cap GUI<br/>(Fyne native)"]
+        GUI["cap GUI<br/>(Wails native)"]
         TTY["Embedded Terminal<br/>(PTY)"]
     end
 
@@ -143,7 +147,7 @@ flowchart LR
     replay["replay<br/>replay + diff"]
     capture["capture<br/>WS + SSE"]
     cli["cli<br/>cobra commands"]
-    gui["gui<br/>Fyne desktop"]
+    gui["gui<br/>Wails desktop"]
 
     sqlite --> store --> types
     proxy --> types
@@ -218,7 +222,7 @@ Scans for:
 - Maps URL patterns to source file, class, method, and line number
 
 ### Desktop GUI
-Native Fyne-based desktop app (single binary, no Electron):
+Native Wails-based desktop app (single binary, no Electron):
 - **Capture tab**: proxy start/stop + Android device connect
 - **Flows tab**: filterable table + detail panel + inline code export
 - **Terminal tab**: multi-tab embedded shell (PTY)
@@ -236,7 +240,7 @@ go build -o cap ./cmd/cap
 go install github.com/overkazaf/cap/cmd/cap@latest
 ```
 
-**Requirements**: Go 1.21+, macOS or Linux (for Fyne GUI: Xcode CLI tools on macOS)
+**Requirements**: Go 1.21+, macOS or Linux (for Wails GUI: Xcode CLI tools on macOS)
 
 ## Quick Start
 
@@ -276,7 +280,7 @@ internal/
 ├── replay/         HTTP replay, request modification, response diff
 ├── capture/        WebSocket frame parser, SSE stream parser
 ├── cli/            Cobra commands: start/flows/export/android/gui
-└── gui/            Fyne tabs: capture, flows, terminal, theme system
+└── gui/            Wails tabs: capture, flows, terminal, theme system
 ```
 
 ## License

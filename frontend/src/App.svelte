@@ -1,0 +1,147 @@
+<script>
+  import Capture from './pages/Capture.svelte'
+  import Flows from './pages/Flows.svelte'
+  import Terminal from './pages/Terminal.svelte'
+
+  let currentPage = 'capture'
+
+  const pages = [
+    { id: 'capture', label: 'Capture', icon: '⚡' },
+    { id: 'flows', label: 'Flows', icon: '📡' },
+    { id: 'terminal', label: 'Terminal', icon: '⌨' },
+  ]
+</script>
+
+<div class="app">
+  <nav class="sidebar">
+    <div class="logo">cap</div>
+    {#each pages as page}
+      <button
+        class="nav-btn"
+        class:active={currentPage === page.id}
+        on:click={() => currentPage = page.id}
+      >
+        <span class="nav-icon">{page.icon}</span>
+        <span class="nav-label">{page.label}</span>
+      </button>
+    {/each}
+    <div class="sidebar-spacer"></div>
+    <div class="version">v0.1.0</div>
+  </nav>
+
+  <main class="content">
+    {#if currentPage === 'capture'}
+      <Capture />
+    {:else if currentPage === 'flows'}
+      <Flows />
+    {:else if currentPage === 'terminal'}
+      <Terminal />
+    {/if}
+  </main>
+</div>
+
+<style>
+  :global(*) {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  :global(body) {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace;
+    background: #0a0a0f;
+    color: #e4e4e7;
+    overflow: hidden;
+    height: 100vh;
+  }
+  :global(::selection) {
+    background: rgba(56, 189, 248, 0.3);
+  }
+  :global(::-webkit-scrollbar) {
+    width: 6px;
+    height: 6px;
+  }
+  :global(::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  :global(::-webkit-scrollbar-thumb) {
+    background: #333;
+    border-radius: 3px;
+  }
+  :global(::-webkit-scrollbar-thumb:hover) {
+    background: #555;
+  }
+
+  .app {
+    display: flex;
+    height: 100vh;
+  }
+
+  .sidebar {
+    width: 64px;
+    background: #111116;
+    border-right: 1px solid #1e1e24;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+  }
+
+  .logo {
+    font-size: 14px;
+    font-weight: 800;
+    color: #38bdf8;
+    margin-bottom: 16px;
+    letter-spacing: -0.5px;
+  }
+
+  .nav-btn {
+    width: 48px;
+    height: 48px;
+    border: none;
+    background: transparent;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    transition: all 0.15s ease;
+    color: #71717a;
+  }
+  .nav-btn:hover {
+    background: #1a1a22;
+    color: #a1a1aa;
+  }
+  .nav-btn.active {
+    background: #1e1e28;
+    color: #38bdf8;
+  }
+  .nav-icon {
+    font-size: 18px;
+    line-height: 1;
+  }
+  .nav-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .sidebar-spacer {
+    flex: 1;
+  }
+
+  .version {
+    font-size: 9px;
+    color: #3f3f46;
+    margin-bottom: 8px;
+  }
+
+  .content {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+</style>

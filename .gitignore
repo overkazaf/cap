@@ -5,3 +5,4 @@
 *.db-shm
 .DS_Store
 .claude/worktrees/
+frontend/node_modules/

@@ -76,12 +76,11 @@ func NewFlowsTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 	ft.filterHost.SetPlaceHolder("Filter host...")
 	ft.filterHost.OnChanged = func(_ string) { ft.applyFilter() }
 
-	ft.filterMethod = widget.NewSelect([]string{"ALL", "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}, func(_ string) { ft.applyFilter() })
+	ft.filterMethod = widget.NewSelect([]string{"ALL", "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}, nil)
 	ft.filterMethod.SetSelected("ALL")
 
 	ft.filterSearch = widget.NewEntry()
 	ft.filterSearch.SetPlaceHolder("Search URL/body...")
-	ft.filterSearch.OnChanged = func(_ string) { ft.applyFilter() }
 
 	clearFilter := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
 		ft.filterHost.SetText("")
@@ -124,6 +123,11 @@ func NewFlowsTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 	ft.table.SetColumnWidth(colURL, 300)
 	ft.table.SetColumnWidth(colLatency, 70)
 	ft.table.OnSelected = ft.onSelected
+
+	// Wire filter callbacks now that table exists
+	ft.filterHost.OnChanged = func(_ string) { ft.applyFilter() }
+	ft.filterMethod.OnChanged = func(_ string) { ft.applyFilter() }
+	ft.filterSearch.OnChanged = func(_ string) { ft.applyFilter() }
 
 	// --- Detail + Export panel ---
 	ft.buildDetailPanel()

@@ -1,0 +1,47 @@
+internal/sign/verify.go
+  936d2bd656d204f8 1-147
+internal/sign/analyze_test.go
+  936d2bd656d204f8 1-333
+internal/sign/analyze.go
+  936d2bd656d204f8 1-515
+internal/sign/patterns.go
+  936d2bd656d204f8 1-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "26a680216257fe4401ecfa23d883a9417df0e27e",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 1125,
+      "total_deletions": 0,
+      "accepted_lines": 1125,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/sign/analyze.go": {
+          "additions": 515,
+          "accepted_lines": 515
+        },
+        "internal/sign/verify.go": {
+          "additions": 147,
+          "accepted_lines": 147
+        },
+        "internal/sign/patterns.go": {
+          "additions": 130,
+          "accepted_lines": 130
+        },
+        "internal/sign/analyze_test.go": {
+          "additions": 333,
+          "accepted_lines": 333
+        }
+      }
+    }
+  }
+}

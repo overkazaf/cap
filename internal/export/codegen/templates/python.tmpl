@@ -1,0 +1,23 @@
+import requests
+
+url = "{{.URL}}"
+headers = {
+{{- range sortedHeaders .ReqHeaders}}
+    "{{.K}}": "{{.V}}",
+{{- end}}
+}
+{{if hasBody . -}}
+{{if isJSON .ReqBodyType -}}
+json_data = {{jsonPretty .ReqBody}}
+
+response = requests.{{lower .Method}}(url, headers=headers, json=json_data)
+{{else -}}
+data = {{printf "%q" (printf "%s" .ReqBody)}}
+
+response = requests.{{lower .Method}}(url, headers=headers, data=data)
+{{end -}}
+{{else -}}
+response = requests.{{lower .Method}}(url, headers=headers)
+{{end -}}
+print(response.status_code)
+print(response.text)

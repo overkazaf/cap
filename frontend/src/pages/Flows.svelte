@@ -8,7 +8,7 @@
   let filterSearch = ''
   let exportLang = 'curl'
   let exportCode = ''
-  let activeTab = 'req-headers'
+  let activeTab = 'params'
   let bodyFormat = 'auto'
   let signResults = []
   let replayResult = null
@@ -118,6 +118,44 @@
     replayHeaders = ''
     replayResult = null
     showReplayEditor = !showReplayEditor
+  }
+
+  function parseParams(flow) {
+    const params = []
+    // URL query params
+    try {
+      const url = new URL(flow.url)
+      for (const [k, v] of url.searchParams) {
+        params.push({ source: 'query', key: k, value: v })
+      }
+    } catch(e) {}
+    // Form body params (application/x-www-form-urlencoded)
+    if (flow.req_body && flow.body_type && flow.body_type.includes('form')) {
+      try {
+        const pairs = flow.req_body.split('&')
+        for (const pair of pairs) {
+          const [k, ...rest] = pair.split('=')
+          params.push({ source: 'form', key: decodeURIComponent(k), value: decodeURIComponent(rest.join('=')) })
+        }
+      } catch(e) {}
+    }
+    // JSON body params (top-level keys)
+    if (flow.req_body && (!flow.body_type || flow.body_type.includes('json'))) {
+      try {
+        const obj = JSON.parse(flow.req_body)
+        if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+          for (const [k, v] of Object.entries(obj)) {
+            params.push({ source: 'json', key: k, value: typeof v === 'object' ? JSON.stringify(v) : String(v) })
+          }
+        }
+      } catch(e) {}
+    }
+    return params
+  }
+
+  function isSignParam(key, flow) {
+    const sp = flow.sign_params || []
+    return sp.some(p => p.toLowerCase() === key.toLowerCase())
   }
 
   function copyText(text) {
@@ -367,6 +405,7 @@
 
         <div class="detail-tabs">
           {#each [
+            {id: 'params', label: 'Params'},
             {id: 'req-headers', label: 'Req Headers'},
             {id: 'req-body', label: 'Req Body'},
             {id: 'resp-headers', label: 'Resp Headers'},
@@ -389,7 +428,35 @@
         </div>
 
         <div class="detail-content">
-          {#if activeTab === 'req-headers'}
+          {#if activeTab === 'params'}
+            {@const params = parseParams(selectedFlow)}
+            {#if params.length > 0}
+              <div class="params-table">
+                <div class="params-header-row">
+                  <span class="param-col-source">Source</span>
+                  <span class="param-col-key">Key</span>
+                  <span class="param-col-val">Value</span>
+                </div>
+                {#each params as p}
+                  <div class="param-row" class:param-sign={isSignParam(p.key, selectedFlow)}>
+                    <span class="param-col-source">
+                      <span class="param-badge" class:badge-query={p.source === 'query'} class:badge-form={p.source === 'form'} class:badge-json={p.source === 'json'}>{p.source}</span>
+                    </span>
+                    <span class="param-col-key" class:param-key-sign={isSignParam(p.key, selectedFlow)}>
+                      {p.key}
+                      {#if isSignParam(p.key, selectedFlow)}<span class="sign-tag">sign</span>{/if}
+                    </span>
+                    <span class="param-col-val" title={p.value}>{p.value}</span>
+                  </div>
+                {/each}
+              </div>
+              <div class="body-toolbar">
+                <button class="btn-icon" on:click={() => copyText(params.map(p => p.key + '=' + p.value).join('\n'))} title="Copy params">📋 Copy All</button>
+              </div>
+            {:else}
+              <div class="empty-params">No parameters found</div>
+            {/if}
+          {:else if activeTab === 'req-headers'}
             <div class="headers">
               {#each Object.entries(selectedFlow.req_headers || {}).sort() as [k, v]}
                 <div class="header-row">
@@ -524,6 +591,35 @@
   .group-prefix { color: var(--fg-dim, #71717a); flex: 1; }
   .group-count { color: var(--fg-faint, #52525b); font-size: 10px; }
   .group-row { padding-left: 24px; }
+
+  .params-table { font-size: 12px; }
+  .params-header-row {
+    display: flex; padding: 6px 12px; font-size: 10px; color: var(--fg-faint, #52525b);
+    text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border, #1e1e24);
+    background: var(--bg-header, #0d0d12);
+  }
+  .param-row {
+    display: flex; padding: 5px 12px; border-bottom: 1px solid var(--border-subtle, #0f0f14);
+    transition: background 0.1s;
+  }
+  .param-row:hover { background: var(--bg-hover, #14141a); }
+  .param-sign { background: rgba(251, 191, 36, 0.05); }
+  .param-col-source { width: 60px; flex-shrink: 0; }
+  .param-col-key { width: 180px; flex-shrink: 0; color: var(--accent, #38bdf8); font-weight: 500; display: flex; align-items: center; gap: 4px; }
+  .param-col-val { flex: 1; color: var(--fg-muted, #a1a1aa); word-break: break-all; user-select: text; }
+  .param-key-sign { color: var(--yellow, #fbbf24); }
+  .param-badge {
+    padding: 1px 5px; border-radius: 3px; font-size: 9px; text-transform: uppercase;
+    letter-spacing: 0.3px; font-weight: 600;
+  }
+  .badge-query { background: rgba(56, 189, 248, 0.15); color: var(--accent, #38bdf8); }
+  .badge-form { background: rgba(192, 132, 252, 0.15); color: var(--purple, #c084fc); }
+  .badge-json { background: rgba(52, 211, 153, 0.15); color: var(--green, #34d399); }
+  .sign-tag {
+    padding: 0 4px; font-size: 8px; background: rgba(251, 191, 36, 0.2);
+    color: var(--yellow, #fbbf24); border-radius: 2px; text-transform: uppercase;
+  }
+  .empty-params { padding: 20px; text-align: center; color: var(--fg-ghost, #3f3f46); }
 
   .empty { padding: 40px; text-align: center; color: var(--fg-ghost, #3f3f46); font-size: 13px; }
 

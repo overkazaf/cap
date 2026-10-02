@@ -1,0 +1,30 @@
+internal/gui/android_tab.go
+  936d2bd656d204f8 4-9,11,13-15,18-31,33-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "be9725b592d0082f553e9abd1a01824ae3f36091",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 272,
+      "total_deletions": 1,
+      "accepted_lines": 272,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/android_tab.go": {
+          "additions": 272,
+          "deletions": 1,
+          "accepted_lines": 272
+        }
+      }
+    }
+  }
+}

@@ -172,76 +172,76 @@ function analyze(flow) {
   .page { display: flex; height: 100%; }
 
   .sidebar-list {
-    width: 250px; border-right: 1px solid #1e1e24; display: flex;
-    flex-direction: column; background: #0d0d12;
+    width: 250px; border-right: 1px solid var(--border, #1e1e24); display: flex;
+    flex-direction: column; background: var(--bg-header, #0d0d12);
   }
   .list-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 12px; border-bottom: 1px solid #1e1e24;
+    padding: 10px 12px; border-bottom: 1px solid var(--border, #1e1e24);
   }
-  .list-header h2 { font-size: 11px; color: #38bdf8; letter-spacing: 1.5px; }
+  .list-header h2 { font-size: 11px; color: var(--accent, #38bdf8); letter-spacing: 1.5px; }
   .btn-new {
     padding: 3px 10px; font-size: 11px; border: 1px solid #38bdf8;
-    background: transparent; color: #38bdf8; border-radius: 4px;
+    background: transparent; color: var(--accent, #38bdf8); border-radius: 4px;
     cursor: pointer; font-family: inherit;
   }
-  .btn-new:hover { background: #1e3a5f; }
+  .btn-new:hover { background: var(--accent-bg, #1e3a5f); }
 
-  .examples { padding: 6px 12px; border-bottom: 1px solid #1e1e24; display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
-  .examples-label { font-size: 10px; color: #52525b; }
+  .examples { padding: 6px 12px; border-bottom: 1px solid var(--border, #1e1e24); display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .examples-label { font-size: 10px; color: var(--fg-faint, #52525b); }
   .btn-ex {
-    padding: 2px 6px; font-size: 10px; border: 1px solid #27272a;
-    background: transparent; color: #71717a; border-radius: 3px; cursor: pointer; font-family: inherit;
+    padding: 2px 6px; font-size: 10px; border: 1px solid var(--border, #27272a);
+    background: transparent; color: var(--fg-dim, #71717a); border-radius: 3px; cursor: pointer; font-family: inherit;
   }
-  .btn-ex:hover { background: #1a1a22; color: #a1a1aa; }
+  .btn-ex:hover { background: var(--bg-btn, #1a1a22); color: var(--fg-muted, #a1a1aa); }
 
   .plugin-list { flex: 1; overflow-y: auto; }
   .plugin-item {
     display: flex; align-items: center; gap: 8px; width: 100%;
-    padding: 8px 12px; border: none; border-bottom: 1px solid #0f0f14;
-    background: transparent; color: #e4e4e7; cursor: pointer;
+    padding: 8px 12px; border: none; border-bottom: 1px solid var(--border-subtle, #0f0f14);
+    background: transparent; color: var(--fg, #e4e4e7); cursor: pointer;
     font-family: inherit; font-size: 12px; text-align: left;
   }
-  .plugin-item:hover { background: #14141a; }
-  .plugin-item.selected { background: #1a1a28; border-left: 2px solid #38bdf8; }
+  .plugin-item:hover { background: var(--bg-hover, #14141a); }
+  .plugin-item.selected { background: var(--bg-selected, #1a1a28); border-left: 2px solid #38bdf8; }
   .plugin-status { width: 6px; height: 6px; border-radius: 50%; background: #3f3f46; flex-shrink: 0; }
   .plugin-status.enabled { background: #34d399; }
   .plugin-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .plugin-type { font-size: 10px; color: #52525b; }
+  .plugin-type { font-size: 10px; color: var(--fg-faint, #52525b); }
   .btn-toggle {
-    padding: 2px 6px; font-size: 9px; border: 1px solid #27272a;
-    background: transparent; color: #71717a; border-radius: 3px; cursor: pointer; font-family: inherit;
+    padding: 2px 6px; font-size: 9px; border: 1px solid var(--border, #27272a);
+    background: transparent; color: var(--fg-dim, #71717a); border-radius: 3px; cursor: pointer; font-family: inherit;
   }
 
   .editor-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .editor-toolbar {
     display: flex; gap: 6px; padding: 8px 12px;
-    background: #0d0d12; border-bottom: 1px solid #1e1e24; align-items: center;
+    background: var(--bg-header, #0d0d12); border-bottom: 1px solid var(--border, #1e1e24); align-items: center;
   }
   .edit-name {
-    width: 140px; background: #0a0a0f; border: 1px solid #27272a; border-radius: 4px;
-    padding: 4px 8px; color: #e4e4e7; font-size: 12px; font-family: inherit; outline: none;
+    width: 140px; background: var(--bg, #0a0a0f); border: 1px solid var(--border, #27272a); border-radius: 4px;
+    padding: 4px 8px; color: var(--fg, #e4e4e7); font-size: 12px; font-family: inherit; outline: none;
   }
-  .edit-desc { flex: 1; background: #0a0a0f; border: 1px solid #27272a; border-radius: 4px; padding: 4px 8px; color: #a1a1aa; font-size: 12px; font-family: inherit; outline: none; }
-  .edit-type { background: #0a0a0f; border: 1px solid #27272a; border-radius: 4px; padding: 4px 8px; color: #a1a1aa; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .edit-desc { flex: 1; background: var(--bg, #0a0a0f); border: 1px solid var(--border, #27272a); border-radius: 4px; padding: 4px 8px; color: var(--fg-muted, #a1a1aa); font-size: 12px; font-family: inherit; outline: none; }
+  .edit-type { background: var(--bg, #0a0a0f); border: 1px solid var(--border, #27272a); border-radius: 4px; padding: 4px 8px; color: var(--fg-muted, #a1a1aa); font-size: 11px; font-family: inherit; cursor: pointer; }
   .spacer { flex: 0; }
   .btn-save {
     padding: 4px 12px; font-size: 11px; border: 1px solid #059669;
-    background: #064e3b; color: #34d399; border-radius: 4px; cursor: pointer; font-family: inherit;
+    background: #064e3b; color: var(--green, #34d399); border-radius: 4px; cursor: pointer; font-family: inherit;
   }
   .btn-save:hover { background: #065f46; }
   .btn-delete {
     padding: 4px 10px; font-size: 11px; border: 1px solid #dc2626;
-    background: transparent; color: #f87171; border-radius: 4px; cursor: pointer; font-family: inherit;
+    background: transparent; color: var(--red, #f87171); border-radius: 4px; cursor: pointer; font-family: inherit;
   }
   .btn-delete:hover { background: #4c0519; }
   .btn-icon {
-    background: transparent; border: none; cursor: pointer; font-size: 12px; color: #71717a; padding: 4px;
+    background: transparent; border: none; cursor: pointer; font-size: 12px; color: var(--fg-dim, #71717a); padding: 4px;
   }
 
   .code-editor {
     flex: 1; resize: none; border: none; outline: none;
-    background: #0a0a0f; color: #e4e4e7;
+    background: var(--bg, #0a0a0f); color: var(--fg, #e4e4e7);
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 13px; line-height: 1.6; padding: 12px 16px;
     tab-size: 2;
@@ -249,30 +249,30 @@ function analyze(flow) {
 
   .run-bar {
     display: flex; gap: 6px; padding: 6px 12px; align-items: center;
-    background: #0d0d12; border-top: 1px solid #1e1e24;
+    background: var(--bg-header, #0d0d12); border-top: 1px solid var(--border, #1e1e24);
   }
-  .run-label { font-size: 10px; color: #52525b; letter-spacing: 0.5px; }
+  .run-label { font-size: 10px; color: var(--fg-faint, #52525b); letter-spacing: 0.5px; }
   .run-flow {
-    width: 100px; background: #0a0a0f; border: 1px solid #27272a; border-radius: 4px;
-    padding: 4px 8px; color: #e4e4e7; font-size: 12px; font-family: inherit; outline: none;
+    width: 100px; background: var(--bg, #0a0a0f); border: 1px solid var(--border, #27272a); border-radius: 4px;
+    padding: 4px 8px; color: var(--fg, #e4e4e7); font-size: 12px; font-family: inherit; outline: none;
   }
   .btn-run {
     padding: 4px 12px; font-size: 11px; border: 1px solid #38bdf8;
-    background: #1e3a5f; color: #7dd3fc; border-radius: 4px; cursor: pointer; font-family: inherit;
+    background: var(--accent-bg, #1e3a5f); color: var(--accent, #7dd3fc); border-radius: 4px; cursor: pointer; font-family: inherit;
   }
   .btn-run:hover { background: #1e4a6f; }
 
   .run-output {
     max-height: 150px; overflow-y: auto; padding: 8px 12px;
-    font-size: 12px; color: #a1a1aa; margin: 0; white-space: pre-wrap;
-    border-top: 1px solid #1e1e24; background: #0a0a0f;
+    font-size: 12px; color: var(--fg-muted, #a1a1aa); margin: 0; white-space: pre-wrap;
+    border-top: 1px solid var(--border, #1e1e24); background: var(--bg, #0a0a0f);
   }
 
-  .empty { padding: 20px; text-align: center; color: #3f3f46; font-size: 12px; }
+  .empty { padding: 20px; text-align: center; color: var(--fg-ghost, #3f3f46); font-size: 12px; }
   .empty-editor {
     flex: 1; display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    color: #3f3f46; font-size: 14px; gap: 8px;
+    color: var(--fg-ghost, #3f3f46); font-size: 14px; gap: 8px;
   }
   .empty-icon { font-size: 32px; opacity: 0.5; }
 </style>

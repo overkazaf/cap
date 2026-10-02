@@ -11,6 +11,12 @@
   let activeTab = 'req-headers'
   let bodyFormat = 'auto'
   let signResults = []
+  let replayResult = null
+  let showReplayEditor = false
+  let replayURL = ''
+  let replayBody = ''
+  let replayHeaders = ''
+  let replaying = false
 
   const languages = ['curl', 'python', 'go', 'java', 'js']
 
@@ -65,6 +71,47 @@
     try {
       return await window.go.wailsgui.App.GetBodyHex(selectedFlow.id, isReq)
     } catch(e) { return `Error: ${e}` }
+  }
+
+  async function replayFlow() {
+    if (!selectedFlow) return
+    replaying = true
+    try {
+      replayResult = await window.go.wailsgui.App.ReplayFlow(selectedFlow.id)
+    } catch(e) { replayResult = { error: String(e) } }
+    replaying = false
+  }
+
+  async function replayModified() {
+    if (!selectedFlow) return
+    replaying = true
+    let setHeaders = {}
+    if (replayHeaders.trim()) {
+      for (const line of replayHeaders.split('\n')) {
+        const idx = line.indexOf(':')
+        if (idx > 0) setHeaders[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
+      }
+    }
+    try {
+      replayResult = await window.go.wailsgui.App.ReplayModified({
+        flow_id: selectedFlow.id,
+        url: replayURL || '',
+        method: '',
+        set_headers: setHeaders,
+        del_headers: [],
+        body: replayBody || '',
+      })
+    } catch(e) { replayResult = { error: String(e) } }
+    replaying = false
+  }
+
+  function openReplayEditor() {
+    if (!selectedFlow) return
+    replayURL = selectedFlow.url
+    replayBody = selectedFlow.req_body || ''
+    replayHeaders = ''
+    replayResult = null
+    showReplayEditor = !showReplayEditor
   }
 
   function copyText(text) {
@@ -177,7 +224,50 @@
           <button class="btn-icon" on:click={() => copyText(selectedFlow.url)} title="Copy URL">📋</button>
           <span class="{statusClass(selectedFlow.status)}">{selectedFlow.status}</span>
           <span class="detail-latency">{selectedFlow.latency_ms}ms</span>
+          <button class="btn-replay" on:click={replayFlow} disabled={replaying}>▶ Replay</button>
+          <button class="btn-replay-edit" on:click={openReplayEditor}>✎ Modify</button>
         </div>
+
+        {#if showReplayEditor}
+          <div class="replay-editor">
+            <div class="replay-row">
+              <span class="replay-label">URL</span>
+              <input type="text" class="replay-input" bind:value={replayURL} />
+            </div>
+            <div class="replay-row">
+              <span class="replay-label">Headers</span>
+              <textarea class="replay-textarea" bind:value={replayHeaders} placeholder="Key: Value (one per line)"></textarea>
+            </div>
+            <div class="replay-row">
+              <span class="replay-label">Body</span>
+              <textarea class="replay-textarea" bind:value={replayBody}></textarea>
+            </div>
+            <div class="replay-actions">
+              <button class="btn-send" on:click={replayModified} disabled={replaying}>
+                {replaying ? '...' : '▶ Send Modified'}
+              </button>
+            </div>
+          </div>
+        {/if}
+
+        {#if replayResult}
+          <div class="replay-result">
+            <div class="replay-result-header">
+              <span>REPLAY RESULT</span>
+              {#if replayResult.error}
+                <span class="status-5xx">{replayResult.error}</span>
+              {:else}
+                <span class="{statusClass(replayResult.status)}">{replayResult.status}</span>
+                <span class="detail-latency">{replayResult.latency_ms}ms</span>
+                {#if replayResult.status_diff}<span class="diff-badge">{replayResult.status_diff}</span>{/if}
+              {/if}
+              <button class="btn-icon" on:click={() => copyText(replayResult.body || '')}>📋</button>
+            </div>
+            {#if replayResult.body}
+              <pre class="replay-body">{formatBody(replayResult.body, 'application/json', 'auto')}</pre>
+            {/if}
+          </div>
+        {/if}
 
         {#if selectedFlow.sign_params && selectedFlow.sign_params.length > 0}
           <div class="sign-badge">
@@ -436,4 +526,47 @@
     color: #3f3f46; font-size: 14px; gap: 8px;
   }
   .detail-empty-icon { font-size: 32px; opacity: 0.5; }
+
+  .btn-replay, .btn-replay-edit {
+    padding: 3px 10px; font-size: 11px; border: 1px solid #27272a;
+    background: #1a1a22; color: #a1a1aa; border-radius: 4px;
+    cursor: pointer; font-family: inherit; white-space: nowrap;
+  }
+  .btn-replay:hover { background: #1e3a5f; border-color: #38bdf8; color: #7dd3fc; }
+  .btn-replay-edit:hover { background: #422006; border-color: #fbbf24; color: #fbbf24; }
+  .btn-replay:disabled { opacity: 0.5; }
+
+  .replay-editor {
+    padding: 8px 12px; background: #0d0d12; border-bottom: 1px solid #1e1e24;
+  }
+  .replay-row { display: flex; gap: 8px; margin-bottom: 6px; align-items: flex-start; }
+  .replay-label { font-size: 11px; color: #52525b; min-width: 50px; padding-top: 5px; }
+  .replay-input {
+    flex: 1; background: #0a0a0f; border: 1px solid #27272a; border-radius: 4px;
+    padding: 4px 8px; color: #e4e4e7; font-size: 12px; font-family: inherit; outline: none;
+  }
+  .replay-textarea {
+    flex: 1; background: #0a0a0f; border: 1px solid #27272a; border-radius: 4px;
+    padding: 4px 8px; color: #e4e4e7; font-size: 12px; font-family: inherit;
+    outline: none; resize: vertical; min-height: 40px; max-height: 100px;
+  }
+  .replay-actions { display: flex; justify-content: flex-end; }
+  .btn-send {
+    padding: 4px 14px; font-size: 11px; border: 1px solid #38bdf8;
+    background: #1e3a5f; color: #7dd3fc; border-radius: 4px;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn-send:hover { background: #1e4a6f; }
+  .btn-send:disabled { opacity: 0.5; }
+
+  .replay-result { border-bottom: 1px solid #1e1e24; }
+  .replay-result-header {
+    display: flex; gap: 8px; padding: 5px 12px; align-items: center;
+    background: #0f0f14; font-size: 11px; color: #52525b;
+  }
+  .diff-badge { padding: 1px 6px; background: #422006; color: #fbbf24; border-radius: 3px; font-size: 10px; }
+  .replay-body {
+    max-height: 120px; overflow-y: auto; padding: 6px 12px;
+    font-size: 12px; color: #a1a1aa; margin: 0; white-space: pre-wrap; word-break: break-all;
+  }
 </style>

@@ -42,6 +42,15 @@
     const tab = getTab(tabId)
     if (!tab) return
 
+    // Ctrl+L to clear
+    if (event.key === 'l' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault()
+      tab.content = '$ '
+      tab.inputStart = 2
+      tabs = tabs
+      return
+    }
+
     if (event.key === 'Enter') {
       event.preventDefault()
       const input = tab.content.slice(tab.inputStart).trim()
@@ -53,7 +62,9 @@
 
       tab.content += '\n'
 
-      if (input) {
+      if (input === 'clear' || input === 'cls') {
+        tab.content = ''
+      } else if (input) {
         try {
           const result = await window.go.wailsgui.App.ExecCommand(input)
           if (result) tab.content += result + '\n'

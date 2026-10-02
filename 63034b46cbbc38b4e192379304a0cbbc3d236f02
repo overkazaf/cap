@@ -1,0 +1,69 @@
+internal/export/codegen/templates/javascript.tmpl
+  936d2bd656d204f8 1-18
+internal/export/codegen/templates/python.tmpl
+  936d2bd656d204f8 1-23
+internal/export/codegen/templates/java.tmpl
+  936d2bd656d204f8 1-31
+internal/export/codegen/templates/curl.tmpl
+  936d2bd656d204f8 1-4
+internal/export/codegen/templates/golang.tmpl
+  936d2bd656d204f8 1-33
+internal/export/codegen/codegen_test.go
+  936d2bd656d204f8 1-158
+internal/export/codegen/codegen.go
+  936d2bd656d204f8 1-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "63034b46cbbc38b4e192379304a0cbbc3d236f02",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 418,
+      "total_deletions": 3,
+      "accepted_lines": 383,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/export/codegen/templates/java.tmpl": {
+          "additions": 31,
+          "accepted_lines": 31
+        },
+        "internal/export/codegen/templates/golang.tmpl": {
+          "additions": 33,
+          "accepted_lines": 33
+        },
+        "internal/export/codegen/templates/curl.tmpl": {
+          "additions": 4,
+          "accepted_lines": 4
+        },
+        "internal/export/codegen/templates/javascript.tmpl": {
+          "additions": 18,
+          "accepted_lines": 18
+        },
+        "internal/export/codegen/codegen.go": {
+          "additions": 119,
+          "deletions": 3,
+          "accepted_lines": 116
+        },
+        "internal/export/codegen/templates/python.tmpl": {
+          "additions": 23,
+          "accepted_lines": 23
+        },
+        "internal/export/codegen/zzz_manual_inspect_test.go": {
+          "additions": 32
+        },
+        "internal/export/codegen/codegen_test.go": {
+          "additions": 158,
+          "accepted_lines": 158
+        }
+      }
+    }
+  }
+}

@@ -10,6 +10,7 @@ import (
 
 func Run(st store.Store) {
 	a := app.New()
+	a.Settings().SetTheme(newCapTheme())
 	w := a.NewWindow("Cap - Packet Capture for Reverse Engineering")
 	w.Resize(fyne.NewSize(1200, 800))
 

@@ -1,0 +1,80 @@
+frontend/dist/assets/index-dcNKoHx4.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/assets/index-dcNKoHx4.css
+  936d2bd656d204f8 1
+frontend/dist/assets/index-B2mYl1c6.js
+  936d2bd656d204f8 1-8,18
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 11,123-160,408,431-459,595-623
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/assets/index-B2mYl1c6.js
+  936d2bd656d204f8 1-8,18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "98b64ce25de0c40323a4f1c29b2739d8f0942760",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 140,
+      "total_deletions": 42,
+      "accepted_lines": 140,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-dcNKoHx4.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-CZVGf3WY.js": {
+          "deletions": 17
+        },
+        "frontend/dist/assets/index-B2mYl1c6.js": {
+          "additions": 18,
+          "accepted_lines": 18
+        },
+        "frontend/dist/assets/index-DY_G5hBy.css": {
+          "deletions": 1
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 98,
+          "deletions": 2,
+          "accepted_lines": 98
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/frontend/dist/assets/index-B2mYl1c6.js": {
+          "additions": 18,
+          "accepted_lines": 18
+        },
+        "cmd/cap/frontend/dist/assets/index-dcNKoHx4.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-CZVGf3WY.js": {
+          "deletions": 17
+        },
+        "cmd/cap/frontend/dist/assets/index-DY_G5hBy.css": {
+          "deletions": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+docs/index.html
+  936d2bd656d204f8 118,125-133,247,254-262,280-288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "ca8d05bf7176a40099ce988c1f74ce77509d9b1f",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 1067,
+      "total_deletions": 7429,
+      "accepted_lines": 1067,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "docs/index.html": {
+          "additions": 29,
+          "deletions": 5,
+          "accepted_lines": 29
+        },
+        "docs/screenshots/flows-tab.png": {
+          "additions": 545,
+          "deletions": 2770,
+          "accepted_lines": 545
+        },
+        "docs/screenshots/capture-tab.png": {
+          "additions": 493,
+          "deletions": 4654,
+          "accepted_lines": 493
+        }
+      }
+    }
+  }
+}

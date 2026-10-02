@@ -115,14 +115,22 @@ footer { background: var(--code-bg); padding: 32px 20px; text-align: center; col
     <table>
       <tr><th>Capability</th><th>Burp Suite</th><th>mitmproxy</th><th>HTTP Toolkit</th><th>cap</th></tr>
       <tr><td>CLI Automation</td><td class="cross">✗</td><td class="check">✓</td><td class="cross">✗</td><td class="check"><b>✓</b></td></tr>
-      <tr><td>Native GUI</td><td class="cross">Java</td><td class="partial">△ basic</td><td class="partial">Electron</td><td class="check"><b>Fyne native</b></td></tr>
+      <tr><td>Native GUI</td><td class="cross">Java</td><td class="partial">△ basic</td><td class="partial">Electron</td><td class="check"><b>Wails + Svelte</b></td></tr>
       <tr><td>LLM/Agent Output</td><td class="cross">XML</td><td class="partial">HAR</td><td class="partial">HAR</td><td class="check"><b>Compact JSONL</b></td></tr>
       <tr><td>Multi-lang Codegen</td><td class="cross">✗</td><td class="partial">curl+py</td><td class="cross">✗</td><td class="check"><b>5 languages</b></td></tr>
       <tr><td>Sign Detection</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ auto</b></td></tr>
       <tr><td>Sign Inference</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>MD5/SHA/HMAC</b></td></tr>
       <tr><td>Source Mapping</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>jadx → URL</b></td></tr>
       <tr><td>Android Setup</td><td class="cross">manual</td><td class="cross">manual</td><td class="partial">app</td><td class="check"><b>ADB direct</b></td></tr>
-      <tr><td>Embedded Terminal</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>multi-tab PTY</b></td></tr>
+      <tr><td>Request Replay</td><td class="check">Repeater</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ + modify</b></td></tr>
+      <tr><td>API Auto-Grouping</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>host + path</b></td></tr>
+      <tr><td>Flow Comparison</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>side-by-side</b></td></tr>
+      <tr><td>Sequence Replay</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>token propagation</b></td></tr>
+      <tr><td>Protobuf Decode</td><td class="cross">✗</td><td class="partial">addon</td><td class="cross">✗</td><td class="check"><b>schema-less</b></td></tr>
+      <tr><td>Traffic Dashboard</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>P95 / timeline</b></td></tr>
+      <tr><td>HAR/Charles Import</td><td class="check">✓</td><td class="check">✓</td><td class="check">✓</td><td class="check"><b>✓</b></td></tr>
+      <tr><td>Plugin System</td><td class="check">BApp</td><td class="check">addon</td><td class="cross">✗</td><td class="check"><b>live editor</b></td></tr>
+      <tr><td>Embedded Terminal</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>multi-tab</b></td></tr>
       <tr><td>Open Source</td><td class="cross">$449/yr</td><td class="check">✓</td><td class="partial">core</td><td class="check"><b>MIT</b></td></tr>
     </table>
   </div>
@@ -236,14 +244,22 @@ cap gui</code></pre>
     <table>
       <tr><th>能力</th><th>Burp Suite</th><th>mitmproxy</th><th>HTTP Toolkit</th><th>cap</th></tr>
       <tr><td>CLI 自动化</td><td class="cross">✗ 纯GUI</td><td class="check">✓</td><td class="cross">✗</td><td class="check"><b>✓</b></td></tr>
-      <tr><td>原生 GUI</td><td class="cross">Java</td><td class="partial">△ 简陋</td><td class="partial">Electron</td><td class="check"><b>Fyne 原生</b></td></tr>
+      <tr><td>桌面 GUI</td><td class="cross">Java</td><td class="partial">△ 简陋</td><td class="partial">Electron</td><td class="check"><b>Wails + Svelte</b></td></tr>
       <tr><td>LLM 友好输出</td><td class="cross">XML</td><td class="partial">HAR</td><td class="partial">HAR</td><td class="check"><b>精简 JSONL</b></td></tr>
       <tr><td>多语言代码生成</td><td class="cross">✗</td><td class="partial">curl+py</td><td class="cross">✗</td><td class="check"><b>5 种语言</b></td></tr>
       <tr><td>签名自动识别</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ 自动</b></td></tr>
       <tr><td>签名算法推理</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>MD5/SHA/HMAC</b></td></tr>
       <tr><td>源码映射</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>jadx → URL</b></td></tr>
       <tr><td>Android 连接</td><td class="cross">手动</td><td class="cross">手动</td><td class="partial">需装 App</td><td class="check"><b>ADB 直连</b></td></tr>
-      <tr><td>内嵌终端</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>多 Tab PTY</b></td></tr>
+      <tr><td>请求重放</td><td class="check">Repeater</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ + 改参</b></td></tr>
+      <tr><td>API 自动分组</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>host + 路径</b></td></tr>
+      <tr><td>流量对比</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>并排 Diff</b></td></tr>
+      <tr><td>序列回放</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>Token 传递</b></td></tr>
+      <tr><td>Protobuf 解码</td><td class="cross">✗</td><td class="partial">插件</td><td class="cross">✗</td><td class="check"><b>无 Schema</b></td></tr>
+      <tr><td>流量仪表盘</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>P95 / 时间线</b></td></tr>
+      <tr><td>HAR/Charles 导入</td><td class="check">✓</td><td class="check">✓</td><td class="check">✓</td><td class="check"><b>✓</b></td></tr>
+      <tr><td>插件系统</td><td class="check">BApp</td><td class="check">addon</td><td class="cross">✗</td><td class="check"><b>实时编辑器</b></td></tr>
+      <tr><td>内嵌终端</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>多 Tab</b></td></tr>
       <tr><td>开源免费</td><td class="cross">$449/年</td><td class="check">✓</td><td class="partial">核心开源</td><td class="check"><b>MIT</b></td></tr>
     </table>
   </div>
@@ -261,7 +277,15 @@ cap gui</code></pre>
       <div class="feature"><h3>源码映射</h3><p>扫描 jadx 反编译产物，把 URL 映射到 Java 源码文件和方法名。</p></div>
       <div class="feature"><h3>请求重放</h3><p>选中请求一键重发，支持修改参数，Diff 对比原始和重放响应。</p></div>
       <div class="feature"><h3>WebSocket & SSE</h3><p>抓取 WebSocket 帧和 SSE 流，和 HTTP 请求一起展示。</p></div>
-      <div class="feature"><h3>内嵌终端</h3><p>GUI 内多 Tab PTY 终端，执行 adb/frida/curl 不用切窗口。</p></div>
+      <div class="feature"><h3>内嵌终端</h3><p>GUI 内多 Tab 终端，执行 adb/frida/curl 不用切窗口。</p></div>
+      <div class="feature"><h3>请求重放</h3><p>一键重放请求，支持修改 URL/Header/Body 后重发，Diff 对比响应差异。</p></div>
+      <div class="feature"><h3>API 自动分组</h3><p>按 host + 路径前缀自动聚合，一眼看清目标 App 的 API 结构。</p></div>
+      <div class="feature"><h3>流量对比</h3><p>选两个请求并排 Diff：URL、Header、JSON Body 键级对比、延迟变化百分比。</p></div>
+      <div class="feature"><h3>序列回放</h3><p>录制操作流程（登录→取数据→提交），一键重放自动传递 Token/Cookie。</p></div>
+      <div class="feature"><h3>Protobuf 解码</h3><p>无 Schema 解码 — 自动检测并解析二进制 Protobuf 响应，无需 .proto 文件。</p></div>
+      <div class="feature"><h3>流量仪表盘</h3><p>聚合统计：按域名/状态码/方法、P95 延迟、错误率、最慢端点、分钟时间线。</p></div>
+      <div class="feature"><h3>插件系统</h3><p>内置代码编辑器 + 3 个示例插件，现写现测试、保存、开关控制。</p></div>
+      <div class="feature"><h3>HAR 导入</h3><p>导入 HAR 和 Charles XML 文件，零迁移成本。</p></div>
     </div>
   </div>
 </section>

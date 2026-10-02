@@ -1,0 +1,41 @@
+internal/export/agent/detect.go
+  936d2bd656d204f8 1-90
+internal/export/agent/agent.go
+  936d2bd656d204f8 1-171
+internal/export/agent/agent_test.go
+  936d2bd656d204f8 1-170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "3055c1b7ea94102c2d9d0efeb4ab9605268d2b9b",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 431,
+      "total_deletions": 0,
+      "accepted_lines": 431,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/export/agent/agent_test.go": {
+          "additions": 170,
+          "accepted_lines": 170
+        },
+        "internal/export/agent/detect.go": {
+          "additions": 90,
+          "accepted_lines": 90
+        },
+        "internal/export/agent/agent.go": {
+          "additions": 171,
+          "accepted_lines": 171
+        }
+      }
+    }
+  }
+}

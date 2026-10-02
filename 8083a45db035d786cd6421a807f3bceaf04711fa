@@ -1,0 +1,56 @@
+internal/android/cert.go
+  936d2bd656d204f8 1-119
+internal/android/adb_test.go
+  936d2bd656d204f8 1-135
+internal/android/testdata/test-ca.crt
+  936d2bd656d204f8 1-11
+internal/android/proxy_setup.go
+  936d2bd656d204f8 1-111
+internal/android/adb.go
+  936d2bd656d204f8 1-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "8083a45db035d786cd6421a807f3bceaf04711fa",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 529,
+      "total_deletions": 0,
+      "accepted_lines": 511,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/android/proxy_setup.go": {
+          "additions": 111,
+          "accepted_lines": 111
+        },
+        "internal/android/zz_scratch_verify_test.go": {
+          "additions": 18
+        },
+        "internal/android/testdata/test-ca.crt": {
+          "additions": 11,
+          "accepted_lines": 11
+        },
+        "internal/android/adb_test.go": {
+          "additions": 135,
+          "accepted_lines": 135
+        },
+        "internal/android/adb.go": {
+          "additions": 135,
+          "accepted_lines": 135
+        },
+        "internal/android/cert.go": {
+          "additions": 119,
+          "accepted_lines": 119
+        }
+      }
+    }
+  }
+}

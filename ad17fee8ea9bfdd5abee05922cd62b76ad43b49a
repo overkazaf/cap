@@ -1,0 +1,30 @@
+internal/android/cert.go
+  936d2bd656d204f8 14,43-46,50,58-130,132-133,135-137,140,143,146-147,153-159,174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "ad17fee8ea9bfdd5abee05922cd62b76ad43b49a",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 100,
+      "total_deletions": 37,
+      "accepted_lines": 100,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/android/cert.go": {
+          "additions": 100,
+          "deletions": 37,
+          "accepted_lines": 100
+        }
+      }
+    }
+  }
+}

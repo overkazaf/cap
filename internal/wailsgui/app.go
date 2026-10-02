@@ -3,6 +3,7 @@ package wailsgui
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"github.com/overkazaf/cap/internal/android"
 	"github.com/overkazaf/cap/internal/export/agent"
 	"github.com/overkazaf/cap/internal/export/codegen"
+	"github.com/overkazaf/cap/internal/plugin"
 	"github.com/overkazaf/cap/internal/proxy"
 	"github.com/overkazaf/cap/internal/replay"
 	"github.com/overkazaf/cap/internal/sign"
@@ -22,10 +24,12 @@ import (
 )
 
 type App struct {
-	ctx   context.Context
-	store store.Store
-	proxy *proxy.Proxy
-	mu    sync.Mutex
+	ctx      context.Context
+	store    store.Store
+	proxy    *proxy.Proxy
+	plugins  *plugin.Engine
+	mu       sync.Mutex
+	settings map[string]string
 
 	flows     []*types.Flow
 	isRunning bool
@@ -34,9 +38,15 @@ type App struct {
 
 func NewApp(st store.Store) *App {
 	home, _ := os.UserHomeDir()
+	capDir := filepath.Join(home, ".cap")
+	pluginEngine, _ := plugin.NewEngine(filepath.Join(capDir, "plugins"))
+	settingsFile := filepath.Join(capDir, "settings.json")
+	settings := loadSettings(settingsFile)
 	return &App{
-		store:   st,
-		certDir: filepath.Join(home, ".cap"),
+		store:    st,
+		certDir:  capDir,
+		plugins:  pluginEngine,
+		settings: settings,
 	}
 }
 
@@ -363,6 +373,125 @@ func (a *App) ExecCommand(cmd string) (string, error) {
 	return result, nil
 }
 
+// ==================== Replay Modified ====================
+
+type ModifyRequest struct {
+	FlowID     string            `json:"flow_id"`
+	URL        string            `json:"url"`
+	Method     string            `json:"method"`
+	SetHeaders map[string]string `json:"set_headers"`
+	DelHeaders []string          `json:"del_headers"`
+	Body       string            `json:"body"`
+}
+
+func (a *App) ReplayModified(req ModifyRequest) (*ReplayResult, error) {
+	f, err := a.store.GetFlow(req.FlowID)
+	if err != nil {
+		return nil, err
+	}
+	mods := replay.Modifications{
+		URL:        req.URL,
+		Method:     req.Method,
+		SetHeaders: req.SetHeaders,
+		DelHeaders: req.DelHeaders,
+	}
+	if req.Body != "" {
+		mods.Body = []byte(req.Body)
+	}
+	result, err := replay.ReplayModified(f, mods, replay.Options{Timeout: 30 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	rr := &ReplayResult{
+		Status:  result.Replayed.Status,
+		Headers: result.Replayed.RespHeaders,
+		Body:    string(result.Replayed.RespBody),
+		Latency: result.Replayed.LatencyMs,
+	}
+	if result.Diff != nil {
+		rr.StatusDiff = result.Diff.StatusDiff
+		rr.LatencyDiff = result.Diff.LatencyDiff
+	}
+	return rr, nil
+}
+
+// ==================== Plugins ====================
+
+func (a *App) ListPlugins() []*plugin.Plugin {
+	return a.plugins.List()
+}
+
+func (a *App) GetPlugin(name string) (*plugin.Plugin, error) {
+	return a.plugins.Get(name)
+}
+
+func (a *App) SavePlugin(p plugin.Plugin) error {
+	return a.plugins.Save(&p)
+}
+
+func (a *App) DeletePlugin(name string) error {
+	return a.plugins.Delete(name)
+}
+
+func (a *App) TogglePlugin(name string) error {
+	return a.plugins.Toggle(name)
+}
+
+func (a *App) GetExamplePlugins() []plugin.Plugin {
+	return plugin.ExamplePlugins
+}
+
+func (a *App) RunPlugin(name, flowID string) (*plugin.ExecResult, error) {
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return nil, err
+	}
+	return a.plugins.RunAnalyzer(name, f), nil
+}
+
+// ==================== Settings ====================
+
+func (a *App) GetSettings() map[string]string {
+	return a.settings
+}
+
+func (a *App) SetSetting(key, value string) error {
+	a.settings[key] = value
+	return saveSettings(filepath.Join(a.certDir, "settings.json"), a.settings)
+}
+
+func (a *App) GetSetting(key string) string {
+	return a.settings[key]
+}
+
+func loadSettings(path string) map[string]string {
+	settings := map[string]string{
+		"theme":         "dark",
+		"proxy_addr":    "0.0.0.0:8080",
+		"proxy_port":    "8080",
+		"auto_detect":   "true",
+		"install_cert":  "true",
+		"max_body_size": "4096",
+		"font_size":     "13",
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return settings
+	}
+	var loaded map[string]string
+	if json.Unmarshal(data, &loaded) == nil {
+		for k, v := range loaded {
+			settings[k] = v
+		}
+	}
+	return settings
+}
+
+func saveSettings(path string, settings map[string]string) error {
+	data, _ := json.MarshalIndent(settings, "", "  ")
+	return os.WriteFile(path, data, 0644)
+}
+
 // ==================== Utils ====================
 
 func (a *App) GetHostIP() string {
@@ -371,4 +500,8 @@ func (a *App) GetHostIP() string {
 		return addrs[0]
 	}
 	return "auto"
+}
+
+func (a *App) GetVersion() string {
+	return "0.1.0"
 }

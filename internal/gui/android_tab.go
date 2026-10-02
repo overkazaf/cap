@@ -2,8 +2,6 @@ package gui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,17 +12,6 @@ import (
 	"github.com/overkazaf/cap/internal/android"
 	"github.com/overkazaf/cap/internal/proxy"
 )
-
-// defaultCertDir returns "~/.cap", the directory cap stores its generated
-// MITM CA certificate in. This mirrors internal/cli's own default so a
-// certificate installed via the GUI's Connect button is the same one a
-// `cap android connect` / `cap start` would use.
-func defaultCertDir() string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".cap")
-	}
-	return ".cap"
-}
 
 // NewAndroidTab builds the Android device management tab: discover ADB
 // devices, configure the proxy connection, and connect/disconnect/check
@@ -170,7 +157,7 @@ func NewAndroidTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 			var certPath string
 			var err error
 			if installCert {
-				certPath, _, err = proxy.EnsureCA(defaultCertDir())
+				certPath, _, err = proxy.EnsureCA(DefaultCertDir())
 				if err != nil {
 					fyne.Do(func() {
 						setBusy(false)

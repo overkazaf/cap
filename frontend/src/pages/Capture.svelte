@@ -1,4 +1,6 @@
 <script>
+  import { onMount } from 'svelte'
+
   let proxyAddr = '0.0.0.0:8080'
   let isRunning = false
   let status = 'Stopped'
@@ -12,6 +14,7 @@
   function log(msg) {
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
     logs = [...logs, `[${ts}] ${msg}`]
+    if (logs.length > 500) logs = logs.slice(-500)
     setTimeout(() => {
       const el = document.querySelector('.log-output')
       if (el) el.scrollTop = el.scrollHeight
@@ -69,6 +72,11 @@
     } catch(e) { log(`Failed: ${e}`) }
     busy = false
   }
+
+  // Auto-detect devices on startup
+  onMount(() => {
+    refreshDevices()
+  })
 </script>
 
 <div class="page">
@@ -76,7 +84,7 @@
     <div class="section">
       <h2>PROXY</h2>
       <div class="row">
-        <label>Listen</label>
+        <span class="label">Listen</span>
         <input type="text" bind:value={proxyAddr} disabled={isRunning} class="input mono" />
         <button class="btn" class:btn-danger={isRunning} class:btn-success={!isRunning} on:click={toggleProxy}>
           {isRunning ? '■ Stop' : '▶ Start'}
@@ -90,10 +98,10 @@
     <div class="section">
       <h2>ANDROID</h2>
       <div class="row">
-        <label>Device</label>
+        <span class="label">Device</span>
         <select bind:value={selectedDevice} class="input" disabled={busy}>
           {#if devices.length === 0}
-            <option value="">No devices</option>
+            <option value="">Scanning...</option>
           {/if}
           {#each devices as d}
             <option value={d.serial}>{d.serial} ({d.state})</option>
@@ -102,7 +110,7 @@
         <button class="btn btn-ghost" on:click={refreshDevices} disabled={busy}>⟳ Refresh</button>
       </div>
       <div class="row">
-        <label>Port</label>
+        <span class="label">Port</span>
         <input type="text" bind:value={port} class="input mono small" />
         <label class="check-label">
           <input type="checkbox" bind:checked={installCert} />
@@ -133,19 +141,12 @@
   .panel { background: #111116; border: 1px solid #1e1e24; border-radius: 8px; padding: 16px; }
   .section h2 { font-size: 11px; color: #38bdf8; letter-spacing: 1.5px; margin-bottom: 12px; font-weight: 600; }
   .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .row label { font-size: 12px; color: #71717a; min-width: 48px; text-align: right; }
+  .label { font-size: 12px; color: #71717a; min-width: 48px; text-align: right; }
   .divider { height: 1px; background: #1e1e24; margin: 12px 0; }
 
   .input {
-    flex: 1;
-    background: #0a0a0f;
-    border: 1px solid #27272a;
-    border-radius: 6px;
-    padding: 6px 10px;
-    color: #e4e4e7;
-    font-size: 12px;
-    outline: none;
-    font-family: inherit;
+    flex: 1; background: #0a0a0f; border: 1px solid #27272a; border-radius: 6px;
+    padding: 6px 10px; color: #e4e4e7; font-size: 12px; outline: none; font-family: inherit;
   }
   .input:focus { border-color: #38bdf8; }
   .input:disabled { opacity: 0.5; }
@@ -154,16 +155,9 @@
   select.input { cursor: pointer; }
 
   .btn {
-    padding: 6px 14px;
-    border: 1px solid #27272a;
-    border-radius: 6px;
-    background: #1a1a22;
-    color: #e4e4e7;
-    font-size: 12px;
-    cursor: pointer;
-    font-family: inherit;
-    transition: all 0.1s;
-    white-space: nowrap;
+    padding: 6px 14px; border: 1px solid #27272a; border-radius: 6px;
+    background: #1a1a22; color: #e4e4e7; font-size: 12px; cursor: pointer;
+    font-family: inherit; transition: all 0.1s; white-space: nowrap;
   }
   .btn:hover { background: #27272a; }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -182,28 +176,16 @@
 
   .check-label {
     display: flex; align-items: center; gap: 4px;
-    font-size: 12px; color: #a1a1aa; cursor: pointer;
-    min-width: auto;
+    font-size: 12px; color: #a1a1aa; cursor: pointer; min-width: auto;
   }
   .check-label input { accent-color: #38bdf8; }
 
   .log-panel {
-    flex: 1;
-    background: #111116;
-    border: 1px solid #1e1e24;
-    border-radius: 8px;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
+    flex: 1; background: #111116; border: 1px solid #1e1e24; border-radius: 8px;
+    padding: 16px; display: flex; flex-direction: column; min-height: 0;
   }
   .log-panel h2 { font-size: 11px; color: #38bdf8; letter-spacing: 1.5px; margin-bottom: 8px; font-weight: 600; }
-  .log-output {
-    flex: 1;
-    overflow-y: auto;
-    font-size: 12px;
-    line-height: 1.6;
-  }
+  .log-output { flex: 1; overflow-y: auto; font-size: 12px; line-height: 1.6; }
   .log-line { color: #a1a1aa; }
   .log-empty { color: #3f3f46; font-style: italic; }
 </style>

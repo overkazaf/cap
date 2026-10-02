@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nongjiawu/cap/internal/proxy"
-	"github.com/nongjiawu/cap/internal/store/sqlite"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/proxy"
+	"github.com/overkazaf/cap/internal/store/sqlite"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // newStartCmd builds `cap start`: run the MITM proxy, saving every captured

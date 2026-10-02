@@ -26,6 +26,7 @@ func NewRootCmd() *cobra.Command {
 		newFlowsCmd(),
 		newExportCmd(),
 		newAndroidCmd(),
+		newGUICmd(),
 	)
 
 	return root

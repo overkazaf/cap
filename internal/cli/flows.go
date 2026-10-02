@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // newFlowsCmd builds `cap flows`: list captured flows from the database,

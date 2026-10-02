@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nongjiawu/cap/internal/cli"
+	"github.com/overkazaf/cap/internal/cli"
 )
 
 func main() {

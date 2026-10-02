@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nongjiawu/cap/internal/export/codegen"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/export/codegen"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 var testFlow = &types.Flow{

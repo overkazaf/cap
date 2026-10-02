@@ -12,7 +12,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 //go:embed templates/*.tmpl

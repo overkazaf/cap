@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nongjiawu/cap/internal/android"
+	"github.com/overkazaf/cap/internal/android"
 )
 
 func TestParseDevices(t *testing.T) {

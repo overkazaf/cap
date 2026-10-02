@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // signKeyPatterns are case-insensitive regexes matching parameter names

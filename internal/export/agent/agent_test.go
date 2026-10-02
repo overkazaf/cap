@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nongjiawu/cap/internal/export/agent"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/export/agent"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // jsonLines splits JSONL output into its individual lines, trimming any

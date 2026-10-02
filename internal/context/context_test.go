@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nongjiawu/cap/internal/context"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/context"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // writeFile creates path (and any missing parent directories) with content.

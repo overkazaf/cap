@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nongjiawu/cap/internal/store/sqlite"
+	"github.com/overkazaf/cap/internal/store/sqlite"
 )
 
 // defaultCapDir returns cap's default data directory, "~/.cap", falling

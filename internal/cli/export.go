@@ -7,10 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nongjiawu/cap/internal/export/agent"
-	"github.com/nongjiawu/cap/internal/export/codegen"
-	"github.com/nongjiawu/cap/internal/store"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/export/agent"
+	"github.com/overkazaf/cap/internal/export/codegen"
+	"github.com/overkazaf/cap/internal/store"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // newExportCmd builds `cap export`: render a captured flow as runnable code

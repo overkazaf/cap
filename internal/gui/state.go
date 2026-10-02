@@ -1,12 +1,21 @@
 package gui
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/overkazaf/cap/internal/proxy"
 	"github.com/overkazaf/cap/internal/store"
 	"github.com/overkazaf/cap/internal/types"
 )
+
+func DefaultCertDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".cap")
+	}
+	return filepath.Join(os.TempDir(), "cap")
+}
 
 type AppState struct {
 	Store     store.Store

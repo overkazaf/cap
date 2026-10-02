@@ -2,8 +2,6 @@ package gui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -23,7 +21,7 @@ const defaultProxyAddr = "127.0.0.1:8080"
 // start/stop/clear control row, a status bar, and a live-scrolling log of
 // every flow captured by the running proxy.
 func NewProxyTab(state *AppState, w fyne.Window) fyne.CanvasObject {
-	certDir := defaultCertDir()
+	certDir := DefaultCertDir()
 
 	certDirDisplay := certDir
 	if _, _, err := proxy.EnsureCA(certDir); err != nil {
@@ -202,14 +200,3 @@ func formatFlowLine(f *types.Flow) string {
 }
 
 // defaultCertDir returns the directory holding cap's MITM CA
-// certificate/key pair: "~/.cap", falling back to a directory under the OS
-// temp dir if the home directory can't be determined. This mirrors the
-// unexported default internal/proxy.New falls back to when Options.CertDir
-// is empty, so the path shown in the config section always matches what a
-// running proxy actually uses.
-func defaultCertDir() string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".cap")
-	}
-	return filepath.Join(os.TempDir(), "cap")
-}

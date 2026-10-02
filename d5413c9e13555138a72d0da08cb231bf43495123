@@ -1,0 +1,47 @@
+internal/gui/app.go
+  936d2bd656d204f8 44
+internal/gui/terminal.go
+  936d2bd656d204f8 1-120
+go.mod
+  936d2bd656d204f8 17
+internal/gui/terminal_tab.go
+  936d2bd656d204f8 1-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "d5413c9e13555138a72d0da08cb231bf43495123",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 245,
+      "total_deletions": 0,
+      "accepted_lines": 245,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/terminal_tab.go": {
+          "additions": 123,
+          "accepted_lines": 123
+        },
+        "internal/gui/terminal.go": {
+          "additions": 120,
+          "accepted_lines": 120
+        },
+        "internal/gui/app.go": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "go.mod": {
+          "additions": 1,
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

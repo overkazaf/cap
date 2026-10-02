@@ -1,0 +1,41 @@
+internal/replay/replay.go
+  936d2bd656d204f8 1-224
+internal/replay/diff.go
+  936d2bd656d204f8 1-138
+internal/replay/replay_test.go
+  936d2bd656d204f8 1-322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "679d4ebe43cfbb67a979334686fe22ac460c69ef",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 684,
+      "total_deletions": 0,
+      "accepted_lines": 684,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/replay/diff.go": {
+          "additions": 138,
+          "accepted_lines": 138
+        },
+        "internal/replay/replay.go": {
+          "additions": 224,
+          "accepted_lines": 224
+        },
+        "internal/replay/replay_test.go": {
+          "additions": 322,
+          "accepted_lines": 322
+        }
+      }
+    }
+  }
+}

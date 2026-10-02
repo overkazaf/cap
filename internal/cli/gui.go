@@ -1,11 +1,23 @@
 package cli
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 
 	"github.com/spf13/cobra"
-	"github.com/overkazaf/cap/internal/gui"
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+
+	"github.com/overkazaf/cap/internal/wailsgui"
 )
+
+var frontendAssets embed.FS
+
+func SetFrontendAssets(assets embed.FS) {
+	frontendAssets = assets
+}
 
 func newGUICmd() *cobra.Command {
 	var dbPath string
@@ -20,8 +32,29 @@ func newGUICmd() *cobra.Command {
 			}
 			defer st.Close()
 
-			gui.Run(st)
-			return nil
+			app := wailsgui.NewApp(st)
+
+			// Strip the "frontend/dist" prefix so assets are served from root
+			stripped, err := fs.Sub(frontendAssets, "frontend/dist")
+			if err != nil {
+				return fmt.Errorf("assets: %w", err)
+			}
+
+			err = wails.Run(&options.App{
+				Title:     "cap",
+				Width:     1400,
+				Height:    900,
+				MinWidth:  800,
+				MinHeight: 600,
+				AssetServer: &assetserver.Options{
+					Assets: stripped,
+				},
+				OnStartup: app.Startup,
+				Bind: []interface{}{
+					app,
+				},
+			})
+			return err
 		},
 	}
 	cmd.Flags().StringVarP(&dbPath, "db", "d", "", "database path (default: ~/.cap/flows.db)")

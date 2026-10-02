@@ -11,10 +11,31 @@ import (
 )
 
 type termTab struct {
-	session *TermSession
-	output  *widget.Entry
-	input   *widget.Entry
-	tab     *container.TabItem
+	session    *TermSession
+	console    *widget.Entry
+	tab        *container.TabItem
+	inputStart int // byte offset where current input begins
+}
+
+func (tt *termTab) appendOutput(text string) {
+	tt.console.SetText(tt.console.Text + text + "\n")
+	tt.inputStart = len(tt.console.Text)
+	lines := strings.Split(tt.console.Text, "\n")
+	tt.console.CursorRow = len(lines) - 1
+	tt.console.CursorColumn = len(lines[len(lines)-1])
+}
+
+func (tt *termTab) handleSubmit(text string) {
+	input := ""
+	if len(text) > tt.inputStart {
+		input = text[tt.inputStart:]
+	}
+	input = strings.TrimRight(input, "\n")
+	if input == "" {
+		tt.session.Write("")
+		return
+	}
+	tt.session.Write(input)
 }
 
 func NewTerminalTab(state *AppState, w fyne.Window) fyne.CanvasObject {
@@ -24,21 +45,17 @@ func NewTerminalTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 
 	addNewTerm := func() {
 		tabIndex++
-		label := fmt.Sprintf("Shell %d", tabIndex)
+		label := fmt.Sprintf("sh-%d", tabIndex)
 
-		output := widget.NewMultiLineEntry()
-		output.TextStyle = fyne.TextStyle{Monospace: true}
-		output.Wrapping = fyne.TextWrapBreak
-		output.Disable()
-
-		input := widget.NewEntry()
-		input.SetPlaceHolder("cap$ type command and press Enter...")
-		input.TextStyle = fyne.TextStyle{Monospace: true}
+		console := widget.NewMultiLineEntry()
+		console.TextStyle = fyne.TextStyle{Monospace: true}
+		console.Wrapping = fyne.TextWrapBreak
 
 		session, err := NewTermSession()
 		if err != nil {
-			output.SetText(fmt.Sprintf("[failed to start shell: %v]", err))
-			tab := container.NewTabItem(label, container.NewBorder(nil, input, nil, nil, output))
+			console.SetText(fmt.Sprintf("$ [failed: %v]\n", err))
+			console.Disable()
+			tab := container.NewTabItem(label, console)
 			tabs.Append(tab)
 			tabs.Select(tab)
 			return
@@ -46,49 +63,32 @@ func NewTerminalTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 
 		tt := &termTab{
 			session: session,
-			output:  output,
-			input:   input,
+			console: console,
 		}
 
 		session.OnOutput = func(line string) {
 			fyne.Do(func() {
-				if output.Text == "" {
-					output.SetText(line)
-				} else {
-					output.SetText(output.Text + "\n" + line)
-				}
-				lines := strings.Split(output.Text, "\n")
-				output.CursorRow = len(lines) - 1
+				tt.appendOutput(line)
 			})
 		}
 
 		session.OnExit = func() {
 			fyne.Do(func() {
-				output.SetText(output.Text + "\n[session ended]")
-				input.SetPlaceHolder("[session ended]")
-				input.Disable()
+				tt.appendOutput("[session ended]")
+				console.Disable()
 			})
 		}
 
-		input.OnSubmitted = func(text string) {
-			text = strings.TrimSpace(text)
-			if text == "" {
-				return
-			}
-			input.SetText("")
-			session.Write(text)
+		console.OnSubmitted = func(text string) {
+			tt.handleSubmit(text)
 		}
 
-		tab := container.NewTabItem(label,
-			container.NewBorder(nil, input, nil, nil, output),
-		)
+		tab := container.NewTabItem(label, console)
 		tt.tab = tab
 
 		terms = append(terms, tt)
 		tabs.Append(tab)
 		tabs.Select(tab)
-
-		input.FocusGained()
 	}
 
 	tabs.CloseIntercept = func(item *container.TabItem) {
@@ -108,11 +108,10 @@ func NewTerminalTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 	newTabBtn.Importance = widget.HighImportance
 
 	toolbar := container.NewHBox(
-		widget.NewLabelWithStyle("Terminal", fyne.TextAlignLeading, fyne.TextStyle{Bold: true, Monospace: true}),
+		widget.NewLabelWithStyle("TERMINAL", fyne.TextAlignLeading, fyne.TextStyle{Bold: true, Monospace: true}),
 		newTabBtn,
 	)
 
-	// Start with one shell tab
 	addNewTerm()
 
 	return container.NewBorder(

@@ -4,6 +4,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/overkazaf/cap/internal/store"
@@ -19,7 +20,6 @@ func Run(st store.Store) {
 
 	state := NewAppState(st)
 
-	// Theme selector in toolbar
 	themeSelect := widget.NewSelect(ThemeNames, func(name string) {
 		for i, n := range ThemeNames {
 			if n == name {
@@ -33,8 +33,9 @@ func Run(st store.Store) {
 
 	toolbar := container.NewHBox(
 		widget.NewLabelWithStyle("cap", fyne.TextAlignLeading, fyne.TextStyle{Bold: true, Monospace: true}),
-		widget.NewLabel("//"),
-		widget.NewLabel("Theme:"),
+		widget.NewSeparator(),
+		layout.NewSpacer(),
+		widget.NewLabel("Theme"),
 		themeSelect,
 	)
 

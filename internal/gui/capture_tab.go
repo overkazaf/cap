@@ -22,25 +22,30 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 	certDir := DefaultCertDir()
 	proxy.EnsureCA(certDir)
 
-	// --- Shared log ---
+	// --- Log ---
 	logContent := widget.NewLabel("")
 	logContent.Wrapping = fyne.TextWrapWord
+	logContent.TextStyle = fyne.TextStyle{Monospace: true}
 	logScroll := container.NewVScroll(logContent)
 
 	var logLines []string
 	appendLog := func(format string, args ...any) {
 		line := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 		logLines = append(logLines, line)
+		if len(logLines) > 500 {
+			logLines = logLines[len(logLines)-500:]
+		}
 		logContent.SetText(strings.Join(logLines, "\n"))
 		logScroll.ScrollToBottom()
 	}
 
-	// ==================== Proxy Section ====================
+	// ==================== Proxy ====================
 	addrEntry := widget.NewEntry()
 	addrEntry.SetText(defaultAddr)
+	addrEntry.TextStyle = fyne.TextStyle{Monospace: true}
 
-	statusLabel := widget.NewLabel("Proxy: Stopped")
-	statusLabel.Importance = widget.MediumImportance
+	statusLabel := widget.NewLabel("Stopped")
+	statusLabel.TextStyle = fyne.TextStyle{Monospace: true}
 
 	var toggleBtn *widget.Button
 
@@ -57,14 +62,14 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 				fyne.Do(func() {
 					appendLog("[%s] %s %s → %d (%dms)", f.ID, f.Method, f.URL, f.Status, f.LatencyMs)
 					if saveErr != nil {
-						appendLog("  store error: %v", saveErr)
+						appendLog("  store: %v", saveErr)
 					}
 					state.AddFlow(f)
 				})
 			},
 		})
 		if err != nil {
-			appendLog("Start failed: %v", err)
+			appendLog("Error: %v", err)
 			return
 		}
 		state.Proxy = p
@@ -74,16 +79,13 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 		toggleBtn.SetIcon(theme.MediaStopIcon())
 		toggleBtn.Importance = widget.DangerImportance
 		toggleBtn.Refresh()
-		statusLabel.SetText(fmt.Sprintf("Proxy: Running on %s", p.Addr()))
+		statusLabel.SetText(fmt.Sprintf("Running on %s", p.Addr()))
 		statusLabel.Importance = widget.SuccessImportance
 		statusLabel.Refresh()
 		appendLog("Proxy started on %s", p.Addr())
-
 		go func() {
 			if err := p.Start(); err != nil {
-				fyne.Do(func() {
-					appendLog("Proxy error: %v", err)
-				})
+				fyne.Do(func() { appendLog("Proxy error: %v", err) })
 			}
 		}()
 	}
@@ -99,7 +101,7 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 		toggleBtn.SetIcon(theme.MediaPlayIcon())
 		toggleBtn.Importance = widget.SuccessImportance
 		toggleBtn.Refresh()
-		statusLabel.SetText("Proxy: Stopped")
+		statusLabel.SetText("Stopped")
 		statusLabel.Importance = widget.MediumImportance
 		statusLabel.Refresh()
 		appendLog("Proxy stopped")
@@ -114,22 +116,26 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 	})
 	toggleBtn.Importance = widget.SuccessImportance
 
-	clearBtn := widget.NewButtonWithIcon("Clear Log", theme.ContentClearIcon(), func() {
+	clearBtn := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() {
 		logLines = nil
 		logContent.SetText("")
 	})
 
-	proxyRow := container.New(layout.NewFormLayout(),
-		widget.NewLabel("Listen:"), addrEntry,
+	proxySection := container.NewVBox(
+		container.New(layout.NewFormLayout(),
+			widget.NewLabelWithStyle("Listen", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true}),
+			addrEntry,
+		),
+		container.NewHBox(toggleBtn, clearBtn, layout.NewSpacer(), statusLabel),
 	)
-	proxyControls := container.NewHBox(toggleBtn, clearBtn, layout.NewSpacer(), statusLabel)
 
-	// ==================== Android Section ====================
+	// ==================== Android ====================
 	var devices []android.Device
 	deviceSelect := widget.NewSelect(nil, nil)
-	deviceSelect.PlaceHolder = "Click Refresh"
+	deviceSelect.PlaceHolder = "No device — click Refresh"
 
 	deviceStatus := widget.NewLabel("")
+	deviceStatus.TextStyle = fyne.TextStyle{Monospace: true}
 
 	selectedDevice := func() (android.Device, bool) {
 		idx := deviceSelect.SelectedIndex()
@@ -138,27 +144,25 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 		}
 		return devices[idx], true
 	}
-
 	deviceSelect.OnChanged = func(string) {
-		d, ok := selectedDevice()
-		if !ok {
-			return
+		if d, ok := selectedDevice(); ok {
+			deviceStatus.SetText(d.Serial)
 		}
-		deviceStatus.SetText(d.Serial + " — " + d.State)
 	}
 
-	proxyPortEntry := widget.NewEntry()
-	proxyPortEntry.SetText("8080")
-	installCertCheck := widget.NewCheck("Install CA cert", nil)
-	installCertCheck.SetChecked(true)
+	portEntry := widget.NewEntry()
+	portEntry.SetText("8080")
+	portEntry.TextStyle = fyne.TextStyle{Monospace: true}
+	certCheck := widget.NewCheck("CA cert", nil)
+	certCheck.SetChecked(true)
 
-	refreshBtn := widget.NewButton("Refresh", nil)
-	connectBtn := widget.NewButton("Connect", nil)
-	disconnectBtn := widget.NewButton("Disconnect", nil)
+	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), nil)
+	connectBtn := widget.NewButtonWithIcon("Connect", theme.MediaPlayIcon(), nil)
+	disconnectBtn := widget.NewButtonWithIcon("Disconnect", theme.MediaStopIcon(), nil)
 
-	adbButtons := []*widget.Button{refreshBtn, connectBtn, disconnectBtn}
+	adbBtns := []*widget.Button{refreshBtn, connectBtn, disconnectBtn}
 	setBusy := func(busy bool) {
-		for _, b := range adbButtons {
+		for _, b := range adbBtns {
 			if busy {
 				b.Disable()
 			} else {
@@ -169,7 +173,7 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 
 	refreshBtn.OnTapped = func() {
 		setBusy(true)
-		appendLog("Scanning ADB devices...")
+		appendLog("Scanning devices...")
 		go func() {
 			list, err := android.ListDevices()
 			fyne.Do(func() {
@@ -198,16 +202,16 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 			appendLog("Select a device first")
 			return
 		}
-		port := strings.TrimSpace(proxyPortEntry.Text)
+		port := strings.TrimSpace(portEntry.Text)
 		if port == "" {
 			port = "8080"
 		}
 		setBusy(true)
-		appendLog("Connecting %s (port %s)...", dev.Serial, port)
+		appendLog("Connecting %s...", dev.Serial)
 		go func() {
 			var certPath string
 			var err error
-			if installCertCheck.Checked {
+			if certCheck.Checked {
 				certPath, _, err = proxy.EnsureCA(certDir)
 			}
 			if err == nil {
@@ -215,16 +219,16 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 					ProxyPort:   port,
 					Serial:      dev.Serial,
 					CACertPath:  certPath,
-					InstallCert: installCertCheck.Checked,
+					InstallCert: certCheck.Checked,
 				})
 			}
 			fyne.Do(func() {
 				setBusy(false)
 				if err != nil {
-					appendLog("Connect failed: %v", err)
+					appendLog("Failed: %v", err)
 				} else {
-					appendLog("Connected %s on port %s", dev.Serial, port)
-					deviceStatus.SetText(dev.Serial + " — connected")
+					appendLog("Connected %s on :%s", dev.Serial, port)
+					deviceStatus.SetText(dev.Serial + " connected")
 				}
 			})
 		}()
@@ -242,26 +246,37 @@ func NewCaptureTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 			fyne.Do(func() {
 				setBusy(false)
 				if err != nil {
-					appendLog("Disconnect failed: %v", err)
+					appendLog("Failed: %v", err)
 				} else {
 					appendLog("Disconnected %s", dev.Serial)
-					deviceStatus.SetText(dev.Serial + " — disconnected")
 				}
 			})
 		}()
 	}
 
-	deviceRow := container.NewBorder(nil, nil, nil, refreshBtn, deviceSelect)
-	androidConfig := container.NewHBox(
-		widget.NewLabel("Port:"), proxyPortEntry,
-		installCertCheck,
-		connectBtn, disconnectBtn,
+	androidSection := container.NewVBox(
+		container.NewBorder(nil, nil, nil, refreshBtn, deviceSelect),
+		container.NewHBox(
+			widget.NewLabelWithStyle("Port", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true}),
+			portEntry,
+			certCheck,
+			layout.NewSpacer(),
+			connectBtn,
+			disconnectBtn,
+		),
+		deviceStatus,
 	)
 
-	// ==================== Combined Layout ====================
-	proxyCard := widget.NewCard("Proxy", "", container.NewVBox(proxyRow, proxyControls))
-	androidCard := widget.NewCard("Android Device", "", container.NewVBox(deviceRow, deviceStatus, androidConfig))
+	// ==================== Layout ====================
+	topPanel := container.NewVBox(
+		widget.NewLabelWithStyle("PROXY", fyne.TextAlignLeading, fyne.TextStyle{Bold: true, Monospace: true}),
+		proxySection,
+		widget.NewSeparator(),
+		widget.NewLabelWithStyle("ANDROID", fyne.TextAlignLeading, fyne.TextStyle{Bold: true, Monospace: true}),
+		androidSection,
+		widget.NewSeparator(),
+		widget.NewLabelWithStyle("LOG", fyne.TextAlignLeading, fyne.TextStyle{Bold: true, Monospace: true}),
+	)
 
-	top := container.NewVBox(proxyCard, androidCard, widget.NewSeparator())
-	return container.NewBorder(top, nil, nil, nil, logScroll)
+	return container.NewBorder(topPanel, nil, nil, nil, logScroll)
 }

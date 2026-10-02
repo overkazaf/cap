@@ -21,7 +21,7 @@
 | 能力 | Burp Suite | mitmproxy | HTTP Toolkit | **cap** |
 |------|:----------:|:---------:|:------------:|:-------:|
 | CLI 自动化 | ✗ 纯 GUI | ✓ mitmdump | ✗ 纯 GUI | **✓** |
-| 原生桌面 GUI | ✗ Java/Swing | △ mitmweb (简陋) | ✓ Electron (重) | **✓ Fyne (原生)** |
+| 原生桌面 GUI | ✗ Java/Swing | △ mitmweb (简陋) | ✓ Electron (重) | **✓ Wails (原生)** |
 | LLM/Agent 友好输出 | ✗ XML/HAR | △ HAR (冗余) | △ HAR | **✓ 精简 JSONL** |
 | 多语言代码生成 | ✗ | △ curl + Python | ✗ | **✓ 5 种语言** |
 | 签名参数自动识别 | ✗ | ✗ | ✗ | **✓** |
@@ -44,7 +44,7 @@
 flowchart TB
     subgraph 客户端["客户端层"]
         CLI["cap CLI<br/>(cobra)"]
-        GUI["cap GUI<br/>(Fyne 原生)"]
+        GUI["cap GUI<br/>(Wails 原生)"]
         TTY["内嵌终端<br/>(PTY)"]
     end
 
@@ -176,7 +176,7 @@ cap context import --jadx ./jadx-output/
 ```
 
 ### 桌面 GUI
-基于 Fyne 的原生桌面应用（单二进制，非 Electron）：
+基于 Wails 的原生桌面应用（单二进制，非 Electron）：
 - **Capture 标签**：代理启停 + Android 设备连接
 - **Flows 标签**：可过滤表格 + 详情面板 + 内联代码导出
 - **Terminal 标签**：多 Tab 内嵌终端 (PTY)

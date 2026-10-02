@@ -15,7 +15,13 @@
 ---
 
 <p align="center">
-  <img src="docs/screenshots/capture-tab.png" alt="cap GUI" width="800">
+  <img src="docs/screenshots/capture-tab.png" alt="cap Capture" width="800"><br>
+  <em>Capture — proxy controls + Android device management</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/flows-tab.png" alt="cap Flows" width="800"><br>
+  <em>Flows — request table, params analysis, code export, replay</em>
 </p>
 
 ## Why cap?

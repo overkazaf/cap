@@ -1,0 +1,56 @@
+internal/proxy/cert.go
+  936d2bd656d204f8 1-101
+internal/proxy/proxy_test.go
+  936d2bd656d204f8 1-486
+internal/proxy/proxy.go
+  936d2bd656d204f8 1-289
+go.mod
+  936d2bd656d204f8 4-10
+internal/proxy/filter.go
+  936d2bd656d204f8 1-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "6024d58159413a893d93ddec36ffd283925b6b0a",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 967,
+      "total_deletions": 49,
+      "accepted_lines": 918,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "go.mod": {
+          "additions": 8,
+          "deletions": 1,
+          "accepted_lines": 7
+        },
+        "internal/proxy/proxy_test.go": {
+          "additions": 533,
+          "deletions": 47,
+          "accepted_lines": 486
+        },
+        "internal/proxy/filter.go": {
+          "additions": 35,
+          "accepted_lines": 35
+        },
+        "internal/proxy/proxy.go": {
+          "additions": 289,
+          "accepted_lines": 289
+        },
+        "internal/proxy/cert.go": {
+          "additions": 102,
+          "deletions": 1,
+          "accepted_lines": 101
+        }
+      }
+    }
+  }
+}

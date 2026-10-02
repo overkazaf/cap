@@ -1,0 +1,30 @@
+internal/gui/export_tab.go
+  936d2bd656d204f8 4-5,7,9-12,15-33,35-37,39-186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "4df0b89300a5a685390049d01c575e5eda5d88a4",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 189,
+      "total_deletions": 12,
+      "accepted_lines": 178,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/export_tab.go": {
+          "additions": 189,
+          "deletions": 12,
+          "accepted_lines": 178
+        }
+      }
+    }
+  }
+}

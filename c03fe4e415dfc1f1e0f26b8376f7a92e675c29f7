@@ -1,0 +1,218 @@
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 1-13
+cmd/cap/frontend/dist/assets/index-3OVQ8j6a.js
+  936d2bd656d204f8 1-2
+frontend/dist/assets/index-D6MOXyW4.css
+  936d2bd656d204f8 1
+internal/gui/capture_tab.go
+  936d2bd656d204f8 25,28,35-37,42,45,47-48,65,72,82,88,104,119,124-129,132,135,138,148-149,153-157,159-161,163,165,176,205,210,214,222,228,230-231,249,257-267,270-279,281
+cmd/cap/main.go
+  936d2bd656d204f8 4,11-13,15
+frontend/package.json
+  936d2bd656d204f8 1-16
+frontend/vite.config.js
+  936d2bd656d204f8 1-9
+internal/wailsgui/app.go
+  936d2bd656d204f8 1-347
+README.md
+  936d2bd656d204f8 17-20,28,51,150,225,243,283
+README_CN.md
+  936d2bd656d204f8 24,47,179
+internal/gui/flows_tab.go
+  936d2bd656d204f8 79,127-131
+frontend/dist/assets/index-3OVQ8j6a.js
+  936d2bd656d204f8 1-2
+internal/gui/terminal_tab.go
+  936d2bd656d204f8 14-17,20-38,48,50-52,56-58,66,71,77-78,82-83,86,111
+go.mod
+  936d2bd656d204f8 14,17,29,34,38,42-48,54-55,58,60,65-70,72-74,76
+frontend/src/main.js
+  936d2bd656d204f8 1-7
+internal/gui/theme.go
+  936d2bd656d204f8 46-47,52-53,60-69,78,80,82-96,102-104,109-123,126-140,143-157,160-174,177-183
+internal/gui/terminal.go
+  936d2bd656d204f8 18-22,25-39,48,120-125
+frontend/dist/index.html
+  936d2bd656d204f8 1-13
+.gitignore
+  936d2bd656d204f8 8
+frontend/index.html
+  936d2bd656d204f8 1-12
+internal/cli/gui.go
+  936d2bd656d204f8 4,6,9-13,16-21,35-41,43-57
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 1-308
+frontend/src/pages/Terminal.svelte
+  936d2bd656d204f8 1-154
+frontend/src/App.svelte
+  936d2bd656d204f8 1-147
+frontend/svelte.config.js
+  936d2bd656d204f8 1-5
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 1-209
+internal/gui/app.go
+  936d2bd656d204f8 7,36-38
+cmd/cap/frontend/dist/assets/index-D6MOXyW4.css
+  936d2bd656d204f8 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "c03fe4e415dfc1f1e0f26b8376f7a92e675c29f7",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 1600,
+      "total_deletions": 186,
+      "accepted_lines": 1573,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "README.md": {
+          "additions": 10,
+          "deletions": 6,
+          "accepted_lines": 10
+        },
+        "frontend/dist/assets/index-3OVQ8j6a.js": {
+          "additions": 2,
+          "accepted_lines": 2
+        },
+        "internal/gui/terminal.go": {
+          "additions": 27,
+          "deletions": 12,
+          "accepted_lines": 27
+        },
+        "frontend/src/pages/Terminal.svelte": {
+          "additions": 154,
+          "accepted_lines": 154
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 308,
+          "accepted_lines": 308
+        },
+        "internal/gui/theme.go": {
+          "additions": 102,
+          "deletions": 40,
+          "accepted_lines": 102
+        },
+        "frontend/index.html": {
+          "additions": 12,
+          "accepted_lines": 12
+        },
+        "frontend/vite.config.js": {
+          "additions": 9,
+          "accepted_lines": 9
+        },
+        "frontend/dist/assets/index-EaRQySkA.js": {
+          "additions": 2
+        },
+        "frontend/dist/assets/index-aH5I4IiZ.css": {
+          "additions": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-EaRQySkA.js": {
+          "additions": 2
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 15,
+          "deletions": 2,
+          "accepted_lines": 13
+        },
+        "internal/gui/capture_tab.go": {
+          "additions": 67,
+          "deletions": 52,
+          "accepted_lines": 67
+        },
+        "frontend/svelte.config.js": {
+          "additions": 5,
+          "accepted_lines": 5
+        },
+        "README_CN.md": {
+          "additions": 3,
+          "deletions": 3,
+          "accepted_lines": 3
+        },
+        "internal/gui/flows_tab.go": {
+          "additions": 6,
+          "deletions": 2,
+          "accepted_lines": 6
+        },
+        "cmd/cap/frontend/dist/assets/index-3OVQ8j6a.js": {
+          "additions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/frontend/dist/assets/index-D6MOXyW4.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-aH5I4IiZ.css": {
+          "additions": 1
+        },
+        "internal/gui/app.go": {
+          "additions": 4,
+          "deletions": 3,
+          "accepted_lines": 4
+        },
+        "frontend/src/main.js": {
+          "additions": 7,
+          "accepted_lines": 7
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 209,
+          "accepted_lines": 209
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 356,
+          "deletions": 9,
+          "accepted_lines": 347
+        },
+        "frontend/dist/assets/index-D6MOXyW4.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        ".gitignore": {
+          "additions": 3,
+          "deletions": 2,
+          "accepted_lines": 1
+        },
+        "frontend/dist/index.html": {
+          "additions": 15,
+          "deletions": 2,
+          "accepted_lines": 13
+        },
+        "frontend/src/App.svelte": {
+          "additions": 147,
+          "accepted_lines": 147
+        },
+        "internal/cli/gui.go": {
+          "additions": 39,
+          "deletions": 6,
+          "accepted_lines": 36
+        },
+        "internal/gui/terminal_tab.go": {
+          "additions": 40,
+          "deletions": 41,
+          "accepted_lines": 40
+        },
+        "go.mod": {
+          "additions": 26,
+          "deletions": 3,
+          "accepted_lines": 26
+        },
+        "cmd/cap/main.go": {
+          "additions": 5,
+          "accepted_lines": 5
+        },
+        "frontend/package.json": {
+          "additions": 19,
+          "deletions": 3,
+          "accepted_lines": 16
+        }
+      }
+    }
+  }
+}

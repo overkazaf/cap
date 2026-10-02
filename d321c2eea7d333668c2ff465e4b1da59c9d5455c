@@ -1,0 +1,43 @@
+internal/gui/android_tab.go
+  936d2bd656d204f8 160
+internal/gui/proxy_tab.go
+  936d2bd656d204f8 24
+internal/gui/state.go
+  936d2bd656d204f8 4-5,13-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "d321c2eea7d333668c2ff465e4b1da59c9d5455c",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 12,
+      "total_deletions": 29,
+      "accepted_lines": 11,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/gui/state.go": {
+          "additions": 9,
+          "accepted_lines": 9
+        },
+        "internal/gui/proxy_tab.go": {
+          "additions": 1,
+          "deletions": 14,
+          "accepted_lines": 1
+        },
+        "internal/gui/android_tab.go": {
+          "additions": 2,
+          "deletions": 15,
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

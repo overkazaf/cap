@@ -1,0 +1,47 @@
+internal/context/context.go
+  936d2bd656d204f8 1-19
+internal/context/context_test.go
+  936d2bd656d204f8 1-303
+internal/context/jadx.go
+  936d2bd656d204f8 1-214
+internal/context/matcher.go
+  936d2bd656d204f8 1-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "2cdc3aa0b9780265f8e70338ee1bd3a609743055",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 621,
+      "total_deletions": 0,
+      "accepted_lines": 621,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/context/jadx.go": {
+          "additions": 214,
+          "accepted_lines": 214
+        },
+        "internal/context/context_test.go": {
+          "additions": 303,
+          "accepted_lines": 303
+        },
+        "internal/context/matcher.go": {
+          "additions": 85,
+          "accepted_lines": 85
+        },
+        "internal/context/context.go": {
+          "additions": 19,
+          "accepted_lines": 19
+        }
+      }
+    }
+  }
+}

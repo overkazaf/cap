@@ -158,41 +158,41 @@
 </div>
 
 <style>
-  .page { display: flex; flex-direction: column; height: 100%; background: #0a0a0f; }
+  .page { display: flex; flex-direction: column; height: 100%; background: var(--bg, #0a0a0f); }
 
   .tab-bar {
-    display: flex; background: #111116; border-bottom: 1px solid #1e1e24;
+    display: flex; background: var(--bg-panel, #111116); border-bottom: 1px solid var(--border, #1e1e24);
     padding: 0 8px; align-items: stretch;
   }
   .tab-item {
     padding: 8px 12px; font-size: 12px; border: none;
-    background: transparent; color: #71717a; cursor: pointer;
+    background: transparent; color: var(--fg-dim, #71717a); cursor: pointer;
     font-family: inherit; display: flex; align-items: center; gap: 6px;
     border-bottom: 2px solid transparent; transition: all 0.1s;
   }
-  .tab-item:hover { color: #a1a1aa; }
-  .tab-active { color: #34d399; border-bottom-color: #34d399; }
+  .tab-item:hover { color: var(--fg-muted, #a1a1aa); }
+  .tab-active { color: var(--green, #34d399); border-bottom-color: var(--green, #34d399); }
   .tab-close {
-    font-size: 14px; color: #52525b; background: transparent; border: none;
+    font-size: 14px; color: var(--fg-faint, #52525b); background: transparent; border: none;
     cursor: pointer; width: 16px; height: 16px; padding: 0;
     display: flex; align-items: center; justify-content: center; border-radius: 3px;
   }
-  .tab-close:hover { background: #27272a; color: #f87171; }
+  .tab-close:hover { background: var(--bg-btn, #27272a); color: var(--red, #f87171); }
   .tab-add {
     padding: 8px 12px; font-size: 12px; border: none;
-    background: transparent; color: #3f3f46; cursor: pointer; font-family: inherit;
+    background: transparent; color: var(--fg-ghost, #3f3f46); cursor: pointer; font-family: inherit;
   }
-  .tab-add:hover { color: #34d399; }
+  .tab-add:hover { color: var(--green, #34d399); }
 
   .terminal-container { flex: 1; display: flex; min-height: 0; }
   .terminal-container.hidden { display: none; }
 
   .term-area {
     flex: 1; width: 100%; resize: none; border: none; outline: none;
-    background: #0a0a0f; color: #34d399;
+    background: var(--bg, #0a0a0f); color: var(--green, #34d399);
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 13px; line-height: 1.6; padding: 12px 16px;
-    caret-color: #34d399;
+    caret-color: var(--green, #34d399);
   }
   .term-area::selection { background: rgba(52, 211, 153, 0.2); }
 </style>

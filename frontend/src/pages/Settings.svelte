@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte'
+  import { applyTheme } from '../lib/theme.js'
 
   let settings = {}
   let saved = false
@@ -10,12 +11,14 @@
   }
 
   async function setSetting(key, value) {
-    settings[key] = value
+    settings[key] = String(value)
     settings = settings
     try {
-      await window.go.wailsgui.App.SetSetting(key, value)
+      await window.go.wailsgui.App.SetSetting(key, String(value))
       saved = true
       setTimeout(() => saved = false, 1500)
+      if (key === 'theme') applyTheme(value)
+      if (key === 'font_size') document.documentElement.style.setProperty('--font-size', value + 'px')
     } catch(e) { console.error(e) }
   }
 
@@ -112,52 +115,52 @@
 <style>
   .page { height: 100%; overflow-y: auto; padding: 24px; }
   .settings-container { max-width: 600px; margin: 0 auto; }
-  h1 { font-size: 18px; color: #e4e4e7; margin-bottom: 24px; font-weight: 600; }
+  h1 { font-size: 18px; color: var(--fg, #e4e4e7); margin-bottom: 24px; font-weight: 600; }
 
   .saved-badge {
     position: fixed; top: 12px; right: 80px;
     padding: 4px 12px; font-size: 11px; background: #064e3b;
-    color: #34d399; border-radius: 4px; border: 1px solid #059669;
+    color: var(--green, #34d399); border-radius: 4px; border: 1px solid #059669;
   }
 
   .section { margin-bottom: 28px; }
   .section h2 {
-    font-size: 11px; color: #38bdf8; letter-spacing: 1.5px;
-    margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid #1e1e24;
+    font-size: 11px; color: var(--accent, #38bdf8); letter-spacing: 1.5px;
+    margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid var(--border, #1e1e24);
   }
 
   .setting-row {
     display: flex; align-items: center; gap: 12px;
     padding: 8px 0; min-height: 36px;
   }
-  .setting-label { font-size: 13px; color: #a1a1aa; min-width: 160px; }
+  .setting-label { font-size: 13px; color: var(--fg-muted, #a1a1aa); min-width: 160px; }
   .setting-input {
-    background: #111116; border: 1px solid #27272a; border-radius: 6px;
-    padding: 6px 10px; color: #e4e4e7; font-size: 12px; font-family: inherit;
+    background: var(--bg-panel, #111116); border: 1px solid var(--border, #27272a); border-radius: 6px;
+    padding: 6px 10px; color: var(--fg, #e4e4e7); font-size: 12px; font-family: inherit;
     outline: none; flex: 1;
   }
-  .setting-input:focus { border-color: #38bdf8; }
+  .setting-input:focus { border-color: var(--accent, #38bdf8); }
   .setting-input.small { max-width: 100px; flex: none; }
-  .setting-value { font-size: 12px; color: #71717a; min-width: 40px; }
-  .setting-hint { font-size: 11px; color: #52525b; }
+  .setting-value { font-size: 12px; color: var(--fg-dim, #71717a); min-width: 40px; }
+  .setting-hint { font-size: 11px; color: var(--fg-faint, #52525b); }
 
   .range {
-    flex: 1; accent-color: #38bdf8; max-width: 200px;
+    flex: 1; accent-color: var(--accent, #38bdf8); max-width: 200px;
   }
 
   .theme-options { display: flex; gap: 8px; }
   .theme-btn {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
-    padding: 8px 12px; border: 1px solid #27272a; border-radius: 8px;
+    padding: 8px 12px; border: 1px solid var(--border, #27272a); border-radius: 8px;
     background: transparent; cursor: pointer; font-family: inherit;
-    font-size: 11px; color: #71717a; transition: all 0.15s;
+    font-size: 11px; color: var(--fg-dim, #71717a); transition: all 0.15s;
   }
-  .theme-btn:hover { border-color: #52525b; color: #a1a1aa; }
-  .theme-active { border-color: #38bdf8; color: #38bdf8; background: #0d1b2a; }
+  .theme-btn:hover { border-color: var(--fg-faint, #52525b); color: var(--fg-muted, #a1a1aa); }
+  .theme-active { border-color: var(--accent, #38bdf8); color: var(--accent, #38bdf8); background: #0d1b2a; }
   .theme-preview {
-    width: 32px; height: 20px; border-radius: 4px; border: 1px solid #27272a;
+    width: 32px; height: 20px; border-radius: 4px; border: 1px solid var(--border, #27272a);
   }
-  .theme-preview.dark { background: #0a0a0f; }
+  .theme-preview.dark { background: var(--bg, #0a0a0f); }
   .theme-preview.light { background: #fafafa; }
   .theme-preview.mocha { background: #1e1e2e; }
   .theme-preview.nord { background: #2e3440; }
@@ -166,7 +169,7 @@
   .toggle input { opacity: 0; width: 0; height: 0; }
   .toggle-slider {
     position: absolute; cursor: pointer; inset: 0;
-    background: #27272a; border-radius: 10px; transition: 0.2s;
+    background: var(--bg-btn, #27272a); border-radius: 10px; transition: 0.2s;
   }
   .toggle-slider::before {
     content: ''; position: absolute; width: 16px; height: 16px;
@@ -176,6 +179,6 @@
   .toggle input:checked + .toggle-slider { background: #064e3b; }
   .toggle input:checked + .toggle-slider::before { transform: translateX(16px); background: #34d399; }
 
-  .about-info { font-size: 13px; color: #71717a; }
-  .about-sub { font-size: 12px; color: #52525b; margin-top: 4px; }
+  .about-info { font-size: 13px; color: var(--fg-dim, #71717a); }
+  .about-sub { font-size: 12px; color: var(--fg-faint, #52525b); margin-top: 4px; }
 </style>

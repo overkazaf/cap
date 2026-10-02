@@ -10,25 +10,26 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/overkazaf/cap/internal/export/agent"
+	"github.com/overkazaf/cap/internal/export/codegen"
 	"github.com/overkazaf/cap/internal/types"
 )
 
-// Flow table column indices.
 const (
 	colID = iota
 	colMethod
 	colStatus
 	colHost
 	colPath
+	colURL
 	colLatency
 	flowColumnCount
 )
 
-// maxBodyPreview caps how many raw bytes of a request/response body are
-// rendered in the detail panel, so a large (e.g. binary) payload can't
-// freeze the UI thread with an enormous label.
 const maxBodyPreview = 256 * 1024
 
 var flowColumnHeaders = [flowColumnCount]string{
@@ -37,26 +38,24 @@ var flowColumnHeaders = [flowColumnCount]string{
 	colStatus:  "Status",
 	colHost:    "Host",
 	colPath:    "Path",
+	colURL:     "URL",
 	colLatency: "Latency",
 }
 
-// flowsTab owns the widgets and in-memory state backing the Flows list tab:
-// a table of captured flows on the left, and a detail panel for whichever
-// flow is currently selected on the right.
 type flowsTab struct {
-	state *AppState
+	state  *AppState
+	window fyne.Window
 
 	table *widget.Table
+	flows []*types.Flow // full snapshot
+	shown []*types.Flow // filtered view
 
-	// flows is a snapshot of state.GetFlows(), rebuilt on every refresh.
-	// It is only ever read or written from the Fyne UI goroutine: the
-	// initial build happens before the window is shown, and later updates
-	// are marshalled onto the UI goroutine via fyne.Do in the
-	// OnFlowsChanged handler.
-	flows []*types.Flow
+	filterHost   *widget.Entry
+	filterMethod *widget.Select
+	filterSearch *widget.Entry
 
-	selectedID  string // ID of the flow shown in the detail panel, "" if none
-	selectedRow int    // row currently highlighted in the table for selectedID
+	selectedID  string
+	selectedRow int
 
 	detail          fyne.CanvasObject
 	overviewForm    *widget.Form
@@ -64,17 +63,41 @@ type flowsTab struct {
 	respHeadersForm *widget.Form
 	reqBody         *widget.Label
 	respBody        *widget.Label
+
+	exportLang   *widget.Select
+	exportOutput *widget.Entry
 }
 
-// NewFlowsTab builds the Flows list tab: an HSplit with a table of captured
-// flows on the left (60%) and a detail panel for the selected flow on the
-// right (40%). The table refreshes automatically whenever
-// state.OnFlowsChanged fires.
 func NewFlowsTab(state *AppState, w fyne.Window) fyne.CanvasObject {
-	ft := &flowsTab{state: state}
+	ft := &flowsTab{state: state, window: w}
 
+	// --- Filter bar ---
+	ft.filterHost = widget.NewEntry()
+	ft.filterHost.SetPlaceHolder("Filter host...")
+	ft.filterHost.OnChanged = func(_ string) { ft.applyFilter() }
+
+	ft.filterMethod = widget.NewSelect([]string{"ALL", "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}, func(_ string) { ft.applyFilter() })
+	ft.filterMethod.SetSelected("ALL")
+
+	ft.filterSearch = widget.NewEntry()
+	ft.filterSearch.SetPlaceHolder("Search URL/body...")
+	ft.filterSearch.OnChanged = func(_ string) { ft.applyFilter() }
+
+	clearFilter := widget.NewButtonWithIcon("", theme.ContentClearIcon(), func() {
+		ft.filterHost.SetText("")
+		ft.filterMethod.SetSelected("ALL")
+		ft.filterSearch.SetText("")
+	})
+
+	filterBar := container.New(layout.NewFormLayout(),
+		widget.NewLabel("Host:"), ft.filterHost,
+		widget.NewLabel("Method:"), ft.filterMethod,
+		widget.NewLabel("Search:"), container.NewBorder(nil, nil, nil, clearFilter, ft.filterSearch),
+	)
+
+	// --- Table ---
 	ft.table = widget.NewTable(
-		func() (int, int) { return len(ft.flows), flowColumnCount },
+		func() (int, int) { return len(ft.shown), flowColumnCount },
 		func() fyne.CanvasObject {
 			l := widget.NewLabel("")
 			l.Truncation = fyne.TextTruncateEllipsis
@@ -93,21 +116,20 @@ func NewFlowsTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 		}
 		o.(*widget.Label).SetText(text)
 	}
-	ft.table.SetColumnWidth(colID, 70)
-	ft.table.SetColumnWidth(colMethod, 70)
-	ft.table.SetColumnWidth(colStatus, 60)
-	ft.table.SetColumnWidth(colHost, 160)
-	ft.table.SetColumnWidth(colPath, 220)
-	ft.table.SetColumnWidth(colLatency, 80)
+	ft.table.SetColumnWidth(colID, 60)
+	ft.table.SetColumnWidth(colMethod, 65)
+	ft.table.SetColumnWidth(colStatus, 55)
+	ft.table.SetColumnWidth(colHost, 150)
+	ft.table.SetColumnWidth(colPath, 180)
+	ft.table.SetColumnWidth(colURL, 300)
+	ft.table.SetColumnWidth(colLatency, 70)
 	ft.table.OnSelected = ft.onSelected
 
+	// --- Detail + Export panel ---
 	ft.buildDetailPanel()
 	ft.showEmptyDetail()
 	ft.refresh()
 
-	// Chain onto any callback that may already be registered rather than
-	// clobbering it, and hop onto the Fyne UI goroutine since flows can
-	// arrive from the proxy's own capture goroutine.
 	prev := state.OnFlowsChanged
 	state.OnFlowsChanged = func() {
 		if prev != nil {
@@ -116,28 +138,56 @@ func NewFlowsTab(state *AppState, w fyne.Window) fyne.CanvasObject {
 		fyne.Do(func() { ft.refresh() })
 	}
 
-	split := container.NewHSplit(ft.table, ft.detail)
-	split.SetOffset(0.6)
+	// --- Layout ---
+	leftTop := container.NewVBox(
+		widget.NewLabelWithStyle("Flows", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		filterBar,
+		widget.NewSeparator(),
+	)
+	leftPanel := container.NewBorder(leftTop, nil, nil, nil, ft.table)
+
+	split := container.NewHSplit(leftPanel, ft.detail)
+	split.SetOffset(0.55)
 	return split
 }
 
-// refresh reloads the flow snapshot from state and updates both the table
-// and, if the previously selected flow still exists, the detail panel.
-//
-// New flows are prepended by AppState, so the row index of an already
-// selected flow shifts every time a new one arrives. Table.Select would
-// fix the highlight but also scrolls to it, which would fight the user's
-// scroll position during live capture; so instead, when the index has
-// drifted, the stale highlight is simply cleared with UnselectAll (which
-// does not scroll) rather than left pointing at the wrong row.
+func (ft *flowsTab) applyFilter() {
+	host := strings.ToLower(strings.TrimSpace(ft.filterHost.Text))
+	method := ft.filterMethod.Selected
+	search := strings.ToLower(strings.TrimSpace(ft.filterSearch.Text))
+
+	if host == "" && (method == "" || method == "ALL") && search == "" {
+		ft.shown = ft.flows
+	} else {
+		var filtered []*types.Flow
+		for _, f := range ft.flows {
+			if host != "" && !strings.Contains(strings.ToLower(f.Host), host) {
+				continue
+			}
+			if method != "" && method != "ALL" && !strings.EqualFold(f.Method, method) {
+				continue
+			}
+			if search != "" {
+				haystack := strings.ToLower(f.URL) + strings.ToLower(string(f.ReqBody))
+				if !strings.Contains(haystack, search) {
+					continue
+				}
+			}
+			filtered = append(filtered, f)
+		}
+		ft.shown = filtered
+	}
+	ft.table.Refresh()
+}
+
 func (ft *flowsTab) refresh() {
 	ft.flows = ft.state.GetFlows()
-	ft.table.Refresh()
+	ft.applyFilter()
 
 	if ft.selectedID == "" {
 		return
 	}
-	for i, f := range ft.flows {
+	for i, f := range ft.shown {
 		if f.ID == ft.selectedID {
 			if i != ft.selectedRow {
 				ft.table.UnselectAll()
@@ -147,28 +197,27 @@ func (ft *flowsTab) refresh() {
 			return
 		}
 	}
-	// The previously selected flow is gone (e.g. ClearFlows) - reset.
 	ft.table.UnselectAll()
 	ft.showEmptyDetail()
 }
 
 func (ft *flowsTab) onSelected(id widget.TableCellID) {
-	if id.Row < 0 || id.Row >= len(ft.flows) {
+	if id.Row < 0 || id.Row >= len(ft.shown) {
 		return
 	}
 	ft.selectedRow = id.Row
-	ft.showDetail(ft.flows[id.Row])
+	ft.showDetail(ft.shown[id.Row])
 }
 
 func (ft *flowsTab) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	label := o.(*widget.Label)
-	if id.Row < 0 || id.Row >= len(ft.flows) {
+	if id.Row < 0 || id.Row >= len(ft.shown) {
 		label.Importance = widget.MediumImportance
 		label.SetText("")
 		return
 	}
 
-	f := ft.flows[id.Row]
+	f := ft.shown[id.Row]
 	label.Importance = widget.MediumImportance
 
 	var text string
@@ -184,14 +233,14 @@ func (ft *flowsTab) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		text = f.Host
 	case colPath:
 		text = f.Path
+	case colURL:
+		text = f.URL
 	case colLatency:
-		text = fmt.Sprintf("%d ms", f.LatencyMs)
+		text = fmt.Sprintf("%dms", f.LatencyMs)
 	}
 	label.SetText(text)
 }
 
-// buildDetailPanel constructs the right-hand detail widgets: a summary form
-// at the top, plus tabs for request/response headers and bodies below it.
 func (ft *flowsTab) buildDetailPanel() {
 	ft.overviewForm = widget.NewForm()
 	ft.reqHeadersForm = widget.NewForm()
@@ -199,17 +248,90 @@ func (ft *flowsTab) buildDetailPanel() {
 	ft.reqBody = newBodyLabel()
 	ft.respBody = newBodyLabel()
 
-	tabs := container.NewAppTabs(
-		container.NewTabItem("Request Headers", container.NewVScroll(ft.reqHeadersForm)),
-		container.NewTabItem("Request Body", container.NewVScroll(ft.reqBody)),
-		container.NewTabItem("Response Headers", container.NewVScroll(ft.respHeadersForm)),
-		container.NewTabItem("Response Body", container.NewVScroll(ft.respBody)),
+	detailTabs := container.NewAppTabs(
+		container.NewTabItem("Req Headers", container.NewVScroll(ft.reqHeadersForm)),
+		container.NewTabItem("Req Body", container.NewVScroll(ft.reqBody)),
+		container.NewTabItem("Resp Headers", container.NewVScroll(ft.respHeadersForm)),
+		container.NewTabItem("Resp Body", container.NewVScroll(ft.respBody)),
 	)
 
-	ft.detail = container.NewBorder(ft.overviewForm, nil, nil, nil, tabs)
+	// --- Export section (inline) ---
+	langs := []string{"cURL", "Python", "Go", "Java", "JavaScript", "Agent JSONL"}
+	ft.exportLang = widget.NewSelect(langs, nil)
+	ft.exportLang.SetSelected("cURL")
+
+	ft.exportOutput = widget.NewMultiLineEntry()
+	ft.exportOutput.TextStyle = fyne.TextStyle{Monospace: true}
+	ft.exportOutput.Wrapping = fyne.TextWrapBreak
+
+	generateBtn := widget.NewButtonWithIcon("Generate", theme.MediaPlayIcon(), func() {
+		ft.generateExport()
+	})
+	generateBtn.Importance = widget.HighImportance
+
+	copyBtn := widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
+		if ft.exportOutput.Text != "" {
+			ft.window.Clipboard().SetContent(ft.exportOutput.Text)
+		}
+	})
+
+	exportBar := container.NewHBox(
+		widget.NewLabel("Export:"),
+		ft.exportLang,
+		generateBtn,
+		copyBtn,
+	)
+
+	exportSection := container.NewBorder(exportBar, nil, nil, nil, ft.exportOutput)
+
+	// Detail: overview on top, tabs in middle, export at bottom (split)
+	topDetail := container.NewVBox(ft.overviewForm, widget.NewSeparator())
+	bottomSplit := container.NewVSplit(detailTabs, exportSection)
+	bottomSplit.SetOffset(0.55)
+
+	ft.detail = container.NewBorder(topDetail, nil, nil, nil, bottomSplit)
 }
 
-// showDetail populates the detail panel with the given flow.
+func (ft *flowsTab) generateExport() {
+	langLabel := ft.exportLang.Selected
+	langKeys := map[string]string{
+		"cURL": "curl", "Python": "python", "Go": "go",
+		"Java": "java", "JavaScript": "js",
+	}
+
+	if langLabel == "Agent JSONL" {
+		flows := ft.state.GetFlows()
+		if len(flows) == 0 {
+			ft.exportOutput.SetText("(no flows captured)")
+			return
+		}
+		out, err := agent.Format(flows, agent.FormatOptions{})
+		if err != nil {
+			ft.exportOutput.SetText(fmt.Sprintf("Error: %v", err))
+			return
+		}
+		ft.exportOutput.SetText(string(out))
+		return
+	}
+
+	if ft.selectedID == "" {
+		ft.exportOutput.SetText("(select a flow first)")
+		return
+	}
+	f := ft.state.GetFlow(ft.selectedID)
+	if f == nil {
+		ft.exportOutput.SetText("(flow not found)")
+		return
+	}
+	key := langKeys[langLabel]
+	out, err := codegen.Generate(f, key)
+	if err != nil {
+		ft.exportOutput.SetText(fmt.Sprintf("Error: %v", err))
+		return
+	}
+	ft.exportOutput.SetText(out)
+}
+
 func (ft *flowsTab) showDetail(f *types.Flow) {
 	ft.selectedID = f.ID
 
@@ -223,15 +345,17 @@ func (ft *flowsTab) showDetail(f *types.Flow) {
 	ft.respHeadersForm.Items = headerItems(f.RespHeaders)
 	ft.respHeadersForm.Refresh()
 	ft.respBody.SetText(formatBody(f.RespBody, f.RespBodyType))
+
+	// auto-generate export for selected flow
+	ft.generateExport()
 }
 
-// showEmptyDetail resets the detail panel to its no-selection placeholder.
 func (ft *flowsTab) showEmptyDetail() {
 	ft.selectedID = ""
 	ft.selectedRow = -1
 
 	ft.overviewForm.Items = []*widget.FormItem{
-		widget.NewFormItem("", newWrappingLabel("Select a flow on the left to see its details.")),
+		widget.NewFormItem("", newWrappingLabel("Select a flow to see details and export code.")),
 	}
 	ft.overviewForm.Refresh()
 
@@ -242,14 +366,14 @@ func (ft *flowsTab) showEmptyDetail() {
 	ft.respHeadersForm.Items = emptyFormItems()
 	ft.respHeadersForm.Refresh()
 	ft.respBody.SetText("")
+
+	ft.exportOutput.SetText("")
 }
 
 func emptyFormItems() []*widget.FormItem {
 	return []*widget.FormItem{widget.NewFormItem("", newWrappingLabel("-"))}
 }
 
-// overviewItems builds the summary rows shown above the detail tabs: core
-// flow metadata, plus tags, sign params and source reference when present.
 func overviewItems(f *types.Flow) []*widget.FormItem {
 	items := []*widget.FormItem{
 		widget.NewFormItem("Method", newWrappingLabel(f.Method)),
@@ -270,9 +394,6 @@ func overviewItems(f *types.Flow) []*widget.FormItem {
 	return items
 }
 
-// sourceRefItems renders the optional static-analysis source reference
-// attached to a flow: which file/class/method produced the request, and how
-// it was signed, if known.
 func sourceRefItems(ref *types.SourceRef) []*widget.FormItem {
 	loc := ref.File
 	if ref.Line > 0 {
@@ -296,8 +417,6 @@ func sourceRefItems(ref *types.SourceRef) []*widget.FormItem {
 	return items
 }
 
-// headerItems renders an HTTP header map as sorted key/value form rows, so
-// the display order is stable across refreshes.
 func headerItems(h map[string]string) []*widget.FormItem {
 	if len(h) == 0 {
 		return []*widget.FormItem{widget.NewFormItem("", newWrappingLabel("(no headers)"))}
@@ -315,9 +434,6 @@ func headerItems(h map[string]string) []*widget.FormItem {
 	return items
 }
 
-// formatBody renders a request/response body for display: pretty-printed if
-// it looks like JSON, truncated if it's unreasonably large, and a
-// placeholder if empty.
 func formatBody(body []byte, contentType string) string {
 	if len(body) == 0 {
 		return "(empty body)"
@@ -337,13 +453,11 @@ func formatBody(body []byte, contentType string) string {
 		}
 	}
 	if truncated {
-		text += "\n\n... (truncated, body exceeds preview limit)"
+		text += "\n\n... (truncated)"
 	}
 	return text
 }
 
-// statusText renders a flow's HTTP status, or "-" if no response was ever
-// recorded for it.
 func statusText(status int) string {
 	if status <= 0 {
 		return "-"
@@ -351,8 +465,6 @@ func statusText(status int) string {
 	return strconv.Itoa(status)
 }
 
-// statusImportance color-codes an HTTP status: 5xx red (danger), 4xx orange
-// (warning), everything else - including no response yet - normal.
 func statusImportance(status int) widget.Importance {
 	switch {
 	case status >= 500:
@@ -370,8 +482,6 @@ func newStatusLabel(status int) *widget.Label {
 	return l
 }
 
-// newWrappingLabel builds a selectable label that wraps long values (header
-// values, URLs, source file paths, etc.) instead of overflowing the panel.
 func newWrappingLabel(text string) *widget.Label {
 	l := widget.NewLabel(text)
 	l.Wrapping = fyne.TextWrapBreak
@@ -379,8 +489,6 @@ func newWrappingLabel(text string) *widget.Label {
 	return l
 }
 
-// newBodyLabel builds a selectable, monospace, wrapping label used to
-// display request/response bodies.
 func newBodyLabel() *widget.Label {
 	l := widget.NewLabel("")
 	l.Wrapping = fyne.TextWrapBreak

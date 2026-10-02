@@ -2,6 +2,7 @@ package wailsgui
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -187,6 +188,32 @@ func (a *App) GetFlowDetail(id string) (*FlowDetail, error) {
 		SignParams:  f.SignParams,
 		SourceRef:   f.SourceRef,
 	}, nil
+}
+
+func (a *App) ClearFlows() error {
+	flows, _ := a.store.ListFlows(types.FlowFilter{Limit: 10000})
+	for _, f := range flows {
+		a.store.DeleteFlow(f.ID)
+	}
+	a.mu.Lock()
+	a.flows = nil
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) GetBodyHex(flowID string, isReq bool) (string, error) {
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return "", err
+	}
+	body := f.RespBody
+	if isReq {
+		body = f.ReqBody
+	}
+	if len(body) == 0 {
+		return "(empty)", nil
+	}
+	return hex.EncodeToString(body), nil
 }
 
 // ==================== Export ====================

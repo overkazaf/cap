@@ -9,6 +9,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 
 	"github.com/overkazaf/cap/internal/wailsgui"
 )
@@ -34,24 +35,31 @@ func newGUICmd() *cobra.Command {
 
 			app := wailsgui.NewApp(st)
 
-			// Strip the "frontend/dist" prefix so assets are served from root
 			stripped, err := fs.Sub(frontendAssets, "frontend/dist")
 			if err != nil {
 				return fmt.Errorf("assets: %w", err)
 			}
 
 			err = wails.Run(&options.App{
-				Title:     "cap",
-				Width:     1400,
-				Height:    900,
-				MinWidth:  800,
-				MinHeight: 600,
+				Title:            "cap",
+				Width:            1400,
+				Height:           900,
+				MinWidth:         800,
+				MinHeight:        600,
+				DisableResize:    false,
+				Fullscreen:       false,
+				WindowStartState: options.Normal,
 				AssetServer: &assetserver.Options{
 					Assets: stripped,
 				},
 				OnStartup: app.Startup,
 				Bind: []interface{}{
 					app,
+				},
+				Mac: &mac.Options{
+					TitleBar:             mac.TitleBarDefault(),
+					WebviewIsTransparent: false,
+					WindowIsTranslucent:  false,
 				},
 			})
 			return err

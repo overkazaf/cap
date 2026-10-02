@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy, tick } from 'svelte'
+  import { onMount, tick } from 'svelte'
 
   let tabs = []
   let activeTabId = null
@@ -8,14 +8,20 @@
   function addTab() {
     tabCounter++
     const id = `term-${tabCounter}`
-    tabs = [...tabs, { id, label: `sh-${tabCounter}`, lines: [], input: '', ws: null }]
+    tabs = [...tabs, {
+      id,
+      label: `sh-${tabCounter}`,
+      content: '$ ',
+      cursorPos: 2,
+      inputStart: 2,
+      history: [],
+      histIdx: -1,
+    }]
     activeTabId = id
-    initShell(id)
+    focusTerminal()
   }
 
   function closeTab(id) {
-    const tab = tabs.find(t => t.id === id)
-    if (tab && tab.ws) tab.ws.close()
     tabs = tabs.filter(t => t.id !== id)
     if (activeTabId === id) {
       activeTabId = tabs.length > 0 ? tabs[tabs.length - 1].id : null
@@ -26,41 +32,90 @@
     return tabs.find(t => t.id === id)
   }
 
-  async function initShell(id) {
-    // In Wails, we can't directly use PTY from frontend.
-    // Instead, shell commands are sent to Go backend and output returned.
-    // For now, implement a simple command executor.
-    const tab = getTab(id)
-    if (tab) {
-      tab.lines = [{ text: 'cap terminal ready. Type commands below.', type: 'system' }]
-      tabs = tabs
-    }
+  async function focusTerminal() {
+    await tick()
+    const el = document.querySelector('.term-area.active')
+    if (el) { el.focus(); el.scrollTop = el.scrollHeight }
   }
 
   async function handleKeydown(event, tabId) {
-    if (event.key !== 'Enter') return
     const tab = getTab(tabId)
-    if (!tab || !tab.input.trim()) return
+    if (!tab) return
 
-    const cmd = tab.input.trim()
-    tab.input = ''
-    tab.lines = [...tab.lines, { text: `$ ${cmd}`, type: 'input' }]
-    tabs = tabs
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const input = tab.content.slice(tab.inputStart).trim()
 
-    try {
-      // Use Wails runtime to execute command
-      const result = await window.go.wailsgui.App.ExecCommand(cmd)
-      if (result) {
-        tab.lines = [...tab.lines, { text: result, type: 'output' }]
+      if (input) {
+        tab.history = [...tab.history, input]
+        tab.histIdx = -1
       }
-    } catch(e) {
-      tab.lines = [...tab.lines, { text: `error: ${e}`, type: 'error' }]
+
+      tab.content += '\n'
+
+      if (input) {
+        try {
+          const result = await window.go.wailsgui.App.ExecCommand(input)
+          if (result) tab.content += result + '\n'
+        } catch(e) {
+          tab.content += `error: ${e}\n`
+        }
+      }
+
+      tab.content += '$ '
+      tab.inputStart = tab.content.length
+      tabs = tabs
+      await tick()
+      const el = document.querySelector('.term-area.active')
+      if (el) { el.scrollTop = el.scrollHeight; el.setSelectionRange(tab.content.length, tab.content.length) }
+      return
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (tab.history.length > 0) {
+        if (tab.histIdx < 0) tab.histIdx = tab.history.length
+        tab.histIdx = Math.max(0, tab.histIdx - 1)
+        tab.content = tab.content.slice(0, tab.inputStart) + tab.history[tab.histIdx]
+        tabs = tabs
+      }
+      return
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      if (tab.histIdx >= 0) {
+        tab.histIdx++
+        if (tab.histIdx >= tab.history.length) {
+          tab.histIdx = -1
+          tab.content = tab.content.slice(0, tab.inputStart)
+        } else {
+          tab.content = tab.content.slice(0, tab.inputStart) + tab.history[tab.histIdx]
+        }
+        tabs = tabs
+      }
+      return
+    }
+
+    // Prevent editing before the prompt
+    const el = event.target
+    if (el.selectionStart < tab.inputStart && (event.key === 'Backspace' || event.key.length === 1)) {
+      event.preventDefault()
+      el.setSelectionRange(tab.content.length, tab.content.length)
+    }
+  }
+
+  function handleInput(event, tabId) {
+    const tab = getTab(tabId)
+    if (!tab) return
+    const el = event.target
+    if (el.value.length < tab.inputStart) {
+      el.value = tab.content
+      el.setSelectionRange(tab.content.length, tab.content.length)
+    } else {
+      tab.content = el.value
     }
     tabs = tabs
-
-    await tick()
-    const el = document.querySelector('.terminal-output.active')
-    if (el) el.scrollTop = el.scrollHeight
   }
 
   onMount(() => addTab())
@@ -69,31 +124,24 @@
 <div class="page">
   <div class="tab-bar">
     {#each tabs as tab}
-      <button class="tab-item" class:tab-active={tab.id === activeTabId} on:click={() => activeTabId = tab.id}>
+      <button class="tab-item" class:tab-active={tab.id === activeTabId} on:click={() => { activeTabId = tab.id; focusTerminal() }}>
         {tab.label}
-        <span class="tab-close" on:click|stopPropagation={() => closeTab(tab.id)}>×</span>
+        <button class="tab-close" on:click|stopPropagation={() => closeTab(tab.id)}>×</button>
       </button>
     {/each}
-    <button class="tab-add" on:click={addTab}>+</button>
+    <button class="tab-add" on:click={addTab}>+ New</button>
   </div>
 
   {#each tabs as tab}
     <div class="terminal-container" class:hidden={tab.id !== activeTabId}>
-      <div class="terminal-output" class:active={tab.id === activeTabId}>
-        {#each tab.lines as line}
-          <div class="term-line {line.type}">{line.text}</div>
-        {/each}
-      </div>
-      <div class="terminal-input-row">
-        <span class="prompt">cap$</span>
-        <input
-          type="text"
-          class="terminal-input"
-          bind:value={tab.input}
-          on:keydown={(e) => handleKeydown(e, tab.id)}
-          placeholder="type command..."
-        />
-      </div>
+      <textarea
+        class="term-area" class:active={tab.id === activeTabId}
+        bind:value={tab.content}
+        on:keydown={(e) => handleKeydown(e, tab.id)}
+        on:input={(e) => handleInput(e, tab.id)}
+        spellcheck="false"
+        autocomplete="off"
+      ></textarea>
     </div>
   {/each}
 </div>
@@ -106,7 +154,7 @@
     padding: 0 8px; align-items: stretch;
   }
   .tab-item {
-    padding: 8px 14px; font-size: 12px; border: none;
+    padding: 8px 12px; font-size: 12px; border: none;
     background: transparent; color: #71717a; cursor: pointer;
     font-family: inherit; display: flex; align-items: center; gap: 6px;
     border-bottom: 2px solid transparent; transition: all 0.1s;
@@ -114,41 +162,26 @@
   .tab-item:hover { color: #a1a1aa; }
   .tab-active { color: #34d399; border-bottom-color: #34d399; }
   .tab-close {
-    font-size: 14px; color: #52525b; width: 16px; height: 16px;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 3px;
+    font-size: 14px; color: #52525b; background: transparent; border: none;
+    cursor: pointer; width: 16px; height: 16px; padding: 0;
+    display: flex; align-items: center; justify-content: center; border-radius: 3px;
   }
   .tab-close:hover { background: #27272a; color: #f87171; }
   .tab-add {
-    padding: 8px 12px; font-size: 16px; border: none;
+    padding: 8px 12px; font-size: 12px; border: none;
     background: transparent; color: #3f3f46; cursor: pointer; font-family: inherit;
   }
   .tab-add:hover { color: #34d399; }
 
-  .terminal-container {
-    flex: 1; display: flex; flex-direction: column; min-height: 0;
-  }
+  .terminal-container { flex: 1; display: flex; min-height: 0; }
   .terminal-container.hidden { display: none; }
 
-  .terminal-output {
-    flex: 1; overflow-y: auto; padding: 12px 16px;
-    font-size: 13px; line-height: 1.7;
-  }
-  .term-line { white-space: pre-wrap; word-break: break-all; }
-  .term-line.system { color: #3f3f46; font-style: italic; }
-  .term-line.input { color: #34d399; }
-  .term-line.output { color: #a1a1aa; }
-  .term-line.error { color: #f87171; }
-
-  .terminal-input-row {
-    display: flex; align-items: center;
-    padding: 8px 16px; background: #111116;
-    border-top: 1px solid #1e1e24;
-  }
-  .prompt { color: #34d399; font-size: 13px; margin-right: 8px; font-weight: 600; }
-  .terminal-input {
-    flex: 1; background: transparent; border: none; color: #e4e4e7;
-    font-size: 13px; font-family: inherit; outline: none;
+  .term-area {
+    flex: 1; width: 100%; resize: none; border: none; outline: none;
+    background: #0a0a0f; color: #34d399;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px; line-height: 1.6; padding: 12px 16px;
     caret-color: #34d399;
   }
+  .term-area::selection { background: rgba(52, 211, 153, 0.2); }
 </style>

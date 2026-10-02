@@ -1,4 +1,6 @@
 <script>
+  import { onMount, onDestroy } from 'svelte'
+
   let flows = []
   let selectedFlow = null
   let filterHost = ''
@@ -7,19 +9,32 @@
   let exportLang = 'curl'
   let exportCode = ''
   let activeTab = 'req-headers'
+  let bodyFormat = 'auto'
+  let signResults = []
 
   const languages = ['curl', 'python', 'go', 'java', 'js']
 
   async function loadFlows() {
     try {
-      flows = await window.go.wailsgui.App.GetFlows(filterHost, filterMethod, filterSearch, 200)
-      flows = flows || []
+      flows = await window.go.wailsgui.App.GetFlows(filterHost, filterMethod, filterSearch, 200) || []
+    } catch(e) { console.error(e) }
+  }
+
+  async function clearFlows() {
+    try {
+      await window.go.wailsgui.App.ClearFlows()
+      flows = []
+      selectedFlow = null
+      exportCode = ''
+      signResults = []
     } catch(e) { console.error(e) }
   }
 
   async function selectFlow(f) {
     try {
       selectedFlow = await window.go.wailsgui.App.GetFlowDetail(f.id)
+      bodyFormat = 'auto'
+      signResults = []
       generateExport()
     } catch(e) { console.error(e) }
   }
@@ -38,36 +53,79 @@
     } catch(e) { exportCode = `Error: ${e}` }
   }
 
-  function copyExport() {
-    navigator.clipboard.writeText(exportCode)
+  async function analyzeSign() {
+    if (!selectedFlow) return
+    try {
+      signResults = await window.go.wailsgui.App.AnalyzeSign(selectedFlow.id) || []
+    } catch(e) { signResults = [{ param_name: 'error', value: String(e), encoding: '', possible_algs: [], confidence: 0 }] }
   }
 
-  function statusClass(status) {
-    if (status >= 500) return 'status-5xx'
-    if (status >= 400) return 'status-4xx'
-    if (status >= 300) return 'status-3xx'
+  async function getHexBody(isReq) {
+    if (!selectedFlow) return ''
+    try {
+      return await window.go.wailsgui.App.GetBodyHex(selectedFlow.id, isReq)
+    } catch(e) { return `Error: ${e}` }
+  }
+
+  function copyText(text) {
+    navigator.clipboard.writeText(text)
+  }
+
+  function statusClass(s) {
+    if (s >= 500) return 'status-5xx'
+    if (s >= 400) return 'status-4xx'
+    if (s >= 300) return 'status-3xx'
     return 'status-2xx'
   }
 
-  function methodClass(method) {
-    return `method-${method.toLowerCase()}`
-  }
+  function methodClass(m) { return `method-${m.toLowerCase()}` }
 
-  function formatBody(body, type) {
-    if (!body) return ''
-    if (type && type.includes('json')) {
+  function formatBody(body, type, fmt) {
+    if (!body) return '(empty)'
+    if (fmt === 'hex') return '(loading hex...)'
+    if (fmt === 'json' || (fmt === 'auto' && type && type.includes('json'))) {
       try { return JSON.stringify(JSON.parse(body), null, 2) } catch(e) {}
     }
     return body
   }
 
-  // Auto-refresh every 2s
+  function formatHex(hexStr) {
+    if (!hexStr || hexStr === '(empty)') return hexStr
+    let lines = []
+    for (let i = 0; i < hexStr.length; i += 32) {
+      const chunk = hexStr.slice(i, i + 32)
+      const offset = (i / 2).toString(16).padStart(8, '0')
+      const pairs = chunk.match(/.{1,2}/g) || []
+      const ascii = pairs.map(h => {
+        const c = parseInt(h, 16)
+        return c >= 32 && c < 127 ? String.fromCharCode(c) : '.'
+      }).join('')
+      lines.push(`${offset}  ${pairs.join(' ').padEnd(48)}  ${ascii}`)
+    }
+    return lines.join('\n')
+  }
+
+  let hexCache = {}
+  async function showHex(isReq) {
+    const key = `${selectedFlow.id}-${isReq}`
+    if (!hexCache[key]) {
+      hexCache[key] = await getHexBody(isReq)
+    }
+    return formatHex(hexCache[key])
+  }
+
+  let reqHex = ''
+  let respHex = ''
+  async function switchBodyFormat(fmt) {
+    bodyFormat = fmt
+    if (fmt === 'hex' && selectedFlow) {
+      reqHex = await showHex(true)
+      respHex = await showHex(false)
+    }
+  }
+
   let interval
-  import { onMount, onDestroy } from 'svelte'
-  onMount(() => {
-    loadFlows()
-    interval = setInterval(loadFlows, 2000)
-  })
+  onMount(() => { loadFlows(); interval = setInterval(loadFlows, 2000) })
   onDestroy(() => clearInterval(interval))
 </script>
 
@@ -75,19 +133,20 @@
   <div class="filter-bar">
     <input type="text" placeholder="Host" bind:value={filterHost} on:input={loadFlows} class="filter-input" />
     <select bind:value={filterMethod} on:change={loadFlows} class="filter-select">
-      <option value="">All Methods</option>
+      <option value="">All</option>
       <option>GET</option><option>POST</option><option>PUT</option>
       <option>DELETE</option><option>PATCH</option>
     </select>
-    <input type="text" placeholder="Search URL/body..." bind:value={filterSearch} on:input={loadFlows} class="filter-input wide" />
-    <span class="flow-count">{flows.length} flows</span>
+    <input type="text" placeholder="Search..." bind:value={filterSearch} on:input={loadFlows} class="filter-input wide" />
+    <span class="flow-count">{flows.length}</span>
+    <button class="btn-clear" on:click={clearFlows} title="Clear all flows">✕ Clear</button>
   </div>
 
   <div class="main-split">
     <div class="flow-list">
       <div class="list-header">
-        <span class="col-method">Method</span>
-        <span class="col-status">Status</span>
+        <span class="col-method">MTD</span>
+        <span class="col-status">ST</span>
         <span class="col-host">Host</span>
         <span class="col-path">Path</span>
         <span class="col-latency">ms</span>
@@ -95,21 +154,17 @@
       </div>
       <div class="list-body">
         {#each flows as f}
-          <div
-            class="flow-row"
-            class:selected={selectedFlow && selectedFlow.id === f.id}
-            on:click={() => selectFlow(f)}
-          >
+          <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} on:click={() => selectFlow(f)}>
             <span class="col-method {methodClass(f.method)}">{f.method}</span>
             <span class="col-status {statusClass(f.status)}">{f.status}</span>
             <span class="col-host">{f.host}</span>
             <span class="col-path" title={f.url}>{f.path}</span>
             <span class="col-latency">{f.latency_ms}</span>
             <span class="col-time">{f.time}</span>
-          </div>
+          </button>
         {/each}
         {#if flows.length === 0}
-          <div class="empty">No flows captured yet. Start the proxy and generate traffic.</div>
+          <div class="empty">No flows. Start the proxy and generate traffic.</div>
         {/if}
       </div>
     </div>
@@ -118,14 +173,30 @@
       <div class="detail-panel">
         <div class="detail-header">
           <span class="detail-method {methodClass(selectedFlow.method)}">{selectedFlow.method}</span>
-          <span class="detail-url">{selectedFlow.url}</span>
+          <span class="detail-url" title={selectedFlow.url}>{selectedFlow.url}</span>
+          <button class="btn-icon" on:click={() => copyText(selectedFlow.url)} title="Copy URL">📋</button>
           <span class="{statusClass(selectedFlow.status)}">{selectedFlow.status}</span>
           <span class="detail-latency">{selectedFlow.latency_ms}ms</span>
         </div>
 
         {#if selectedFlow.sign_params && selectedFlow.sign_params.length > 0}
           <div class="sign-badge">
-            🔐 Sign params: {selectedFlow.sign_params.join(', ')}
+            <span>🔐 Sign: {selectedFlow.sign_params.join(', ')}</span>
+            <button class="btn-analyze" on:click={analyzeSign}>Analyze Algorithm</button>
+          </div>
+        {/if}
+
+        {#if signResults.length > 0}
+          <div class="sign-results">
+            {#each signResults as sr}
+              <div class="sign-row">
+                <span class="sign-param">{sr.param_name}</span>
+                <span class="sign-encoding">{sr.encoding}</span>
+                <span class="sign-algs">{(sr.possible_algs || []).join(', ')}</span>
+                <span class="sign-conf">{(sr.confidence * 100).toFixed(0)}%</span>
+                {#if sr.input_guess}<span class="sign-guess">{sr.input_guess}</span>{/if}
+              </div>
+            {/each}
           </div>
         {/if}
 
@@ -140,6 +211,16 @@
               {tab.label}
             </button>
           {/each}
+          <div class="tab-spacer"></div>
+          {#if activeTab.includes('body')}
+            <div class="format-switch">
+              {#each ['auto', 'json', 'hex', 'raw'] as fmt}
+                <button class="fmt-btn" class:fmt-active={bodyFormat === fmt} on:click={() => switchBodyFormat(fmt)}>
+                  {fmt}
+                </button>
+              {/each}
+            </div>
+          {/if}
         </div>
 
         <div class="detail-content">
@@ -153,7 +234,10 @@
               {/each}
             </div>
           {:else if activeTab === 'req-body'}
-            <pre class="body-pre">{formatBody(selectedFlow.req_body, selectedFlow.body_type)}</pre>
+            <div class="body-toolbar">
+              <button class="btn-icon" on:click={() => copyText(selectedFlow.req_body)} title="Copy body">📋 Copy</button>
+            </div>
+            <pre class="body-pre">{bodyFormat === 'hex' ? reqHex : formatBody(selectedFlow.req_body, selectedFlow.body_type, bodyFormat)}</pre>
           {:else if activeTab === 'resp-headers'}
             <div class="headers">
               {#each Object.entries(selectedFlow.resp_headers || {}).sort() as [k, v]}
@@ -164,13 +248,19 @@
               {/each}
             </div>
           {:else if activeTab === 'resp-body'}
-            <pre class="body-pre">{formatBody(selectedFlow.resp_body, selectedFlow.body_type)}</pre>
+            <div class="body-toolbar">
+              <button class="btn-icon" on:click={() => copyText(selectedFlow.resp_body)} title="Copy body">📋 Copy</button>
+              {#if selectedFlow.body_type && selectedFlow.body_type.includes('json')}
+                <button class="btn-icon" on:click={() => copyText(JSON.stringify(JSON.parse(selectedFlow.resp_body), null, 2))} title="Copy formatted JSON">📋 Copy JSON</button>
+              {/if}
+            </div>
+            <pre class="body-pre">{bodyFormat === 'hex' ? respHex : formatBody(selectedFlow.resp_body, selectedFlow.body_type, bodyFormat)}</pre>
           {/if}
         </div>
 
         <div class="export-section">
           <div class="export-bar">
-            <span class="export-label">Export</span>
+            <span class="export-label">EXPORT</span>
             {#each languages as lang}
               <button class="lang-btn" class:lang-active={exportLang === lang} on:click={() => { exportLang = lang; generateExport() }}>
                 {lang}
@@ -178,7 +268,7 @@
             {/each}
             <button class="lang-btn" on:click={exportAgent}>JSONL</button>
             <div class="spacer"></div>
-            <button class="btn-copy" on:click={copyExport}>Copy</button>
+            <button class="btn-copy" on:click={() => copyText(exportCode)}>Copy</button>
           </div>
           <pre class="export-code">{exportCode}</pre>
         </div>
@@ -196,48 +286,51 @@
   .page { display: flex; flex-direction: column; height: 100%; }
   .filter-bar {
     display: flex; gap: 8px; padding: 8px 12px;
-    background: #111116; border-bottom: 1px solid #1e1e24;
-    align-items: center;
+    background: #111116; border-bottom: 1px solid #1e1e24; align-items: center;
   }
   .filter-input, .filter-select {
     background: #0a0a0f; border: 1px solid #27272a; border-radius: 4px;
-    padding: 5px 8px; color: #e4e4e7; font-size: 12px; font-family: inherit;
-    outline: none;
+    padding: 5px 8px; color: #e4e4e7; font-size: 12px; font-family: inherit; outline: none;
   }
   .filter-input:focus { border-color: #38bdf8; }
   .filter-input.wide { flex: 1; }
   .filter-select { cursor: pointer; }
-  .flow-count { font-size: 11px; color: #52525b; margin-left: auto; }
+  .flow-count { font-size: 11px; color: #52525b; }
+  .btn-clear {
+    padding: 4px 10px; font-size: 11px; border: 1px solid #3f3f46;
+    background: transparent; color: #71717a; border-radius: 4px; cursor: pointer; font-family: inherit;
+  }
+  .btn-clear:hover { background: #27272a; color: #f87171; border-color: #f87171; }
 
   .main-split { flex: 1; display: flex; min-height: 0; }
 
-  .flow-list { width: 50%; border-right: 1px solid #1e1e24; display: flex; flex-direction: column; }
+  .flow-list { width: 45%; border-right: 1px solid #1e1e24; display: flex; flex-direction: column; }
   .list-header {
     display: flex; padding: 6px 12px; font-size: 10px; color: #52525b;
-    text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #1e1e24;
-    background: #0d0d12;
+    text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #1e1e24; background: #0d0d12;
   }
   .list-body { flex: 1; overflow-y: auto; }
   .flow-row {
-    display: flex; padding: 5px 12px; font-size: 12px;
-    border-bottom: 1px solid #0f0f14; cursor: pointer; transition: background 0.1s;
+    display: flex; width: 100%; padding: 5px 12px; font-size: 12px;
+    border: none; border-bottom: 1px solid #0f0f14; cursor: pointer;
+    transition: background 0.1s; background: transparent; color: inherit;
+    font-family: inherit; text-align: left;
   }
   .flow-row:hover { background: #14141a; }
   .flow-row.selected { background: #1a1a28; border-left: 2px solid #38bdf8; }
 
-  .col-method { width: 56px; font-weight: 600; flex-shrink: 0; }
-  .col-status { width: 42px; flex-shrink: 0; text-align: center; }
-  .col-host { width: 140px; flex-shrink: 0; color: #a1a1aa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .col-method { width: 50px; font-weight: 600; flex-shrink: 0; }
+  .col-status { width: 36px; flex-shrink: 0; text-align: center; }
+  .col-host { width: 130px; flex-shrink: 0; color: #a1a1aa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .col-path { flex: 1; color: #71717a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .col-latency { width: 48px; flex-shrink: 0; text-align: right; color: #52525b; }
-  .col-time { width: 80px; flex-shrink: 0; text-align: right; color: #3f3f46; }
+  .col-latency { width: 42px; flex-shrink: 0; text-align: right; color: #52525b; }
+  .col-time { width: 76px; flex-shrink: 0; text-align: right; color: #3f3f46; }
 
   .method-get { color: #34d399; }
   .method-post { color: #38bdf8; }
   .method-put { color: #fbbf24; }
   .method-delete { color: #f87171; }
   .method-patch { color: #c084fc; }
-
   .status-2xx { color: #34d399; }
   .status-3xx { color: #fbbf24; }
   .status-4xx { color: #fb923c; }
@@ -247,42 +340,81 @@
 
   .detail-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .detail-header {
-    display: flex; gap: 8px; padding: 10px 14px; align-items: center;
+    display: flex; gap: 8px; padding: 8px 12px; align-items: center;
     background: #0d0d12; border-bottom: 1px solid #1e1e24; font-size: 12px;
   }
   .detail-method { font-weight: 700; }
   .detail-url { flex: 1; color: #a1a1aa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .detail-latency { color: #52525b; }
+  .btn-icon {
+    background: transparent; border: none; cursor: pointer; font-size: 11px; color: #71717a;
+    padding: 2px 6px; border-radius: 3px;
+  }
+  .btn-icon:hover { background: #27272a; color: #e4e4e7; }
 
   .sign-badge {
-    padding: 4px 14px; font-size: 11px; background: #1c1917;
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 12px; font-size: 11px; background: #1c1917;
     color: #fbbf24; border-bottom: 1px solid #1e1e24;
   }
+  .btn-analyze {
+    padding: 3px 10px; font-size: 10px; border: 1px solid #fbbf24;
+    background: transparent; color: #fbbf24; border-radius: 4px;
+    cursor: pointer; font-family: inherit; margin-left: auto;
+  }
+  .btn-analyze:hover { background: #422006; }
+
+  .sign-results {
+    padding: 6px 12px; background: #0f0f14; border-bottom: 1px solid #1e1e24; font-size: 11px;
+  }
+  .sign-row {
+    display: flex; gap: 12px; padding: 3px 0; align-items: center;
+  }
+  .sign-param { color: #38bdf8; font-weight: 600; min-width: 60px; }
+  .sign-encoding { color: #a1a1aa; min-width: 40px; }
+  .sign-algs { color: #34d399; flex: 1; }
+  .sign-conf { color: #fbbf24; font-weight: 600; }
+  .sign-guess { color: #71717a; font-style: italic; }
 
   .detail-tabs {
-    display: flex; background: #0d0d12; border-bottom: 1px solid #1e1e24;
+    display: flex; background: #0d0d12; border-bottom: 1px solid #1e1e24; align-items: center;
   }
   .tab-btn {
-    padding: 6px 14px; font-size: 11px; border: none;
+    padding: 6px 12px; font-size: 11px; border: none;
     background: transparent; color: #71717a; cursor: pointer; font-family: inherit;
     border-bottom: 2px solid transparent; transition: all 0.1s;
   }
   .tab-btn:hover { color: #a1a1aa; }
   .tab-active { color: #38bdf8; border-bottom-color: #38bdf8; }
+  .tab-spacer { flex: 1; }
 
-  .detail-content { flex: 1; overflow-y: auto; padding: 8px 14px; min-height: 120px; }
-  .headers { font-size: 12px; }
+  .format-switch { display: flex; gap: 2px; margin-right: 8px; }
+  .fmt-btn {
+    padding: 2px 8px; font-size: 10px; border: 1px solid #27272a;
+    background: transparent; color: #52525b; border-radius: 3px;
+    cursor: pointer; font-family: inherit; text-transform: uppercase;
+  }
+  .fmt-btn:hover { color: #a1a1aa; }
+  .fmt-active { background: #1e3a5f; border-color: #38bdf8; color: #7dd3fc; }
+
+  .detail-content { flex: 1; overflow-y: auto; padding: 0; min-height: 120px; }
+  .headers { font-size: 12px; padding: 8px 12px; }
   .header-row { display: flex; padding: 3px 0; border-bottom: 1px solid #0f0f14; }
   .header-key { width: 180px; color: #38bdf8; flex-shrink: 0; }
   .header-val { color: #a1a1aa; word-break: break-all; }
-  .body-pre { font-size: 12px; color: #a1a1aa; white-space: pre-wrap; word-break: break-all; margin: 0; }
+
+  .body-toolbar { display: flex; gap: 4px; padding: 4px 12px; border-bottom: 1px solid #0f0f14; }
+  .body-pre {
+    font-size: 12px; color: #a1a1aa; white-space: pre-wrap; word-break: break-all;
+    margin: 0; padding: 8px 12px; user-select: text;
+  }
 
   .export-section { border-top: 1px solid #1e1e24; max-height: 200px; display: flex; flex-direction: column; }
   .export-bar {
-    display: flex; align-items: center; gap: 4px; padding: 6px 10px;
+    display: flex; align-items: center; gap: 4px; padding: 5px 10px;
     background: #0d0d12; border-bottom: 1px solid #1e1e24;
   }
-  .export-label { font-size: 10px; color: #52525b; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 4px; }
+  .export-label { font-size: 10px; color: #52525b; letter-spacing: 0.5px; margin-right: 4px; }
   .lang-btn {
     padding: 3px 8px; font-size: 11px; border: 1px solid #27272a;
     background: transparent; color: #71717a; border-radius: 4px;
@@ -293,11 +425,10 @@
   .spacer { flex: 1; }
   .btn-copy {
     padding: 3px 10px; font-size: 11px; border: 1px solid #27272a;
-    background: #1a1a22; color: #a1a1aa; border-radius: 4px;
-    cursor: pointer; font-family: inherit;
+    background: #1a1a22; color: #a1a1aa; border-radius: 4px; cursor: pointer; font-family: inherit;
   }
   .btn-copy:hover { background: #27272a; }
-  .export-code { flex: 1; overflow-y: auto; padding: 8px 12px; font-size: 11px; color: #a1a1aa; margin: 0; white-space: pre-wrap; word-break: break-all; }
+  .export-code { flex: 1; overflow-y: auto; padding: 8px 12px; font-size: 11px; color: #a1a1aa; margin: 0; white-space: pre-wrap; word-break: break-all; user-select: text; }
 
   .detail-empty {
     flex: 1; display: flex; flex-direction: column;

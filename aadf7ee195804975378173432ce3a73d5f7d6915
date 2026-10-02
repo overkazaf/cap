@@ -1,0 +1,54 @@
+go.mod
+  936d2bd656d204f8 4-17
+internal/store/sqlite/pragma_test.go
+  936d2bd656d204f8 1-39
+internal/store/sqlite/sqlite.go
+  936d2bd656d204f8 1-361
+internal/store/sqlite/sqlite_test.go
+  936d2bd656d204f8 1-371
+internal/store/sqlite/codec.go
+  936d2bd656d204f8 1-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "aadf7ee195804975378173432ce3a73d5f7d6915",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 838,
+      "total_deletions": 1,
+      "accepted_lines": 837,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/store/sqlite/pragma_test.go": {
+          "additions": 39,
+          "accepted_lines": 39
+        },
+        "internal/store/sqlite/sqlite_test.go": {
+          "additions": 371,
+          "accepted_lines": 371
+        },
+        "go.mod": {
+          "additions": 15,
+          "deletions": 1,
+          "accepted_lines": 14
+        },
+        "internal/store/sqlite/codec.go": {
+          "additions": 52,
+          "accepted_lines": 52
+        },
+        "internal/store/sqlite/sqlite.go": {
+          "additions": 361,
+          "accepted_lines": 361
+        }
+      }
+    }
+  }
+}

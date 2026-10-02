@@ -1,6 +1,6 @@
 package store
 
-import "github.com/nongjiawu/cap/internal/types"
+import "github.com/overkazaf/cap/internal/types"
 
 type Store interface {
 	SaveFlow(flow *types.Flow) error

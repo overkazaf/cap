@@ -22,7 +22,7 @@ import (
 
 	"github.com/elazarl/goproxy"
 
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // Options configures a Proxy.

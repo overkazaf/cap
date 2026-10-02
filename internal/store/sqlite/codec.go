@@ -3,7 +3,7 @@ package sqlite
 import (
 	"encoding/json"
 
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // marshalJSON encodes v (a map or slice field of types.Flow) as a JSON

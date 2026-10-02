@@ -3,7 +3,7 @@
 // Retrofit/OkHttp call sites and matching flow method+path against them.
 package context
 
-import "github.com/nongjiawu/cap/internal/types"
+import "github.com/overkazaf/cap/internal/types"
 
 // Mapping associates an HTTP method+path pattern (e.g. "POST /api/v1/login")
 // with the location in decompiled source code that issues that request.

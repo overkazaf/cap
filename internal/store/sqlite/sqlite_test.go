@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nongjiawu/cap/internal/store/sqlite"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/store/sqlite"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // newTestStore returns an in-memory SQLiteStore that is closed automatically

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nongjiawu/cap/internal/proxy"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/proxy"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // startProxy starts a Proxy built from opts, filling in a loopback

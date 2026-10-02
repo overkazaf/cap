@@ -12,8 +12,8 @@ import (
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 
-	"github.com/nongjiawu/cap/internal/store"
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/store"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 var _ store.Store = (*SQLiteStore)(nil)

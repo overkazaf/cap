@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/nongjiawu/cap/internal/types"
+	"github.com/overkazaf/cap/internal/types"
 )
 
 // defaultMaxBodySize is used when FormatOptions.MaxBodySize is not set.

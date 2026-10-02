@@ -1,0 +1,121 @@
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/App.svelte
+  936d2bd656d204f8 2-3,19-27,44,66-68,70,73,78-79,84,91,93-94,98
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 458,461-462,464,467,470,472-473,476,478,484,489-490,495,499-500,504-517,521,523-525,528,533,536-537,539,542,547,551,557,562-566,569,573,576-577,582-583,586-587,591-593,595,597,602,608,610,612-613,616-617,620-621,623-624,629,634-635,638-639,643,646,648-649,652-653,659,665,668,670,673
+frontend/src/pages/Terminal.svelte
+  936d2bd656d204f8 161,164,169,173-174,176,180,183,185,192,195
+frontend/dist/assets/index-DY_G5hBy.css
+  936d2bd656d204f8 1
+frontend/src/pages/Settings.svelte
+  936d2bd656d204f8 3,14,17,20-21,118,123,128-129,136,138-139,142,144-145,148,154,156,158-159,161,163,172,182-183
+frontend/src/lib/theme.js
+  936d2bd656d204f8 1-142
+cmd/cap/frontend/dist/assets/index-CZVGf3WY.js
+  936d2bd656d204f8 1-7,17
+cmd/cap/frontend/dist/assets/index-DY_G5hBy.css
+  936d2bd656d204f8 1
+frontend/dist/assets/index-CZVGf3WY.js
+  936d2bd656d204f8 1-7,17
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 141-142,144-145,148-149,151,158-159,162,164,166,168,170-171,173-174,179,181,184,187,189-190
+frontend/src/pages/Plugins.svelte
+  936d2bd656d204f8 175-176,180,182,185,188,190-191,193-194,196,201-202,205-206,210,212-213,219,222-223,225-226,230,235,239,244,252,254,256-257,261,267-268,271,275
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "268f7d591d63c8c150539aac1fdfbf7817c2047f",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 392,
+      "total_deletions": 234,
+      "accepted_lines": 392,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-DeEG4nw9.js": {
+          "deletions": 17
+        },
+        "frontend/src/pages/Terminal.svelte": {
+          "additions": 11,
+          "deletions": 11,
+          "accepted_lines": 11
+        },
+        "frontend/src/pages/Plugins.svelte": {
+          "additions": 37,
+          "deletions": 37,
+          "accepted_lines": 37
+        },
+        "cmd/cap/frontend/dist/assets/index-B9DR2I1K.css": {
+          "deletions": 1
+        },
+        "frontend/src/pages/Settings.svelte": {
+          "additions": 25,
+          "deletions": 22,
+          "accepted_lines": 25
+        },
+        "cmd/cap/frontend/dist/assets/index-CZVGf3WY.js": {
+          "additions": 17,
+          "accepted_lines": 17
+        },
+        "frontend/src/lib/theme.js": {
+          "additions": 142,
+          "accepted_lines": 142
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 90,
+          "deletions": 90,
+          "accepted_lines": 90
+        },
+        "cmd/cap/frontend/dist/assets/index-DY_G5hBy.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-CZVGf3WY.js": {
+          "additions": 17,
+          "accepted_lines": 17
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-DY_G5hBy.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-DeEG4nw9.js": {
+          "deletions": 17
+        },
+        "frontend/src/App.svelte": {
+          "additions": 24,
+          "deletions": 11,
+          "accepted_lines": 24
+        },
+        "frontend/dist/assets/index-B9DR2I1K.css": {
+          "deletions": 1
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 23,
+          "deletions": 23,
+          "accepted_lines": 23
+        }
+      }
+    }
+  }
+}

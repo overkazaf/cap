@@ -1,0 +1,67 @@
+frontend/dist/assets/index-DtmOsBG3.js
+  936d2bd656d204f8 1-8,10,20
+internal/cli/gui.go
+  936d2bd656d204f8 55-56
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 3,5-12,14,16,19-20,93-103
+cmd/cap/frontend/dist/assets/index-DtmOsBG3.js
+  936d2bd656d204f8 1-8,10,20
+frontend/src/lib/captureState.js
+  936d2bd656d204f8 1-16
+internal/wailsgui/app.go
+  936d2bd656d204f8 81-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "ec54ed14ece76aa11a30e24c50bd761982e2c56d",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 98,
+      "total_deletions": 53,
+      "accepted_lines": 98,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/assets/index-DtmOsBG3.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        },
+        "internal/cli/gui.go": {
+          "additions": 2,
+          "deletions": 1,
+          "accepted_lines": 2
+        },
+        "frontend/src/lib/captureState.js": {
+          "additions": 16,
+          "accepted_lines": 16
+        },
+        "frontend/dist/assets/index-Bmkkgd8Z.js": {
+          "deletions": 20
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 25,
+          "deletions": 12,
+          "accepted_lines": 25
+        },
+        "cmd/cap/frontend/dist/assets/index-DtmOsBG3.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-Bmkkgd8Z.js": {
+          "deletions": 20
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 15,
+          "accepted_lines": 15
+        }
+      }
+    }
+  }
+}

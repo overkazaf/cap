@@ -129,7 +129,34 @@
     tabs = tabs
   }
 
-  onMount(() => addTab())
+  function handleGlobalKey(e) {
+    // Ctrl+T / Cmd+T: new tab
+    if ((e.ctrlKey || e.metaKey) && e.key === 't') {
+      e.preventDefault()
+      addTab()
+    }
+    // Ctrl+W / Cmd+W: close current tab
+    if ((e.ctrlKey || e.metaKey) && e.key === 'w') {
+      e.preventDefault()
+      if (activeTabId && tabs.length > 0) closeTab(activeTabId)
+    }
+    // Ctrl+Tab: next tab
+    if (e.ctrlKey && e.key === 'Tab') {
+      e.preventDefault()
+      const idx = tabs.findIndex(t => t.id === activeTabId)
+      if (idx >= 0) {
+        const next = (idx + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length
+        activeTabId = tabs[next].id
+        focusTerminal()
+      }
+    }
+  }
+
+  onMount(() => {
+    addTab()
+    window.addEventListener('keydown', handleGlobalKey)
+    return () => window.removeEventListener('keydown', handleGlobalKey)
+  })
 </script>
 
 <div class="page">

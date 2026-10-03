@@ -2,6 +2,7 @@ package wailsgui
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -519,6 +520,92 @@ func (a *App) GetHostIP() string {
 
 func (a *App) GetVersion() string {
 	return "0.2.0"
+}
+
+// ==================== Device Screen ====================
+
+func (a *App) CaptureScreen(serial string) (string, error) {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "exec-out", "screencap", "-p")
+	cmd := exec.Command("adb", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("screencap: %w", err)
+	}
+	return "data:image/png;base64," + base64Encode(out), nil
+}
+
+func (a *App) DeviceTap(serial string, x, y int) error {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "input", "tap", fmt.Sprintf("%d", x), fmt.Sprintf("%d", y))
+	return exec.Command("adb", args...).Run()
+}
+
+func (a *App) DeviceSwipe(serial string, x1, y1, x2, y2, duration int) error {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "input", "swipe",
+		fmt.Sprintf("%d", x1), fmt.Sprintf("%d", y1),
+		fmt.Sprintf("%d", x2), fmt.Sprintf("%d", y2),
+		fmt.Sprintf("%d", duration))
+	return exec.Command("adb", args...).Run()
+}
+
+func (a *App) DeviceBack(serial string) error {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "input", "keyevent", "4")
+	return exec.Command("adb", args...).Run()
+}
+
+func (a *App) DeviceHome(serial string) error {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "input", "keyevent", "3")
+	return exec.Command("adb", args...).Run()
+}
+
+func (a *App) GetScreenSize(serial string) ([]int, error) {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "wm", "size")
+	out, err := exec.Command("adb", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	// Parse "Physical size: 1080x2400"
+	s := strings.TrimSpace(string(out))
+	parts := strings.Split(s, ": ")
+	if len(parts) < 2 {
+		return []int{1080, 2400}, nil
+	}
+	dims := strings.Split(parts[len(parts)-1], "x")
+	if len(dims) < 2 {
+		return []int{1080, 2400}, nil
+	}
+	w := 1080
+	h := 2400
+	fmt.Sscanf(dims[0], "%d", &w)
+	fmt.Sscanf(dims[1], "%d", &h)
+	return []int{w, h}, nil
+}
+
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 // ==================== API Grouping ====================

@@ -5,6 +5,7 @@
   import Flows from './pages/Flows.svelte'
   import Terminal from './pages/Terminal.svelte'
   import Plugins from './pages/Plugins.svelte'
+  import Rules from './pages/Rules.svelte'
   import DeepTrace from './pages/DeepTrace.svelte'
   import Settings from './pages/Settings.svelte'
 
@@ -14,6 +15,7 @@
     { id: 'capture', label: 'Capture', icon: '⚡' },
     { id: 'flows', label: 'Flows', icon: '📡' },
     { id: 'terminal', label: 'Terminal', icon: '⌨' },
+    { id: 'rules', label: 'Rules', icon: '🎯' },
     { id: 'plugins', label: 'Plugins', icon: '🔌' },
     { id: 'trace', label: 'Trace', icon: '🔬' },
     { id: 'settings', label: 'Settings', icon: '⚙' },
@@ -53,6 +55,8 @@
       <Flows />
     {:else if currentPage === 'terminal'}
       <Terminal />
+    {:else if currentPage === 'rules'}
+      <Rules />
     {:else if currentPage === 'plugins'}
       <Plugins />
     {:else if currentPage === 'trace'}

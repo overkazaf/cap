@@ -210,9 +210,18 @@
     if (!selectedDevice) return
     log('Starting frida-server...')
     try {
-      await window.go.wailsgui.App.StartFrida(selectedDevice)
-      log('Frida started')
-      setTimeout(checkFrida, 1000)
+      const out = await window.go.wailsgui.App.StartFrida(selectedDevice)
+      if (out) log(out)
+      log('Frida start command sent, checking...')
+      // Wait for frida to actually start, then check
+      setTimeout(async () => {
+        await checkFrida()
+        if (fridaStatus && fridaStatus.status === 'running') {
+          log(`Frida running (PID: ${fridaStatus.pid || '?'})`)
+        } else {
+          log('Frida may still be starting, click Check again')
+        }
+      }, 2000)
     } catch(e) { log(`Frida failed: ${e}`) }
   }
 

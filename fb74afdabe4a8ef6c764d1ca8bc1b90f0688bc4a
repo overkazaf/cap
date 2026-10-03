@@ -1,0 +1,87 @@
+frontend/dist/assets/index-CscMd9GC.js
+  936d2bd656d204f8 1-11,21
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 2,34,36-39,251,253,266,299-387,524-525,528-529,536-543,545-555,990-991,996-998,1000-1022
+internal/wailsgui/app.go
+  936d2bd656d204f8 4,10-12,710-713,724-751
+frontend/dist/assets/index-iqr0gf7B.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/assets/index-CscMd9GC.js
+  936d2bd656d204f8 1-11,21
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/assets/index-iqr0gf7B.css
+  936d2bd656d204f8 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "fb74afdabe4a8ef6c764d1ca8bc1b90f0688bc4a",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 234,
+      "total_deletions": 85,
+      "accepted_lines": 234,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/assets/index-CscMd9GC.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "cmd/cap/frontend/dist/assets/index-CscMd9GC.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-CYtkCMbs.css": {
+          "deletions": 1
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 36,
+          "deletions": 1,
+          "accepted_lines": 36
+        },
+        "frontend/dist/assets/index-iqr0gf7B.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-hJv7mBMW.js": {
+          "deletions": 21
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 150,
+          "deletions": 36,
+          "accepted_lines": 150
+        },
+        "cmd/cap/frontend/dist/assets/index-iqr0gf7B.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-hJv7mBMW.js": {
+          "deletions": 21
+        },
+        "cmd/cap/frontend/dist/assets/index-CYtkCMbs.css": {
+          "deletions": 1
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        }
+      }
+    }
+  }
+}

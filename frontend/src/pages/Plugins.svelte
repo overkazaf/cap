@@ -55,6 +55,9 @@ function analyze(flow) {
         editCode = examples[idx].code
         isNew = true
         runOutput = ''
+        // Auto-save so it's immediately runnable
+        await savePlugin()
+        runOutput = `Example "${editName}" loaded and saved`
       }
     } catch(e) { console.error(e) }
   }
@@ -91,6 +94,10 @@ function analyze(flow) {
 
   async function runPlugin() {
     if (!editName || !runFlowId.trim()) { runOutput = 'Enter a flow ID (e.g. f1)'; return }
+    // Auto-save before running
+    if (isNew || editCode) {
+      await savePlugin()
+    }
     try {
       const result = await window.go.wailsgui.App.RunPlugin(editName, runFlowId.trim())
       runOutput = result.error ? `Error: ${result.error}` : result.output

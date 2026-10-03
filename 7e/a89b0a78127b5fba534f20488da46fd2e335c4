@@ -1,0 +1,28 @@
+internal/wailsgui/app.go
+  936d2bd656d204f8 1190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "7ea89b0a78127b5fba534f20488da46fd2e335c4",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/wailsgui/app.go": {
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

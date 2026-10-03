@@ -1,0 +1,87 @@
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 2,6,15-32,43-48,54,56,61-70,76,81-89,93-98,123,132-140,142-163,168-170,172,176-201,204,206-237,239-254,257-272,276-279,292-299,302-303,307-308,312-313,323,325-326,328-329,331-349,353,355-359
+cmd/cap/frontend/dist/assets/index-CvRBVaNl.css
+  936d2bd656d204f8 1
+frontend/dist/assets/index-CvRBVaNl.css
+  936d2bd656d204f8 1
+internal/wailsgui/app.go
+  936d2bd656d204f8 41-56,66-70,100-103,108-110,114-115,125,158-311
+cmd/cap/frontend/dist/assets/index-BQzfNqZZ.js
+  936d2bd656d204f8 1-8,18
+frontend/dist/assets/index-BQzfNqZZ.js
+  936d2bd656d204f8 1-8,18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "f76273885e1e87bb1dcd5f59510ced0faaded6c1",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 463,
+      "total_deletions": 114,
+      "accepted_lines": 463,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap/frontend/dist/assets/index-BkcwwIQe.js": {
+          "deletions": 18
+        },
+        "cmd/cap/frontend/dist/assets/index-Baz5esJU.css": {
+          "deletions": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-CvRBVaNl.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 236,
+          "deletions": 65,
+          "accepted_lines": 236
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 185,
+          "deletions": 7,
+          "accepted_lines": 185
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-Baz5esJU.css": {
+          "deletions": 1
+        },
+        "frontend/dist/assets/index-CvRBVaNl.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-BQzfNqZZ.js": {
+          "additions": 18,
+          "accepted_lines": 18
+        },
+        "cmd/cap/frontend/dist/assets/index-BQzfNqZZ.js": {
+          "additions": 18,
+          "accepted_lines": 18
+        },
+        "frontend/dist/assets/index-BkcwwIQe.js": {
+          "deletions": 18
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        }
+      }
+    }
+  }
+}

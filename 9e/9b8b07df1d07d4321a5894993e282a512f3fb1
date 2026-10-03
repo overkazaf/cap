@@ -1,0 +1,37 @@
+internal/proxy/proxy.go
+  936d2bd656d204f8 35,38-45,193-197,257-261
+internal/wailsgui/app.go
+  936d2bd656d204f8 17,40-42,70-75,125-128,913-953
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "9e9b8b07df1d07d4321a5894993e282a512f3fb1",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 75,
+      "total_deletions": 14,
+      "accepted_lines": 75,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/proxy/proxy.go": {
+          "additions": 20,
+          "deletions": 5,
+          "accepted_lines": 20
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 55,
+          "deletions": 9,
+          "accepted_lines": 55
+        }
+      }
+    }
+  }
+}

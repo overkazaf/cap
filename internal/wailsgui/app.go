@@ -353,7 +353,7 @@ type FlowDetail struct {
 
 func (a *App) GetFlows(host, method, search string, limit int) []FlowSummary {
 	if limit <= 0 {
-		limit = 200
+		limit = 10000
 	}
 	flows, _ := a.store.ListFlows(types.FlowFilter{
 		Host: host, Method: method, Search: search, Limit: limit,

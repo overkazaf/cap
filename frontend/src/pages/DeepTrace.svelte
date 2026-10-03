@@ -7,19 +7,56 @@
   let tracing = false
   let result = null
   let activeView = 'graph'
+  let traceLog = []
+  let traceStartTime = 0
 
   async function loadFlows() {
     try { flows = await window.go.wailsgui.App.GetFlows('', '', '', 100) || [] } catch(e) {}
+  }
+
+  function tlog(msg) {
+    const elapsed = ((Date.now() - traceStartTime) / 1000).toFixed(1)
+    traceLog = [...traceLog, `[${elapsed}s] ${msg}`]
   }
 
   async function runTrace() {
     if (!selectedFlowId || !packageName.trim()) return
     tracing = true
     result = null
+    traceLog = []
+    traceStartTime = Date.now()
+    activeView = 'steps'
+
+    tlog('Starting Deep Trace...')
+    tlog(`Flow: ${selectedFlowId}`)
+    tlog(`Package: ${packageName.trim()}`)
+    tlog('Pulling APK from device...')
+
     try {
       result = await window.go.wailsgui.App.DeepTrace(selectedFlowId, packageName.trim())
+
+      // Show steps from result
+      if (result.steps) {
+        for (const s of result.steps) {
+          const icon = s.status === 'ok' ? '✓' : s.status === 'skip' ? '⊘' : '✗'
+          tlog(`${icon} ${s.name}: ${s.detail} (${s.duration_ms}ms)`)
+        }
+      }
+
+      // Summary
+      const dex = result.dex_strings?.length || 0
+      const java = result.java_trace?.length || 0
+      const native = result.native_trace?.length || 0
+      const edges = result.call_graph?.length || 0
+      tlog(`Done: ${dex} DEX matches, ${java} Java refs, ${native} native refs, ${edges} call edges`)
+      tlog(`Tools: ${(result.tools_used || []).join(', ') || 'pure Go'}`)
+
+      if (edges > 0) activeView = 'graph'
+      else if (dex > 0) activeView = 'dex'
+      else if (java > 0) activeView = 'java'
     } catch(e) {
-      result = { summary: `Error: ${e}`, java_trace: [], native_trace: [], call_graph: [], mermaid: '' }
+      tlog(`ERROR: ${e}`)
+      result = { summary: `Error: ${e}`, steps: [], dex_strings: [], java_trace: [], native_trace: [], call_graph: [], mermaid: '' }
     }
     tracing = false
   }
@@ -52,15 +89,72 @@
     </div>
   </div>
 
+  {#if tracing}
+    <div class="trace-progress">
+      <div class="progress-header">
+        <span class="progress-spinner">⏳</span>
+        <span>Analyzing {packageName}...</span>
+      </div>
+      <div class="progress-log">
+        {#each traceLog as line}<div class="progress-line">{line}</div>{/each}
+      </div>
+    </div>
+  {/if}
+
   {#if result}
     <div class="trace-tabs">
-      {#each [{id:'graph',label:'Call Graph'},{id:'java',label:'Java'},{id:'native',label:'Native'},{id:'summary',label:'Summary'},{id:'mermaid',label:'Mermaid'}] as tab}
+      {#each [
+        {id:'steps',label:'Steps'},
+        {id:'dex',label:`DEX (${result.dex_strings?.length || 0})`},
+        {id:'graph',label:`Graph (${result.call_graph?.length || 0})`},
+        {id:'java',label:`Java (${result.java_trace?.length || 0})`},
+        {id:'native',label:`Native (${result.native_trace?.length || 0})`},
+        {id:'summary',label:'Summary'},
+        {id:'mermaid',label:'Mermaid'}
+      ] as tab}
         <button class="tab" class:tab-active={activeView === tab.id} on:click={() => activeView = tab.id}>{tab.label}</button>
       {/each}
     </div>
 
     <div class="trace-content">
-      {#if activeView === 'graph'}
+      {#if activeView === 'steps'}
+        <div class="steps-view">
+          {#each traceLog as line}
+            <div class="step-line" class:step-ok={line.includes('✓')} class:step-skip={line.includes('⊘')} class:step-err={line.includes('✗') || line.includes('ERROR')}>{line}</div>
+          {/each}
+          {#if result.apk_info}
+            <div class="apk-card">
+              <div class="apk-title">📦 {result.apk_info.package || result.package}</div>
+              <div class="apk-meta">SDK {result.apk_info.min_sdk}–{result.apk_info.target_sdk} · {result.apk_info.dex_count} DEX · {result.apk_info.so_files?.length || 0} SO</div>
+              {#if result.apk_info.so_files?.length > 0}
+                <div class="apk-so">{result.apk_info.so_files.join(', ')}</div>
+              {/if}
+              {#if result.apk_info.has_ns_config}
+                <div class="apk-ns">⚠ network_security_config.xml detected</div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+      {:else if activeView === 'dex'}
+        <div class="dex-view">
+          {#each result.dex_strings || [] as dm}
+            <div class="dex-match">
+              <div class="dex-string">{dm.string}</div>
+              <div class="dex-meta">{dm.dex_file} @ offset {dm.offset}</div>
+              {#if dm.context?.length > 0}
+                <div class="dex-context">
+                  {#each dm.context.slice(0, 5) as ctx}<span class="dex-ctx">{ctx}</span>{/each}
+                </div>
+              {/if}
+            </div>
+          {/each}
+          {#if !result.dex_strings?.length}
+            <div class="empty">No DEX string matches found.</div>
+          {/if}
+        </div>
+
+      {:else if activeView === 'graph'}
         <div class="graph-view">
           {#each result.call_graph || [] as edge}
             <div class="edge-row">
@@ -236,6 +330,38 @@
     border-radius: 4px; cursor: pointer; font-family: inherit;
   }
   .mermaid-code { font-size: 12px; color: var(--green, #34d399); margin: 0; white-space: pre-wrap; }
+
+  .trace-progress {
+    padding: 16px; background: var(--bg-panel, #111116);
+    border-bottom: 1px solid var(--border, #1e1e24);
+  }
+  .progress-header { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--fg, #e4e4e7); margin-bottom: 8px; }
+  .progress-spinner { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progress-log { max-height: 200px; overflow-y: auto; }
+  .progress-line { font-size: 11px; color: var(--fg-muted, #a1a1aa); line-height: 1.6; font-family: 'SF Mono', monospace; }
+
+  .steps-view { padding: 8px 16px; }
+  .step-line { font-size: 11px; color: var(--fg-muted, #a1a1aa); line-height: 1.8; font-family: 'SF Mono', monospace; }
+  .step-ok { color: var(--green, #34d399); }
+  .step-skip { color: var(--fg-faint, #52525b); }
+  .step-err { color: var(--red, #f87171); }
+
+  .apk-card {
+    margin-top: 12px; padding: 12px; background: var(--bg-panel, #111116);
+    border: 1px solid var(--border, #1e1e24); border-radius: 8px;
+  }
+  .apk-title { font-size: 14px; font-weight: 600; color: var(--fg, #e4e4e7); }
+  .apk-meta { font-size: 11px; color: var(--fg-dim, #71717a); margin-top: 4px; }
+  .apk-so { font-size: 10px; color: var(--accent, #38bdf8); margin-top: 6px; font-family: 'SF Mono', monospace; word-break: break-all; }
+  .apk-ns { font-size: 11px; color: var(--yellow, #fbbf24); margin-top: 4px; }
+
+  .dex-view { padding: 8px 16px; }
+  .dex-match { margin-bottom: 12px; padding: 10px; background: var(--bg-panel, #111116); border: 1px solid var(--border, #1e1e24); border-radius: 6px; }
+  .dex-string { font-size: 13px; color: var(--green, #34d399); font-family: 'SF Mono', monospace; word-break: break-all; }
+  .dex-meta { font-size: 10px; color: var(--fg-faint, #52525b); margin-top: 4px; }
+  .dex-context { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+  .dex-ctx { padding: 2px 6px; background: rgba(56, 189, 248, 0.1); color: var(--fg-muted, #a1a1aa); border-radius: 3px; font-size: 10px; font-family: 'SF Mono', monospace; }
 
   .empty { padding: 20px; text-align: center; color: var(--fg-ghost, #3f3f46); font-size: 12px; }
 

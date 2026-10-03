@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/overkazaf/cap/internal/android"
+	"github.com/overkazaf/cap/internal/rules"
 	"github.com/overkazaf/cap/internal/screen"
 	captrace "github.com/overkazaf/cap/internal/trace"
 	"github.com/overkazaf/cap/internal/compare"
@@ -36,8 +37,9 @@ type App struct {
 	ctx      context.Context
 	store    store.Store
 	proxy    *proxy.Proxy
-	plugins  *plugin.Engine
-	mu       sync.Mutex
+	plugins     *plugin.Engine
+	rulesEngine *rules.Engine
+	mu          sync.Mutex
 	settings map[string]string
 
 	flows      []*types.Flow
@@ -65,11 +67,12 @@ func NewApp(st store.Store) *App {
 	settingsFile := filepath.Join(capDir, "settings.json")
 	settings := loadSettings(settingsFile)
 	return &App{
-		store:     st,
-		certDir:   capDir,
-		plugins:   pluginEngine,
-		settings:  settings,
-		tlsErrors: make(map[string]int),
+		store:       st,
+		certDir:     capDir,
+		plugins:     pluginEngine,
+		rulesEngine: rules.NewEngine(),
+		settings:    settings,
+		tlsErrors:   make(map[string]int),
 	}
 }
 
@@ -119,8 +122,10 @@ func (a *App) StartProxy(addr string) error {
 	a.lastRateTS = time.Now()
 
 	p, err := proxy.New(proxy.Options{
-		Addr:    addr,
-		CertDir: a.certDir,
+		Addr:                addr,
+		CertDir:             a.certDir,
+		RequestInterceptor:  a.rulesEngine.RequestHandler(),
+		ResponseInterceptor: a.rulesEngine.ResponseHandler(),
 		OnFlow: func(f *types.Flow) {
 			if !a.shouldCapture(f.Host) {
 				return
@@ -903,6 +908,47 @@ func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
 	}
 
 	return env, nil
+}
+
+// ==================== Intercept Rules ====================
+
+func (a *App) AddRule(rule rules.Rule) error {
+	a.rulesEngine.AddRule(&rule)
+	return nil
+}
+
+func (a *App) RemoveRule(id string) {
+	a.rulesEngine.RemoveRule(id)
+}
+
+func (a *App) ListRules() []*rules.Rule {
+	return a.rulesEngine.ListRules()
+}
+
+func (a *App) SetRules(ruleList []rules.Rule) {
+	ptrs := make([]*rules.Rule, len(ruleList))
+	for i := range ruleList {
+		ptrs[i] = &ruleList[i]
+	}
+	a.rulesEngine.SetRules(ptrs)
+}
+
+func (a *App) GetPendingBreakpoints() []*rules.PendingBreakpoint {
+	return a.rulesEngine.ListPendingBreakpoints()
+}
+
+func (a *App) ResolveBreakpoint(bpID, action string, url, method, body string, headers map[string]string, status int, respHeaders map[string]string, respBody string) error {
+	res := &rules.BreakpointResolution{
+		Action:      action,
+		URL:         url,
+		Method:      method,
+		Headers:     headers,
+		Body:        []byte(body),
+		Status:      status,
+		RespHeaders: respHeaders,
+		RespBody:    []byte(respBody),
+	}
+	return a.rulesEngine.ResolveBreakpoint(bpID, res)
 }
 
 // ==================== RE Tools ====================

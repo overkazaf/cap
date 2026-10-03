@@ -32,12 +32,17 @@ type Options struct {
 	// read the actual bound address back via Proxy.Addr().
 	Addr string
 
-	// OnFlow is invoked once for every completed request/response pair. It
-	// may be nil, in which case captured flows are simply discarded. OnFlow
-	// is called synchronously from the goroutine handling that request, so
-	// it must not block for long and must be safe to call concurrently
-	// (the proxy serves multiple in-flight requests in parallel).
+	// OnFlow is invoked once for every completed request/response pair.
 	OnFlow func(*types.Flow)
+
+	// RequestInterceptor is called before forwarding each request. It can
+	// modify the request or return a response to short-circuit (mock).
+	// Return (req, nil) to forward, (req, resp) to mock.
+	RequestInterceptor func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response)
+
+	// ResponseInterceptor is called before returning each response to the client.
+	// It can modify the response.
+	ResponseInterceptor func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response
 
 	// CertDir is the directory holding the MITM CA certificate/key pair
 	// used to sign on-the-fly leaf certificates for intercepted HTTPS
@@ -185,6 +190,11 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 	p.pending[req] = meta
 	p.mu.Unlock()
 
+	// Apply request interceptor if set
+	if p.opts.RequestInterceptor != nil {
+		return p.opts.RequestInterceptor(req, ctx)
+	}
+
 	return req, nil
 }
 
@@ -242,6 +252,11 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 
 	if p.opts.OnFlow != nil {
 		p.opts.OnFlow(flow)
+	}
+
+	// Apply response interceptor if set
+	if p.opts.ResponseInterceptor != nil {
+		resp = p.opts.ResponseInterceptor(resp, ctx)
 	}
 
 	return resp

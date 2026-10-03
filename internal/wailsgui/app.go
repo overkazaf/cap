@@ -38,9 +38,22 @@ type App struct {
 	mu       sync.Mutex
 	settings map[string]string
 
-	flows     []*types.Flow
-	isRunning bool
-	certDir   string
+	flows      []*types.Flow
+	isRunning  bool
+	isPaused   bool
+	certDir    string
+	reqCount   int64
+	byteCount  int64
+	rateReqPS  float64
+	rateBytPS  float64
+	lastRateTS time.Time
+	lastReqN   int64
+	lastByteN  int64
+
+	domainWhitelist []string
+	domainBlacklist []string
+	tlsErrors       map[string]int
+	tlsErrorsMu     sync.Mutex
 }
 
 func NewApp(st store.Store) *App {
@@ -50,10 +63,11 @@ func NewApp(st store.Store) *App {
 	settingsFile := filepath.Join(capDir, "settings.json")
 	settings := loadSettings(settingsFile)
 	return &App{
-		store:    st,
-		certDir:  capDir,
-		plugins:  pluginEngine,
-		settings: settings,
+		store:     st,
+		certDir:   capDir,
+		plugins:   pluginEngine,
+		settings:  settings,
+		tlsErrors: make(map[string]int),
 	}
 }
 
@@ -83,13 +97,22 @@ func (a *App) StartProxy(addr string) error {
 		addr = "0.0.0.0:8080"
 	}
 
+	a.reqCount = 0
+	a.byteCount = 0
+	a.lastRateTS = time.Now()
+
 	p, err := proxy.New(proxy.Options{
 		Addr:    addr,
 		CertDir: a.certDir,
 		OnFlow: func(f *types.Flow) {
+			if !a.shouldCapture(f.Host) {
+				return
+			}
 			a.store.SaveFlow(f)
 			a.mu.Lock()
 			a.flows = append([]*types.Flow{f}, a.flows...)
+			a.reqCount++
+			a.byteCount += int64(len(f.ReqBody) + len(f.RespBody))
 			a.mu.Unlock()
 		},
 	})
@@ -99,6 +122,7 @@ func (a *App) StartProxy(addr string) error {
 
 	a.proxy = p
 	a.isRunning = true
+	a.isPaused = false
 	go p.Start()
 	return nil
 }
@@ -129,6 +153,160 @@ func (a *App) IsProxyRunning() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.isRunning
+}
+
+// ==================== Capture Controls ====================
+
+func (a *App) PauseCapture() {
+	a.mu.Lock()
+	a.isPaused = true
+	a.mu.Unlock()
+}
+
+func (a *App) ResumeCapture() {
+	a.mu.Lock()
+	a.isPaused = false
+	a.mu.Unlock()
+}
+
+func (a *App) IsPaused() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.isPaused
+}
+
+type TrafficRate struct {
+	ReqPerSec  float64 `json:"req_per_sec"`
+	BytePerSec float64 `json:"byte_per_sec"`
+	TotalReqs  int64   `json:"total_reqs"`
+	TotalBytes int64   `json:"total_bytes"`
+}
+
+func (a *App) GetTrafficRate() TrafficRate {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	elapsed := now.Sub(a.lastRateTS).Seconds()
+	if elapsed >= 1.0 {
+		a.rateReqPS = float64(a.reqCount-a.lastReqN) / elapsed
+		a.rateBytPS = float64(a.byteCount-a.lastByteN) / elapsed
+		a.lastReqN = a.reqCount
+		a.lastByteN = a.byteCount
+		a.lastRateTS = now
+	}
+	return TrafficRate{
+		ReqPerSec:  a.rateReqPS,
+		BytePerSec: a.rateBytPS,
+		TotalReqs:  a.reqCount,
+		TotalBytes: a.byteCount,
+	}
+}
+
+func (a *App) SetDomainFilter(whitelist, blacklist []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.domainWhitelist = whitelist
+	a.domainBlacklist = blacklist
+}
+
+func (a *App) GetDomainFilter() map[string][]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return map[string][]string{
+		"whitelist": a.domainWhitelist,
+		"blacklist": a.domainBlacklist,
+	}
+}
+
+func (a *App) shouldCapture(host string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.isPaused {
+		return false
+	}
+	if len(a.domainWhitelist) > 0 {
+		for _, d := range a.domainWhitelist {
+			if strings.Contains(host, d) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, d := range a.domainBlacklist {
+		if strings.Contains(host, d) {
+			return false
+		}
+	}
+	return true
+}
+
+type TLSError struct {
+	Host  string `json:"host"`
+	Count int    `json:"count"`
+}
+
+func (a *App) GetTLSErrors() []TLSError {
+	a.tlsErrorsMu.Lock()
+	defer a.tlsErrorsMu.Unlock()
+	result := make([]TLSError, 0, len(a.tlsErrors))
+	for host, count := range a.tlsErrors {
+		result = append(result, TLSError{Host: host, Count: count})
+	}
+	return result
+}
+
+func (a *App) ClearTLSErrors() {
+	a.tlsErrorsMu.Lock()
+	a.tlsErrors = make(map[string]int)
+	a.tlsErrorsMu.Unlock()
+}
+
+func (a *App) ConnectWiFiADB(ipPort string) (string, error) {
+	if ipPort == "" {
+		return "", fmt.Errorf("IP:PORT required")
+	}
+	out, err := exec.Command("adb", "connect", ipPort).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func (a *App) DisconnectWiFiADB(ipPort string) (string, error) {
+	out, err := exec.Command("adb", "disconnect", ipPort).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+type AppInfo struct {
+	Package string `json:"package"`
+	Name    string `json:"name"`
+}
+
+func (a *App) ListApps(serial string) ([]AppInfo, error) {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "pm", "list", "packages", "-3")
+	out, err := exec.Command("adb", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	var apps []AppInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "package:") {
+			pkg := strings.TrimPrefix(line, "package:")
+			apps = append(apps, AppInfo{Package: pkg, Name: pkg})
+		}
+	}
+	return apps, nil
+}
+
+func (a *App) LaunchApp(serial, packageName string) error {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1")
+	return exec.Command("adb", args...).Run()
 }
 
 // ==================== Flows ====================

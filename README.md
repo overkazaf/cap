@@ -14,16 +14,6 @@
 
 ---
 
-<p align="center">
-  <img src="docs/screenshots/capture-tab.png" alt="cap Capture" width="800"><br>
-  <em>Capture — proxy controls + Android device management</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/flows-detail.png" alt="cap Flows" width="800"><br>
-  <em>Flows — 49 captured requests, JSON body viewer, Python export, sign detection</em>
-</p>
-
 ## Why cap?
 
 Existing tools (Burp Suite, mitmproxy, HTTP Toolkit) are built for web security testing — not for **reverse engineering mobile apps**. Cap fills the gap:

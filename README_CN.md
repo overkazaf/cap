@@ -14,16 +14,6 @@
 
 ---
 
-<p align="center">
-  <img src="docs/screenshots/capture-tab.png" alt="cap 抓包界面" width="800"><br>
-  <em>Capture — 代理控制 + Android 设备管理</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/flows-detail.png" alt="cap 流量分析" width="800"><br>
-  <em>Flows — 49 条请求、JSON 响应查看、Python 导出、签名检测</em>
-</p>
-
 ## 为什么选择 cap？
 
 现有工具（Burp Suite、mitmproxy、HTTP Toolkit）都是为 Web 安全测试设计的，不是为**逆向工程移动端 App** 设计的。cap 填补了这个空白：

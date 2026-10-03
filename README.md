@@ -255,17 +255,57 @@ Built-in plugin editor with 3 example plugins. Write JavaScript-style analysis s
 
 ## Install
 
+### CLI only (no GUI)
+
 ```bash
-# From source (recommended)
 git clone https://github.com/overkazaf/cap.git
 cd cap
 go build -o cap ./cmd/cap
-
-# Or via go install
-go install github.com/overkazaf/cap/cmd/cap@latest
+./cap --help
 ```
 
-**Requirements**: Go 1.21+, macOS or Linux (for Wails GUI: Xcode CLI tools on macOS)
+### Full build with GUI (Wails + Svelte)
+
+```bash
+# Prerequisites
+# - Go 1.21+
+# - Node.js 18+
+# - Xcode Command Line Tools (macOS): xcode-select --install
+
+# 1. Clone
+git clone https://github.com/overkazaf/cap.git
+cd cap
+
+# 2. Build frontend
+cd frontend
+npm install
+npx vite build
+cd ..
+
+# 3. Copy frontend assets for embedding
+cp -r frontend/dist cmd/cap/frontend/dist
+
+# 4. Build Go binary with Wails (macOS)
+CGO_LDFLAGS="-framework UniformTypeIdentifiers" \
+  go build -tags desktop,production -o cap ./cmd/cap
+
+# 5. Run
+./cap gui          # Desktop GUI
+./cap start        # CLI proxy only
+```
+
+### Linux build
+
+```bash
+# Same steps but without the CGO_LDFLAGS framework flag:
+go build -tags desktop,production -o cap ./cmd/cap
+```
+
+**Requirements**:
+- **Go** 1.21+
+- **Node.js** 18+ (for frontend build)
+- **macOS**: Xcode Command Line Tools
+- **Linux**: `libgtk-3-dev libwebkit2gtk-4.0-dev` (for Wails WebView)
 
 ## Quick Start
 

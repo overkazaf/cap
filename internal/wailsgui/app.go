@@ -1187,7 +1187,7 @@ func (a *App) DeepTrace(flowID, packageName string) (*captrace.TraceResult, erro
 		Serial:    serial,
 		OutputDir: filepath.Join(a.certDir, "trace", packageName),
 		Package:   packageName,
-	})
+	}, nil)
 }
 
 func (a *App) GetTraceMermaid(flowID, packageName string) (string, error) {

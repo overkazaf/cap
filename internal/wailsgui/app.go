@@ -1113,6 +1113,35 @@ func (a *App) CaptureScreen(serial string) (string, error) {
 	return a.CaptureScreenScaled(serial, 50)
 }
 
+func (a *App) CaptureScrcpy(serial string) (string, error) {
+	data, err := screen.Capture(screen.Options{
+		Serial:  serial,
+		Engine:  screen.EngineScrcpy,
+		MaxSize: 540,
+		MaxFPS:  15,
+		Quality: 70,
+	})
+	if err != nil {
+		return "", err
+	}
+	return "data:image/jpeg;base64," + base64Encode(data), nil
+}
+
+func (a *App) DeployScrcpy(serial string) (string, error) {
+	cacheDir := screen.DefaultCacheDir()
+	if err := screen.DeployScrcpyServer(serial, cacheDir); err != nil {
+		return "", err
+	}
+	return "scrcpy-server deployed", nil
+}
+
+func (a *App) IsScrcpyReady(serial string) bool {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return false
+	}
+	return screen.IsScrcpyDeployed(serial)
+}
+
 func (a *App) CaptureScreenScaled(serial string, quality int) (string, error) {
 	maxSize := 540
 	if quality > 80 {

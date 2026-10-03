@@ -34,6 +34,8 @@
   let shellHeight = 200
   let shellDragging = false
   let screenQuality = 50
+  let screenEngine = 'fast' // 'fast' or 'scrcpy'
+  let scrcpyReady = false
   let shellTabs = []
   let activeShellTab = null
   let shellTabCounter = 0
@@ -247,10 +249,14 @@
       }
     } catch(e) { console.error(e) }
 
+    // Check if scrcpy is available
+    try { scrcpyReady = await window.go.wailsgui.App.IsScrcpyReady(deviceSerial) } catch(e) {}
+
     screenActive = true
     if (shellTabs.length === 0) addShellTab()
     captureFrame()
-    screenInterval = setInterval(captureFrame, 500)
+    const fps = screenEngine === 'scrcpy' ? 80 : 500
+    screenInterval = setInterval(captureFrame, fps)
   }
 
   function stopScreen() {
@@ -263,8 +269,28 @@
   async function captureFrame() {
     if (!screenActive) return
     try {
-      screenSrc = await window.go.wailsgui.App.CaptureScreenScaled(deviceSerial, screenQuality)
+      if (screenEngine === 'scrcpy') {
+        screenSrc = await window.go.wailsgui.App.CaptureScrcpy(deviceSerial)
+      } else {
+        screenSrc = await window.go.wailsgui.App.CaptureScreenScaled(deviceSerial, screenQuality)
+      }
     } catch(e) { /* skip frame */ }
+  }
+
+  async function switchEngine(engine) {
+    screenEngine = engine
+    if (screenActive) {
+      stopScreen()
+      await startScreen()
+    }
+  }
+
+  async function deployScrcpy() {
+    try {
+      const msg = await window.go.wailsgui.App.DeployScrcpy(deviceSerial)
+      scrcpyReady = true
+      alert(msg)
+    } catch(e) { alert(`Deploy failed: ${e}`) }
   }
 
   async function handleScreenClick(e) {
@@ -524,9 +550,19 @@
               <button class="dev-btn" on:click={deviceBack}>◀</button>
               <button class="dev-btn" on:click={deviceHome}>●</button>
               <button class="dev-btn" on:click={captureFrame}>⟳</button>
-              <span class="dev-info">{screenSize[0]}×{screenSize[1]}</span>
-              <input type="range" min="20" max="100" step="10" bind:value={screenQuality} class="quality-slider" title="Quality: {screenQuality}%" />
-              <span class="dev-info">{screenQuality}%</span>
+              <div class="engine-switch">
+                <button class="eng-btn" class:eng-active={screenEngine === 'fast'} on:click={() => switchEngine('fast')}>Fast</button>
+                <button class="eng-btn" class:eng-active={screenEngine === 'scrcpy'} on:click={() => switchEngine('scrcpy')} disabled={!scrcpyReady}>scrcpy</button>
+                {#if !scrcpyReady}
+                  <button class="eng-btn eng-deploy" on:click={deployScrcpy}>Deploy</button>
+                {/if}
+              </div>
+              {#if screenEngine === 'fast'}
+                <input type="range" min="20" max="100" step="10" bind:value={screenQuality} class="quality-slider" />
+                <span class="dev-info">{screenQuality}%</span>
+              {:else}
+                <span class="dev-info">H.264 → MJPEG</span>
+              {/if}
             </div>
           </div>
         </div>
@@ -988,6 +1024,16 @@
   .shell-drag { height: 5px; cursor: row-resize; background: var(--border, #1e1e24); flex-shrink: 0; }
   .shell-drag:hover, .shell-drag:active { background: var(--accent, #38bdf8); }
   .quality-slider { width: 60px; accent-color: var(--accent, #38bdf8); }
+  .engine-switch { display: flex; gap: 2px; margin: 0 4px; }
+  .eng-btn {
+    padding: 2px 8px; font-size: 9px; border: 1px solid var(--border, #27272a);
+    background: transparent; color: var(--fg-dim, #71717a); border-radius: 3px;
+    cursor: pointer; font-family: inherit;
+  }
+  .eng-btn:hover { background: var(--bg-btn, #1a1a22); }
+  .eng-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .eng-active { background: var(--accent-bg, #1e3a5f); border-color: var(--accent, #38bdf8); color: var(--accent, #7dd3fc); }
+  .eng-deploy { border-color: var(--yellow, #fbbf24); color: var(--yellow, #fbbf24); font-size: 8px; }
 
   .device-shell {
     display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden;

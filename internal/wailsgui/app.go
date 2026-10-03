@@ -740,6 +740,8 @@ type DeviceEnv struct {
 	RootMethod  string `json:"root_method"`
 	Magisk      string `json:"magisk"`
 	MagiskVer   string `json:"magisk_ver"`
+	KernelSU    bool   `json:"kernelsu"`
+	KernelSUVer string `json:"kernelsu_ver"`
 	Zygisk      bool   `json:"zygisk"`
 	LSPosed     bool   `json:"lsposed"`
 	LSPosedVer  string `json:"lsposed_ver"`
@@ -838,6 +840,27 @@ func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
 			env.RootMethod = "Magisk"
 		} else {
 			env.Magisk = "not found"
+		}
+	}
+
+	// KernelSU
+	ksuVer := shell("ksud --version 2>/dev/null")
+	if ksuVer != "" && !strings.Contains(ksuVer, "not found") {
+		env.KernelSU = true
+		env.KernelSUVer = ksuVer
+		if env.RootMethod == "su" {
+			env.RootMethod = "KernelSU"
+		}
+	} else {
+		ksuDir := suShell("ls /data/adb/ksu/ 2>/dev/null")
+		if ksuDir != "" && !strings.Contains(ksuDir, "No such") {
+			env.KernelSU = true
+			env.RootMethod = "KernelSU"
+		} else {
+			ksuModule := shell("ls /data/adb/modules/.kernelsu 2>/dev/null")
+			if ksuModule != "" && !strings.Contains(ksuModule, "No such") {
+				env.KernelSU = true
+			}
 		}
 	}
 

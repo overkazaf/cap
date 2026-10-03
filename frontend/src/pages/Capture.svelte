@@ -156,6 +156,7 @@
           <div class="env-grid">
             <div class="eg"><span class="ek">Root</span><span class:on={deviceEnv.rooted}>{deviceEnv.rooted ? '✓ '+deviceEnv.root_method : '✗'}</span></div>
             <div class="eg"><span class="ek">Magisk</span><span class:on={deviceEnv.magisk==='installed'}>{deviceEnv.magisk==='installed' ? '✓ '+(deviceEnv.magisk_ver||'') : '✗'}</span></div>
+            <div class="eg"><span class="ek">KernelSU</span><span class:on={deviceEnv.kernelsu}>{deviceEnv.kernelsu ? '✓ '+(deviceEnv.kernelsu_ver||'') : '✗'}</span></div>
             <div class="eg"><span class="ek">Zygisk</span><span class:on={deviceEnv.zygisk}>{deviceEnv.zygisk ? '✓' : '✗'}</span></div>
             <div class="eg"><span class="ek">LSPosed</span><span class:on={deviceEnv.lsposed}>{deviceEnv.lsposed ? '✓' : '✗'}</span></div>
             <div class="eg"><span class="ek">SELinux</span><span class:warn={deviceEnv.selinux==='Enforcing'}>{deviceEnv.selinux||'?'}</span></div>

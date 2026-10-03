@@ -1,0 +1,74 @@
+internal/wailsgui/app.go
+  936d2bd656d204f8 863-1070
+frontend/dist/assets/index-_TaM9pLf.css
+  936d2bd656d204f8 1
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 37-43,186-225,337,340-396,477-503
+frontend/dist/assets/index-BC_-8PMM.js
+  936d2bd656d204f8 1-21
+cmd/cap/frontend/dist/assets/index-BC_-8PMM.js
+  936d2bd656d204f8 1-21
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/assets/index-_TaM9pLf.css
+  936d2bd656d204f8 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "f5941684308ba53744909c4c5876a7793f35f1b4",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 388,
+      "total_deletions": 6,
+      "accepted_lines": 388,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/wailsgui/app.go": {
+          "additions": 208,
+          "accepted_lines": 208
+        },
+        "cmd/cap/frontend/dist/assets/index-_TaM9pLf.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-BC_-8PMM.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-_TaM9pLf.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-BC_-8PMM.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 132,
+          "deletions": 2,
+          "accepted_lines": 132
+        }
+      }
+    }
+  }
+}

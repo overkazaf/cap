@@ -1,0 +1,55 @@
+frontend/dist/assets/index-g2q5ldx-.css
+  936d2bd656d204f8 1
+frontend/src/pages/Rules.svelte
+  936d2bd656d204f8 1-290
+frontend/dist/assets/index-AITVSYL-.js
+  936d2bd656d204f8 1-27
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/App.svelte
+  936d2bd656d204f8 8,18,58-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "3399dc3694f8963465280da3663f24cc01907a2f",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 325,
+      "total_deletions": 3,
+      "accepted_lines": 324,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/assets/index-g2q5ldx-.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-AITVSYL-.js": {
+          "additions": 27,
+          "accepted_lines": 27
+        },
+        "frontend/src/pages/Rules.svelte": {
+          "additions": 291,
+          "deletions": 1,
+          "accepted_lines": 290
+        },
+        "frontend/src/App.svelte": {
+          "additions": 4,
+          "accepted_lines": 4
+        }
+      }
+    }
+  }
+}

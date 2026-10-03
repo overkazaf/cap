@@ -1,0 +1,68 @@
+cmd/cap/frontend/dist/assets/index-DdhYjQrh.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 109-112,125,195-203,205-207,210-215,217,219-235,238-245,248-254,256-259,261-262,264-275,277,280-285,287,289-290,295-301,307-308,310-317,319-320,326-328,330,338-341,343,347-350,353-380,382-385,387-389,391-396
+frontend/dist/assets/index-DWLmL5UY.js
+  936d2bd656d204f8 1-21
+frontend/dist/assets/index-DdhYjQrh.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/assets/index-DWLmL5UY.js
+  936d2bd656d204f8 1-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "1fa8ed716fb3cdbc280fd2097c9a4a33aa0e1b95",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 211,
+      "total_deletions": 217,
+      "accepted_lines": 211,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-DdhYjQrh.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-DWLmL5UY.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/frontend/dist/assets/index-DWLmL5UY.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "cmd/cap/frontend/dist/assets/index-DdhYjQrh.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 163,
+          "deletions": 213,
+          "accepted_lines": 163
+        }
+      }
+    }
+  }
+}

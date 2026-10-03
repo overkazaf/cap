@@ -1,0 +1,73 @@
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 43-54,487-489,495,528,614,621,822-829,920-923
+cmd/cap/frontend/dist/assets/index-BXR0VVlD.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/dist/assets/index-BtnwJLGz.js
+  936d2bd656d204f8 1-10,20
+cmd/cap/frontend/dist/assets/index-BtnwJLGz.js
+  936d2bd656d204f8 1-10,20
+frontend/dist/assets/index-BXR0VVlD.css
+  936d2bd656d204f8 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "dcd048d8ef4058f31fb6005fe569f624f2b5db70",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 75,
+      "total_deletions": 45,
+      "accepted_lines": 75,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/assets/index-B3IpawV7.js": {
+          "deletions": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-B3IpawV7.js": {
+          "deletions": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-CX-8x8tZ.css": {
+          "deletions": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-BtnwJLGz.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-BtnwJLGz.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 31,
+          "deletions": 1,
+          "accepted_lines": 31
+        },
+        "frontend/dist/assets/index-BXR0VVlD.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-CX-8x8tZ.css": {
+          "deletions": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-BXR0VVlD.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

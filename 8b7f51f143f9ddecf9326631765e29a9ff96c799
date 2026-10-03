@@ -1,0 +1,74 @@
+cmd/cap/frontend/dist/assets/index-DFYxhDh-.js
+  936d2bd656d204f8 1-21
+cmd/cap/frontend/dist/assets/index-DPB-qrdh.css
+  936d2bd656d204f8 1
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/dist/assets/index-DFYxhDh-.js
+  936d2bd656d204f8 1-21
+frontend/dist/assets/index-DPB-qrdh.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 33-36,164-174,273-310,312-316,318-339,342-343,416-433
+internal/wailsgui/app.go
+  936d2bd656d204f8 707-864
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "8b7f51f143f9ddecf9326631765e29a9ff96c799",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 307,
+      "total_deletions": 20,
+      "accepted_lines": 307,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/assets/index-DPB-qrdh.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/frontend/dist/assets/index-DFYxhDh-.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 101,
+          "deletions": 16,
+          "accepted_lines": 101
+        },
+        "frontend/dist/assets/index-DFYxhDh-.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 158,
+          "accepted_lines": 158
+        },
+        "cmd/cap/frontend/dist/assets/index-DPB-qrdh.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

@@ -1,11 +1,15 @@
 package wailsgui
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -703,6 +707,10 @@ func (a *App) GetVersion() string {
 // ==================== Device Screen ====================
 
 func (a *App) CaptureScreen(serial string) (string, error) {
+	return a.CaptureScreenScaled(serial, 50)
+}
+
+func (a *App) CaptureScreenScaled(serial string, quality int) (string, error) {
 	args := []string{}
 	if serial != "" {
 		args = append(args, "-s", serial)
@@ -713,7 +721,34 @@ func (a *App) CaptureScreen(serial string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("screencap: %w", err)
 	}
-	return "data:image/png;base64," + base64Encode(out), nil
+
+	if quality >= 100 || quality <= 0 {
+		return "data:image/png;base64," + base64Encode(out), nil
+	}
+
+	// Decode, resize, re-encode as JPEG for speed
+	img, err := png.Decode(bytes.NewReader(out))
+	if err != nil {
+		return "data:image/png;base64," + base64Encode(out), nil
+	}
+
+	bounds := img.Bounds()
+	scale := float64(quality) / 100.0
+	newW := int(float64(bounds.Dx()) * scale)
+	newH := int(float64(bounds.Dy()) * scale)
+
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	for y := 0; y < newH; y++ {
+		for x := 0; x < newW; x++ {
+			srcX := int(float64(x) / scale)
+			srcY := int(float64(y) / scale)
+			dst.Set(x, y, img.At(srcX, srcY))
+		}
+	}
+
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 70})
+	return "data:image/jpeg;base64," + base64Encode(buf.Bytes()), nil
 }
 
 func (a *App) DeviceTap(serial string, x, y int) error {

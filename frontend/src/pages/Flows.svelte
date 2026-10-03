@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
 
   let flows = []
   let selectedFlow = null
@@ -31,10 +31,12 @@
   let screenInterval = null
   let screenSize = [1080, 2400]
   let deviceSerial = ''
-  let shellInput = ''
-  let shellOutput = ''
-  let shellHeight = 180
+  let shellHeight = 200
   let shellDragging = false
+  let screenQuality = 50
+  let shellTabs = []
+  let activeShellTab = null
+  let shellTabCounter = 0
 
   const languages = ['curl', 'python', 'go', 'java', 'js']
 
@@ -246,8 +248,9 @@
     } catch(e) { console.error(e) }
 
     screenActive = true
+    if (shellTabs.length === 0) addShellTab()
     captureFrame()
-    screenInterval = setInterval(captureFrame, 600)
+    screenInterval = setInterval(captureFrame, 500)
   }
 
   function stopScreen() {
@@ -260,7 +263,7 @@
   async function captureFrame() {
     if (!screenActive) return
     try {
-      screenSrc = await window.go.wailsgui.App.CaptureScreen(deviceSerial)
+      screenSrc = await window.go.wailsgui.App.CaptureScreenScaled(deviceSerial, screenQuality)
     } catch(e) { /* skip frame */ }
   }
 
@@ -293,17 +296,95 @@
     if (panel === 'detail' && screenActive) stopScreen()
   }
 
-  async function runShellCmd(e) {
-    if (e.key !== 'Enter' || !shellInput.trim()) return
-    const cmd = shellInput.trim()
-    shellInput = ''
-    shellOutput += `$ ${cmd}\n`
-    try {
-      const result = await window.go.wailsgui.App.ExecCommand(cmd)
-      if (result) shellOutput += result + '\n'
-    } catch(err) { shellOutput += `error: ${err}\n` }
-    const el = document.querySelector('.shell-output')
-    if (el) setTimeout(() => el.scrollTop = el.scrollHeight, 50)
+  function addShellTab() {
+    shellTabCounter++
+    const tab = { id: `sh-${shellTabCounter}`, label: `sh-${shellTabCounter}`, content: '$ ', inputStart: 2, history: [], histIdx: -1 }
+    shellTabs = [...shellTabs, tab]
+    activeShellTab = tab.id
+  }
+
+  function closeShellTab(id) {
+    shellTabs = shellTabs.filter(t => t.id !== id)
+    if (activeShellTab === id) activeShellTab = shellTabs.length > 0 ? shellTabs[shellTabs.length - 1].id : null
+  }
+
+  function getShellTab(id) { return shellTabs.find(t => t.id === id) }
+
+  async function handleShellKey(e, tabId) {
+    const tab = getShellTab(tabId)
+    if (!tab) return
+
+    if (e.key === 'l' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      tab.content = '$ '
+      tab.inputStart = 2
+      shellTabs = shellTabs
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 't') {
+      e.preventDefault()
+      addShellTab()
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const input = tab.content.slice(tab.inputStart).trim()
+      if (input) { tab.history = [...tab.history, input]; tab.histIdx = -1 }
+      tab.content += '\n'
+      if (input === 'clear' || input === 'cls') {
+        tab.content = ''
+      } else if (input) {
+        try {
+          const r = await window.go.wailsgui.App.ExecCommand(input)
+          if (r) tab.content += r + '\n'
+        } catch(err) { tab.content += `error: ${err}\n` }
+      }
+      tab.content += '$ '
+      tab.inputStart = tab.content.length
+      shellTabs = shellTabs
+      await tick()
+      const el = e.target
+      if (el) { el.scrollTop = el.scrollHeight; el.setSelectionRange(tab.content.length, tab.content.length) }
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (tab.history.length > 0) {
+        if (tab.histIdx < 0) tab.histIdx = tab.history.length
+        tab.histIdx = Math.max(0, tab.histIdx - 1)
+        tab.content = tab.content.slice(0, tab.inputStart) + tab.history[tab.histIdx]
+        shellTabs = shellTabs
+      }
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (tab.histIdx >= 0) {
+        tab.histIdx++
+        tab.content = tab.histIdx >= tab.history.length
+          ? tab.content.slice(0, tab.inputStart)
+          : tab.content.slice(0, tab.inputStart) + tab.history[tab.histIdx]
+        if (tab.histIdx >= tab.history.length) tab.histIdx = -1
+        shellTabs = shellTabs
+      }
+      return
+    }
+    if (e.target.selectionStart < tab.inputStart && (e.key === 'Backspace' || e.key.length === 1)) {
+      e.preventDefault()
+      e.target.setSelectionRange(tab.content.length, tab.content.length)
+    }
+  }
+
+  function handleShellInput(e, tabId) {
+    const tab = getShellTab(tabId)
+    if (!tab) return
+    if (e.target.value.length < tab.inputStart) {
+      e.target.value = tab.content
+      e.target.setSelectionRange(tab.content.length, tab.content.length)
+    } else {
+      tab.content = e.target.value
+    }
+    shellTabs = shellTabs
   }
 
   function startShellDrag(e) {
@@ -440,22 +521,38 @@
               {/if}
             </div>
             <div class="device-controls">
-              <button class="dev-btn" on:click={deviceBack}>◀ Back</button>
-              <button class="dev-btn" on:click={deviceHome}>● Home</button>
+              <button class="dev-btn" on:click={deviceBack}>◀</button>
+              <button class="dev-btn" on:click={deviceHome}>●</button>
               <button class="dev-btn" on:click={captureFrame}>⟳</button>
               <span class="dev-info">{screenSize[0]}×{screenSize[1]}</span>
+              <input type="range" min="20" max="100" step="10" bind:value={screenQuality} class="quality-slider" title="Quality: {screenQuality}%" />
+              <span class="dev-info">{screenQuality}%</span>
             </div>
           </div>
         </div>
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div class="shell-drag" on:mousedown={startShellDrag}></div>
         <div class="device-shell" style="height: {shellHeight}px">
-          <div class="shell-header">SHELL</div>
-          <pre class="shell-output">{shellOutput || 'Type commands below...'}</pre>
-          <div class="shell-input-row">
-            <span class="shell-prompt">$</span>
-            <input class="shell-input" bind:value={shellInput} on:keydown={runShellCmd} placeholder="adb shell ..." />
+          <div class="shell-tab-bar">
+            {#each shellTabs as st}
+              <button class="sh-tab" class:sh-tab-active={st.id === activeShellTab} on:click={() => activeShellTab = st.id}>
+                {st.label}
+                <button class="sh-tab-close" on:click|stopPropagation={() => closeShellTab(st.id)}>×</button>
+              </button>
+            {/each}
+            <button class="sh-tab-add" on:click={addShellTab}>+</button>
           </div>
+          {#each shellTabs as st}
+            {#if st.id === activeShellTab}
+              <textarea
+                class="shell-area"
+                bind:value={st.content}
+                on:keydown={(e) => handleShellKey(e, st.id)}
+                on:input={(e) => handleShellInput(e, st.id)}
+                spellcheck="false"
+              ></textarea>
+            {/if}
+          {/each}
         </div>
       </div>
     {:else if selectedFlow}
@@ -890,22 +987,39 @@
 
   .shell-drag { height: 5px; cursor: row-resize; background: var(--border, #1e1e24); flex-shrink: 0; }
   .shell-drag:hover, .shell-drag:active { background: var(--accent, #38bdf8); }
+  .quality-slider { width: 60px; accent-color: var(--accent, #38bdf8); }
+
   .device-shell {
     display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden;
     background: var(--bg, #0a0a0f);
   }
-  .shell-header { font-size: 9px; color: var(--fg-ghost, #3f3f46); padding: 4px 10px; letter-spacing: 1px; }
-  .shell-output {
-    flex: 1; overflow-y: auto; padding: 0 10px; font-size: 12px; color: var(--green, #34d399);
-    margin: 0; white-space: pre-wrap; word-break: break-all;
+  .shell-tab-bar {
+    display: flex; background: var(--bg-panel, #111116); border-bottom: 1px solid var(--border, #1e1e24);
+    padding: 0 4px; align-items: stretch; flex-shrink: 0;
   }
-  .shell-input-row {
-    display: flex; align-items: center; padding: 4px 10px; border-top: 1px solid var(--border, #1e1e24);
+  .sh-tab {
+    padding: 4px 10px; font-size: 10px; border: none; background: transparent;
+    color: var(--fg-dim, #71717a); cursor: pointer; font-family: inherit;
+    display: flex; align-items: center; gap: 4px; border-bottom: 2px solid transparent;
   }
-  .shell-prompt { color: var(--green, #34d399); font-size: 12px; margin-right: 6px; font-weight: 600; }
-  .shell-input {
-    flex: 1; background: transparent; border: none; color: var(--fg, #e4e4e7);
-    font-size: 12px; font-family: inherit; outline: none; caret-color: var(--green, #34d399);
+  .sh-tab:hover { color: var(--fg-muted, #a1a1aa); }
+  .sh-tab-active { color: var(--green, #34d399); border-bottom-color: var(--green, #34d399); }
+  .sh-tab-close {
+    font-size: 12px; color: var(--fg-ghost, #3f3f46); background: transparent; border: none;
+    cursor: pointer; padding: 0; width: 14px; height: 14px; display: flex; align-items: center; justify-content: center;
+  }
+  .sh-tab-close:hover { color: var(--red, #f87171); }
+  .sh-tab-add {
+    padding: 4px 8px; font-size: 14px; border: none; background: transparent;
+    color: var(--fg-ghost, #3f3f46); cursor: pointer; font-family: inherit;
+  }
+  .sh-tab-add:hover { color: var(--green, #34d399); }
+  .shell-area {
+    flex: 1; resize: none; border: none; outline: none;
+    background: var(--bg, #0a0a0f); color: var(--green, #34d399);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px; line-height: 1.5; padding: 6px 10px;
+    caret-color: var(--green, #34d399);
   }
 
   .btn-replay, .btn-replay-edit {

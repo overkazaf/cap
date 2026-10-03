@@ -1,0 +1,65 @@
+internal/screen/scrcpy_deploy_test.go
+  936d2bd656d204f8 1-343
+internal/screen/screen_test.go
+  936d2bd656d204f8 498-533,535-536
+internal/screen/scrcpy.go
+  936d2bd656d204f8 1-683
+internal/screen/screen.go
+  936d2bd656d204f8 15-20,34-36,111-116,119-121,127
+internal/screen/scrcpy_test.go
+  936d2bd656d204f8 1-741
+internal/screen/scrcpy_deploy.go
+  936d2bd656d204f8 1-185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "1824107f2b92b6924e872be1e268f5cde207f9b5",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 2138,
+      "total_deletions": 140,
+      "accepted_lines": 2009,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/screen/scrcpy_deploy_test.go": {
+          "additions": 346,
+          "deletions": 3,
+          "accepted_lines": 343
+        },
+        "internal/screen/screen.go": {
+          "additions": 19,
+          "deletions": 8,
+          "accepted_lines": 19
+        },
+        "internal/screen/scrcpy.go": {
+          "additions": 792,
+          "deletions": 109,
+          "accepted_lines": 683
+        },
+        "internal/screen/scrcpy_deploy.go": {
+          "additions": 188,
+          "deletions": 3,
+          "accepted_lines": 185
+        },
+        "internal/screen/screen_test.go": {
+          "additions": 38,
+          "deletions": 3,
+          "accepted_lines": 38
+        },
+        "internal/screen/scrcpy_test.go": {
+          "additions": 755,
+          "deletions": 14,
+          "accepted_lines": 741
+        }
+      }
+    }
+  }
+}

@@ -5,6 +5,7 @@
   import Flows from './pages/Flows.svelte'
   import Terminal from './pages/Terminal.svelte'
   import Plugins from './pages/Plugins.svelte'
+  import DeepTrace from './pages/DeepTrace.svelte'
   import Settings from './pages/Settings.svelte'
 
   let currentPage = 'capture'
@@ -14,6 +15,7 @@
     { id: 'flows', label: 'Flows', icon: '📡' },
     { id: 'terminal', label: 'Terminal', icon: '⌨' },
     { id: 'plugins', label: 'Plugins', icon: '🔌' },
+    { id: 'trace', label: 'Trace', icon: '🔬' },
     { id: 'settings', label: 'Settings', icon: '⚙' },
   ]
 
@@ -53,6 +55,8 @@
       <Terminal />
     {:else if currentPage === 'plugins'}
       <Plugins />
+    {:else if currentPage === 'trace'}
+      <DeepTrace />
     {:else if currentPage === 'settings'}
       <Settings />
     {/if}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/overkazaf/cap/internal/android"
+	captrace "github.com/overkazaf/cap/internal/trace"
 	"github.com/overkazaf/cap/internal/compare"
 	"github.com/overkazaf/cap/internal/grouping"
 	"github.com/overkazaf/cap/internal/importer"
@@ -860,6 +861,35 @@ func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
 	}
 
 	return env, nil
+}
+
+// ==================== Deep Trace ====================
+
+func (a *App) DeepTrace(flowID, packageName string) (*captrace.TraceResult, error) {
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return nil, err
+	}
+
+	devices, _ := android.ListDevices()
+	serial := ""
+	if len(devices) > 0 {
+		serial = devices[0].Serial
+	}
+
+	return captrace.Trace(f, captrace.Options{
+		Serial:    serial,
+		OutputDir: filepath.Join(a.certDir, "trace", packageName),
+		Package:   packageName,
+	})
+}
+
+func (a *App) GetTraceMermaid(flowID, packageName string) (string, error) {
+	result, err := a.DeepTrace(flowID, packageName)
+	if err != nil {
+		return "", err
+	}
+	return result.Mermaid, nil
 }
 
 // ==================== Device Screen ====================

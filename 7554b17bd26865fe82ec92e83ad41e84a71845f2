@@ -1,0 +1,85 @@
+frontend/src/pages/DeepTrace.svelte
+  936d2bd656d204f8 1-251
+frontend/dist/assets/index-DiCiaDRm.js
+  936d2bd656d204f8 1-21
+frontend/src/App.svelte
+  936d2bd656d204f8 8,18,58-59
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+internal/trace/trace.go
+  936d2bd656d204f8 1-448
+frontend/dist/assets/index-DUTNs2Fs.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/assets/index-DUTNs2Fs.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+internal/wailsgui/app.go
+  936d2bd656d204f8 21,866-894
+cmd/cap/frontend/dist/assets/index-DiCiaDRm.js
+  936d2bd656d204f8 1-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "7554b17bd26865fe82ec92e83ad41e84a71845f2",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 781,
+      "total_deletions": 4,
+      "accepted_lines": 781,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/src/App.svelte": {
+          "additions": 4,
+          "accepted_lines": 4
+        },
+        "cmd/cap/frontend/dist/assets/index-DUTNs2Fs.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-DUTNs2Fs.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/src/pages/DeepTrace.svelte": {
+          "additions": 251,
+          "accepted_lines": 251
+        },
+        "internal/trace/trace.go": {
+          "additions": 448,
+          "accepted_lines": 448
+        },
+        "cmd/cap/frontend/dist/assets/index-DiCiaDRm.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "frontend/dist/assets/index-DiCiaDRm.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 30,
+          "accepted_lines": 30
+        }
+      }
+    }
+  }
+}

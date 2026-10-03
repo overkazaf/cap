@@ -52,7 +52,8 @@ func newGUICmd() *cobra.Command {
 				AssetServer: &assetserver.Options{
 					Assets: stripped,
 				},
-				OnStartup: app.Startup,
+				OnStartup:  app.Startup,
+				OnShutdown: app.Shutdown,
 				Bind: []interface{}{
 					app,
 				},

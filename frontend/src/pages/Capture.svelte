@@ -1,19 +1,23 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
+  import { state as S } from '../lib/captureState.js'
 
-  let proxyAddr = '0.0.0.0:8080'
-  let isRunning = false
-  let isPaused = false
-  let logs = []
-  let devices = []
-  let selectedDevice = ''
-  let port = '8080'
-  let installCert = true
+  let proxyAddr = S.proxyAddr
+  let isRunning = S.isRunning
+  let isPaused = S.isPaused
+  let logs = S.logs
+  let devices = S.devices
+  let selectedDevice = S.selectedDevice
+  let port = S.port
+  let installCert = S.installCert
   let busy = false
-  let rate = { req_per_sec: 0, byte_per_sec: 0, total_reqs: 0, total_bytes: 0 }
+  let rate = S.rate
   let rateInterval = null
-  let deviceEnv = null
+  let deviceEnv = S.deviceEnv
   let envLoading = false
+
+  // Sync back to shared state on changes
+  $: { S.proxyAddr = proxyAddr; S.isRunning = isRunning; S.isPaused = isPaused; S.logs = logs; S.devices = devices; S.selectedDevice = selectedDevice; S.port = port; S.installCert = installCert; S.deviceEnv = deviceEnv; S.rate = rate; }
 
   function log(msg) {
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
@@ -86,8 +90,17 @@
     envLoading = false
   }
 
-  onMount(() => refreshDevices())
-  onDestroy(() => { if (rateInterval) clearInterval(rateInterval) })
+  onMount(() => {
+    if (!S.initialized) {
+      S.initialized = true
+      refreshDevices()
+    }
+    // Restart rate polling if proxy is running
+    if (isRunning && !rateInterval) {
+      rateInterval = setInterval(async () => { try { rate = await window.go.wailsgui.App.GetTrafficRate() } catch(e) {} }, 1000)
+    }
+  })
+  onDestroy(() => { if (rateInterval) { clearInterval(rateInterval); rateInterval = null } })
 </script>
 
 <div class="page">

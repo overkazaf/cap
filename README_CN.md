@@ -184,17 +184,55 @@ cap context import --jadx ./jadx-output/
 
 ## 安装
 
+### 仅 CLI（不含 GUI）
+
 ```bash
-# 从源码构建（推荐）
 git clone https://github.com/overkazaf/cap.git
 cd cap
 go build -o cap ./cmd/cap
-
-# 或通过 go install
-go install github.com/overkazaf/cap/cmd/cap@latest
+./cap --help
 ```
 
-**环境要求**：Go 1.21+，macOS 或 Linux（GUI 需要 Xcode 命令行工具）
+### 完整构建（含 Wails + Svelte GUI）
+
+```bash
+# 前置依赖：Go 1.21+, Node.js 18+, Xcode CLI (macOS)
+
+# 1. 克隆
+git clone https://github.com/overkazaf/cap.git
+cd cap
+
+# 2. 构建前端
+cd frontend
+npm install
+npx vite build
+cd ..
+
+# 3. 拷贝前端资源用于嵌入
+cp -r frontend/dist cmd/cap/frontend/dist
+
+# 4. 构建 Go 二进制（macOS）
+CGO_LDFLAGS="-framework UniformTypeIdentifiers" \
+  go build -tags desktop,production -o cap ./cmd/cap
+
+# 5. 运行
+./cap gui          # 桌面 GUI
+./cap start        # 仅 CLI 代理
+```
+
+### Linux 构建
+
+```bash
+# 安装依赖：sudo apt install libgtk-3-dev libwebkit2gtk-4.0-dev
+# 同上步骤，但无需 CGO_LDFLAGS：
+go build -tags desktop,production -o cap ./cmd/cap
+```
+
+**环境要求**：
+- **Go** 1.21+
+- **Node.js** 18+（构建前端）
+- **macOS**：Xcode 命令行工具
+- **Linux**：`libgtk-3-dev libwebkit2gtk-4.0-dev`
 
 ## 快速开始
 

@@ -10,6 +10,19 @@
   let isNew = false
   let runOutput = ''
   let runFlowId = ''
+  let testHeight = 200
+  let testDragging = false
+
+  function startTestDrag(e) {
+    testDragging = true
+    e.preventDefault()
+    const startY = e.clientY
+    const startH = testHeight
+    const onMove = (ev) => { if (testDragging) testHeight = Math.max(100, Math.min(600, startH - (ev.clientY - startY))) }
+    const onUp = () => { testDragging = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
   async function loadPlugins() {
     try { plugins = await window.go.wailsgui.App.ListPlugins() || [] } catch(e) { console.error(e) }
@@ -158,14 +171,16 @@ function analyze(flow) {
 
       <textarea class="code-editor" bind:value={editCode} spellcheck="false"></textarea>
 
-      <div class="run-bar">
-        <span class="run-label">TEST</span>
-        <input class="run-flow" placeholder="Flow ID (e.g. f1)" bind:value={runFlowId} />
-        <button class="btn-run" on:click={runPlugin}>▶ Run</button>
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="test-drag" on:mousedown={startTestDrag}></div>
+      <div class="test-panel" style="height: {testHeight}px">
+        <div class="run-bar">
+          <span class="run-label">TEST</span>
+          <input class="run-flow" placeholder="Flow ID (e.g. f1)" bind:value={runFlowId} />
+          <button class="btn-run" on:click={runPlugin}>▶ Run</button>
+        </div>
+        <pre class="run-output">{runOutput || 'Output will appear here...'}</pre>
       </div>
-      {#if runOutput}
-        <pre class="run-output">{runOutput}</pre>
-      {/if}
     {:else}
       <div class="empty-editor">
         <div class="empty-icon">🔌</div>
@@ -269,10 +284,17 @@ function analyze(flow) {
   }
   .btn-run:hover { background: #1e4a6f; }
 
+  .test-drag {
+    height: 5px; cursor: row-resize; background: var(--border, #1e1e24); flex-shrink: 0;
+  }
+  .test-drag:hover, .test-drag:active { background: var(--accent, #38bdf8); }
+  .test-panel {
+    display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden;
+  }
   .run-output {
-    max-height: 150px; overflow-y: auto; padding: 8px 12px;
+    flex: 1; overflow-y: auto; padding: 8px 12px;
     font-size: 12px; color: var(--fg-muted, #a1a1aa); margin: 0; white-space: pre-wrap;
-    border-top: 1px solid var(--border, #1e1e24); background: var(--bg, #0a0a0f);
+    background: var(--bg, #0a0a0f);
   }
 
   .empty { padding: 20px; text-align: center; color: var(--fg-ghost, #3f3f46); font-size: 12px; }

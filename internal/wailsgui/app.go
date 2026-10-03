@@ -704,6 +704,164 @@ func (a *App) GetVersion() string {
 	return "0.2.0"
 }
 
+// ==================== Device Environment ====================
+
+type DeviceEnv struct {
+	Model       string `json:"model"`
+	Brand       string `json:"brand"`
+	Android     string `json:"android"`
+	SDK         string `json:"sdk"`
+	CPU         string `json:"cpu"`
+	RAM         string `json:"ram"`
+	Screen      string `json:"screen"`
+	Kernel      string `json:"kernel"`
+	Battery     string `json:"battery"`
+	Rooted      bool   `json:"rooted"`
+	RootMethod  string `json:"root_method"`
+	Magisk      string `json:"magisk"`
+	MagiskVer   string `json:"magisk_ver"`
+	Zygisk      bool   `json:"zygisk"`
+	LSPosed     bool   `json:"lsposed"`
+	LSPosedVer  string `json:"lsposed_ver"`
+	SELinux     string `json:"selinux"`
+	Integrity   string `json:"integrity"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
+	prop := func(key string) string {
+		args := []string{}
+		if serial != "" {
+			args = append(args, "-s", serial)
+		}
+		args = append(args, "shell", "getprop", key)
+		out, err := exec.Command("adb", args...).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	shell := func(cmd string) string {
+		args := []string{}
+		if serial != "" {
+			args = append(args, "-s", serial)
+		}
+		args = append(args, "shell", cmd)
+		out, _ := exec.Command("adb", args...).CombinedOutput()
+		return strings.TrimSpace(string(out))
+	}
+
+	suShell := func(cmd string) string {
+		args := []string{}
+		if serial != "" {
+			args = append(args, "-s", serial)
+		}
+		args = append(args, "shell", fmt.Sprintf("su -c '%s'", cmd))
+		out, _ := exec.Command("adb", args...).CombinedOutput()
+		return strings.TrimSpace(string(out))
+	}
+
+	env := &DeviceEnv{
+		Model:       prop("ro.product.model"),
+		Brand:       prop("ro.product.brand"),
+		Android:     prop("ro.build.version.release"),
+		SDK:         prop("ro.build.version.sdk"),
+		CPU:         prop("ro.product.cpu.abi"),
+		Kernel:      shell("uname -r"),
+		Fingerprint: prop("ro.build.fingerprint"),
+	}
+
+	// Screen
+	env.Screen = shell("wm size")
+	if idx := strings.Index(env.Screen, ": "); idx >= 0 {
+		env.Screen = env.Screen[idx+2:]
+	}
+
+	// RAM
+	memInfo := shell("cat /proc/meminfo | head -1")
+	if strings.Contains(memInfo, "MemTotal") {
+		parts := strings.Fields(memInfo)
+		if len(parts) >= 2 {
+			kb := 0
+			fmt.Sscanf(parts[1], "%d", &kb)
+			env.RAM = fmt.Sprintf("%.1f GB", float64(kb)/1048576.0)
+		}
+	}
+
+	// Battery
+	battInfo := shell("dumpsys battery | grep level")
+	if strings.Contains(battInfo, "level") {
+		parts := strings.Split(battInfo, ":")
+		if len(parts) >= 2 {
+			env.Battery = strings.TrimSpace(parts[1]) + "%"
+		}
+	}
+
+	// Root check
+	rootCheck := shell("su -c id")
+	env.Rooted = strings.Contains(rootCheck, "uid=0")
+	if env.Rooted {
+		env.RootMethod = "su"
+	}
+
+	// Magisk
+	magiskVer := suShell("magisk -v")
+	if magiskVer != "" && !strings.Contains(magiskVer, "not found") && !strings.Contains(magiskVer, "error") {
+		env.Magisk = "installed"
+		env.MagiskVer = magiskVer
+		env.RootMethod = "Magisk"
+	} else {
+		magiskDir := suShell("ls /data/adb/magisk/")
+		if magiskDir != "" && !strings.Contains(magiskDir, "No such") {
+			env.Magisk = "installed"
+			env.RootMethod = "Magisk"
+		} else {
+			env.Magisk = "not found"
+		}
+	}
+
+	// Zygisk
+	zygiskProp := prop("persist.magisk.zygisk")
+	if zygiskProp == "1" {
+		env.Zygisk = true
+	} else {
+		zygiskCheck := suShell("ls /data/adb/modules/zygisksu 2>/dev/null || ls /data/adb/modules/zygisk* 2>/dev/null")
+		env.Zygisk = zygiskCheck != "" && !strings.Contains(zygiskCheck, "No such")
+	}
+
+	// LSPosed
+	lsposedCheck := shell("pm list packages 2>/dev/null | grep lspd")
+	if strings.Contains(lsposedCheck, "lspd") {
+		env.LSPosed = true
+	} else {
+		lspdDir := suShell("ls /data/adb/lspd/ 2>/dev/null || ls /data/adb/modules/lsposed* 2>/dev/null")
+		env.LSPosed = lspdDir != "" && !strings.Contains(lspdDir, "No such")
+	}
+	if env.LSPosed {
+		env.LSPosedVer = suShell("cat /data/adb/lspd/manager/version 2>/dev/null")
+	}
+
+	// SELinux
+	env.SELinux = shell("getenforce")
+
+	// Google Play Integrity (basic check)
+	gmsVer := shell("dumpsys package com.google.android.gms 2>/dev/null | grep versionName | head -1")
+	if strings.Contains(gmsVer, "versionName") {
+		parts := strings.Split(gmsVer, "=")
+		if len(parts) >= 2 {
+			env.Integrity = "GMS " + strings.TrimSpace(parts[1])
+		}
+	}
+	// Check if device passes basic integrity
+	integrityCheck := prop("ro.boot.verifiedbootstate")
+	if integrityCheck != "" {
+		env.Integrity += " | boot=" + integrityCheck
+	}
+
+	return env, nil
+}
+
 // ==================== Device Screen ====================
 
 func (a *App) CaptureScreen(serial string) (string, error) {

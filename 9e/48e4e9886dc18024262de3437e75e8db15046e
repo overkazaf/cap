@@ -1,0 +1,85 @@
+README.md
+  936d2bd656d204f8 258-259,264-277,279-290,292-301,304-308
+frontend/dist/assets/index-ChP_OdK2.js
+  936d2bd656d204f8 1-4,7-11,21
+cmd/cap/frontend/dist/assets/index-ChP_OdK2.js
+  936d2bd656d204f8 1-4,7-11,21
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+README_CN.md
+  936d2bd656d204f8 187-188,193-203,205-216,218-228,231-235
+frontend/src/pages/Plugins.svelte
+  936d2bd656d204f8 13-25,174-182,287-293,295,297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "9e48e4e9886dc18024262de3437e75e8db15046e",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 163,
+      "total_deletions": 85,
+      "accepted_lines": 163,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/frontend/dist/assets/index-YIWXWsTs.css": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-BVN-bh4_.js": {
+          "deletions": 21
+        },
+        "cmd/cap/frontend/dist/assets/index-bvn-bh4_.js": {
+          "deletions": 21
+        },
+        "frontend/dist/assets/index-YIWXWsTs.css": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-yiwxwsts.css": {
+          "deletions": 1
+        },
+        "frontend/src/pages/Plugins.svelte": {
+          "additions": 31,
+          "deletions": 9,
+          "accepted_lines": 31
+        },
+        "frontend/dist/assets/index-ChP_OdK2.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "README_CN.md": {
+          "additions": 42,
+          "deletions": 4,
+          "accepted_lines": 42
+        },
+        "cmd/cap/frontend/dist/assets/index-ChP_OdK2.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "README.md": {
+          "additions": 44,
+          "deletions": 4,
+          "accepted_lines": 44
+        },
+        "frontend/dist/assets/index-BVN-bh4_.js": {
+          "deletions": 21
+        }
+      }
+    }
+  }
+}

@@ -1118,7 +1118,6 @@ func (a *App) CaptureScrcpy(serial string) (string, error) {
 		Serial:  serial,
 		Engine:  screen.EngineScrcpy,
 		MaxSize: 540,
-		MaxFPS:  15,
 		Quality: 70,
 	})
 	if err != nil {
@@ -1128,7 +1127,7 @@ func (a *App) CaptureScrcpy(serial string) (string, error) {
 }
 
 func (a *App) DeployScrcpy(serial string) (string, error) {
-	cacheDir := screen.DefaultCacheDir()
+	cacheDir, _ := screen.DefaultCacheDir()
 	if err := screen.DeployScrcpyServer(serial, cacheDir); err != nil {
 		return "", err
 	}

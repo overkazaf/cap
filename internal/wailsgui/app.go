@@ -570,16 +570,23 @@ func (a *App) AnalyzeSign(flowID string) ([]SignResult, error) {
 // ==================== Terminal ====================
 
 func (a *App) ExecCommand(cmd string) (string, error) {
-	parts := strings.Fields(cmd)
-	if len(parts) == 0 {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
 		return "", nil
 	}
-	c := exec.Command(parts[0], parts[1:]...)
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	c := exec.Command(shell, "-c", cmd)
 	c.Env = os.Environ()
 	out, err := c.CombinedOutput()
-	result := strings.TrimRight(string(out), "\n")
-	if err != nil && result == "" {
-		return "", err
+	result := string(out)
+	if err != nil {
+		if result != "" {
+			return result, nil
+		}
+		return err.Error(), nil
 	}
 	return result, nil
 }

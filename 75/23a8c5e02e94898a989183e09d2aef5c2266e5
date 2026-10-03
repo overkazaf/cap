@@ -1,0 +1,86 @@
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/dist/assets/index-BVN-bh4_.js
+  936d2bd656d204f8 1-11,21
+frontend/dist/assets/index-YIWXWsTs.css
+  936d2bd656d204f8 1
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 45-50,61-97,512,731-757,1090-1122
+internal/plugin/engine.go
+  936d2bd656d204f8 141-151,155-244
+cmd/cap/frontend/dist/assets/index-BVN-bh4_.js
+  936d2bd656d204f8 1-11,21
+cmd/cap/frontend/dist/assets/index-YIWXWsTs.css
+  936d2bd656d204f8 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "7523a8c5e02e94898a989183e09d2aef5c2266e5",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 253,
+      "total_deletions": 69,
+      "accepted_lines": 253,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 104,
+          "deletions": 1,
+          "accepted_lines": 104
+        },
+        "frontend/dist/assets/index-pHK3d715.js": {
+          "deletions": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-BXR0VVlD.css": {
+          "deletions": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-phk3d715.js": {
+          "deletions": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-pHK3d715.js": {
+          "deletions": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-bxr0vvld.css": {
+          "deletions": 1
+        },
+        "frontend/dist/assets/index-BXR0VVlD.css": {
+          "deletions": 1
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-YIWXWsTs.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-BVN-bh4_.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "cmd/cap/frontend/dist/assets/index-YIWXWsTs.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "internal/plugin/engine.go": {
+          "additions": 103,
+          "deletions": 3,
+          "accepted_lines": 103
+        },
+        "frontend/dist/assets/index-BVN-bh4_.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,60 @@
+internal/rules/handler.go
+  936d2bd656d204f8 1-274
+internal/rules/engine.go
+  936d2bd656d204f8 1-245
+internal/rules/engine_test.go
+  936d2bd656d204f8 1-185
+internal/rules/rule.go
+  936d2bd656d204f8 1-166
+internal/rules/handler_test.go
+  936d2bd656d204f8 1-551
+internal/rules/rule_test.go
+  936d2bd656d204f8 1-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "19fefdee0049ad415cc2bd2c991be6987624ca37",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 1605,
+      "total_deletions": 4,
+      "accepted_lines": 1601,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/rules/rule.go": {
+          "additions": 166,
+          "accepted_lines": 166
+        },
+        "internal/rules/rule_test.go": {
+          "additions": 184,
+          "deletions": 4,
+          "accepted_lines": 180
+        },
+        "internal/rules/engine.go": {
+          "additions": 245,
+          "accepted_lines": 245
+        },
+        "internal/rules/handler_test.go": {
+          "additions": 551,
+          "accepted_lines": 551
+        },
+        "internal/rules/handler.go": {
+          "additions": 274,
+          "accepted_lines": 274
+        },
+        "internal/rules/engine_test.go": {
+          "additions": 185,
+          "accepted_lines": 185
+        }
+      }
+    }
+  }
+}

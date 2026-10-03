@@ -138,10 +138,110 @@ func (e *Engine) RunAnalyzer(name string, flow *types.Flow) *ExecResult {
 		return &ExecResult{Error: fmt.Sprintf("plugin %q is disabled", name)}
 	}
 
-	flowJSON, _ := json.MarshalIndent(flow, "", "  ")
-	return &ExecResult{
-		Output: fmt.Sprintf("Plugin: %s\nType: %s\n\nFlow:\n%s\n\n[Plugin execution requires JS/Lua runtime - showing flow data for now]", p.Name, p.Type, string(flowJSON)),
+	// Run built-in pattern analysis based on plugin type
+	switch p.Type {
+	case "request_filter":
+		return runRequestFilter(p, flow)
+	case "analyzer":
+		return runAnalyzer(p, flow)
+	case "response_modifier":
+		return runResponseAnalysis(p, flow)
+	default:
+		flowJSON, _ := json.MarshalIndent(flow, "", "  ")
+		return &ExecResult{Output: fmt.Sprintf("Plugin: %s\n%s", p.Name, string(flowJSON))}
 	}
+}
+
+func runRequestFilter(p *Plugin, flow *types.Flow) *ExecResult {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("[%s] %s %s → %d", flow.ID, flow.Method, flow.URL, flow.Status))
+
+	if len(flow.ReqBody) > 0 {
+		body := string(flow.ReqBody)
+		if len(body) > 500 {
+			body = body[:500] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("  Body (%d bytes): %s", len(flow.ReqBody), body))
+	}
+
+	for k, v := range flow.ReqHeaders {
+		if strings.Contains(strings.ToLower(k), "auth") || strings.Contains(strings.ToLower(k), "token") || strings.Contains(strings.ToLower(k), "cookie") {
+			lines = append(lines, fmt.Sprintf("  🔑 %s: %s", k, v))
+		}
+	}
+
+	return &ExecResult{Output: strings.Join(lines, "\n")}
+}
+
+func runAnalyzer(p *Plugin, flow *types.Flow) *ExecResult {
+	var findings []string
+
+	// Check headers for sensitive data
+	for k, v := range flow.ReqHeaders {
+		kl := strings.ToLower(k)
+		if strings.Contains(kl, "api") && strings.Contains(kl, "key") {
+			findings = append(findings, fmt.Sprintf("🔐 API Key in header: %s = %s", k, truncate(v, 30)))
+		}
+		if strings.Contains(kl, "authorization") {
+			findings = append(findings, fmt.Sprintf("🔐 Auth header: %s = %s", k, truncate(v, 40)))
+		}
+		if strings.Contains(kl, "token") {
+			findings = append(findings, fmt.Sprintf("🔐 Token in header: %s = %s", k, truncate(v, 30)))
+		}
+	}
+
+	// Check URL for sensitive params
+	if strings.Contains(flow.URL, "key=") || strings.Contains(flow.URL, "token=") || strings.Contains(flow.URL, "secret=") {
+		findings = append(findings, fmt.Sprintf("⚠ Sensitive param in URL: %s", truncate(flow.URL, 80)))
+	}
+
+	// Check sign params
+	if len(flow.SignParams) > 0 {
+		findings = append(findings, fmt.Sprintf("🔍 Sign params detected: %s", strings.Join(flow.SignParams, ", ")))
+	}
+
+	// Check body for patterns
+	body := string(flow.ReqBody)
+	if strings.Contains(body, "password") || strings.Contains(body, "passwd") {
+		findings = append(findings, "⚠ Password field in request body")
+	}
+	if strings.Contains(body, "credit") || strings.Contains(body, "card_number") {
+		findings = append(findings, "🚨 Payment data in request body")
+	}
+
+	if len(findings) == 0 {
+		return &ExecResult{Output: fmt.Sprintf("[%s] No sensitive data found", flow.ID)}
+	}
+	return &ExecResult{Output: fmt.Sprintf("[%s] %d finding(s):\n%s", flow.ID, len(findings), strings.Join(findings, "\n"))}
+}
+
+func runResponseAnalysis(p *Plugin, flow *types.Flow) *ExecResult {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("[%s] Response: %d (%dms)", flow.ID, flow.Status, flow.LatencyMs))
+
+	respBody := string(flow.RespBody)
+	if len(respBody) > 0 {
+		// Check for common response patterns
+		if strings.Contains(respBody, "error") || strings.Contains(respBody, "Error") {
+			lines = append(lines, "  ⚠ Response contains error")
+		}
+		if strings.Contains(respBody, "token") || strings.Contains(respBody, "jwt") {
+			lines = append(lines, "  🔑 Response contains token/JWT")
+		}
+		if strings.Contains(respBody, "session") {
+			lines = append(lines, "  🔑 Response contains session data")
+		}
+		lines = append(lines, fmt.Sprintf("  Size: %d bytes, Type: %s", len(flow.RespBody), flow.RespBodyType))
+	}
+
+	return &ExecResult{Output: strings.Join(lines, "\n")}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func sanitizeName(name string) string {

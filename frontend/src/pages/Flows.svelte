@@ -42,6 +42,12 @@
 
   let capturePaused = false
 
+  // Plugins
+  let pluginList = []
+  let selectedPlugin = ''
+  let pluginLogs = []
+  let showPluginLog = false
+
   async function toggleCapturePause() {
     if (capturePaused) {
       await window.go.wailsgui.App.ResumeCapture()
@@ -50,6 +56,43 @@
       await window.go.wailsgui.App.PauseCapture()
       capturePaused = true
     }
+  }
+
+  async function loadPlugins() {
+    try { pluginList = await window.go.wailsgui.App.ListPlugins() || [] } catch(e) {}
+  }
+
+  async function applyPlugin() {
+    if (!selectedFlow || !selectedPlugin) return
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
+    pluginLogs = [...pluginLogs, `[${ts}] Running "${selectedPlugin}" on ${selectedFlow.id}...`]
+    showPluginLog = true
+    try {
+      const result = await window.go.wailsgui.App.RunPlugin(selectedPlugin, selectedFlow.id)
+      if (result.error) {
+        pluginLogs = [...pluginLogs, `[${ts}] ERROR: ${result.error}`]
+      } else {
+        pluginLogs = [...pluginLogs, `[${ts}] ${result.output}`]
+      }
+    } catch(e) {
+      pluginLogs = [...pluginLogs, `[${ts}] FAIL: ${e}`]
+    }
+  }
+
+  async function applyPluginToAll() {
+    if (!selectedPlugin) return
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
+    pluginLogs = [...pluginLogs, `[${ts}] Running "${selectedPlugin}" on ${flows.length} flows...`]
+    showPluginLog = true
+    for (const f of flows) {
+      try {
+        const result = await window.go.wailsgui.App.RunPlugin(selectedPlugin, f.id)
+        if (result.output) {
+          pluginLogs = [...pluginLogs, `[${ts}] ${f.id}: ${result.output.split('\n')[0]}`]
+        }
+      } catch(e) {}
+    }
+    pluginLogs = [...pluginLogs, `[${ts}] Done.`]
   }
 
   const languages = ['curl', 'python', 'go', 'java', 'js']
@@ -466,7 +509,7 @@
   }
 
   let interval
-  onMount(() => { loadFlows(); interval = setInterval(loadFlows, 2000) })
+  onMount(() => { loadFlows(); loadPlugins(); interval = setInterval(loadFlows, 2000) })
   onDestroy(() => { clearInterval(interval); stopScreen() })
 </script>
 
@@ -682,6 +725,33 @@
                 {#if sr.input_guess}<span class="sign-guess">{sr.input_guess}</span>{/if}
               </div>
             {/each}
+          </div>
+        {/if}
+
+        <div class="plugin-bar">
+          <span class="plugin-label">PLUGIN</span>
+          <select bind:value={selectedPlugin} class="plugin-select">
+            <option value="">Select plugin...</option>
+            {#each pluginList as p}
+              <option value={p.name}>{p.name} ({p.type})</option>
+            {/each}
+          </select>
+          <button class="btn-plugin" on:click={applyPlugin} disabled={!selectedPlugin}>▶ Apply</button>
+          <button class="btn-plugin" on:click={applyPluginToAll} disabled={!selectedPlugin}>▶ All</button>
+          <button class="btn-plugin-log" class:has-logs={pluginLogs.length > 0} on:click={() => showPluginLog = !showPluginLog}>
+            Log {pluginLogs.length > 0 ? `(${pluginLogs.length})` : ''}
+          </button>
+        </div>
+
+        {#if showPluginLog && pluginLogs.length > 0}
+          <div class="plugin-log-panel">
+            <div class="plog-header">
+              <span>PLUGIN LOG</span>
+              <button class="plog-clear" on:click={() => { pluginLogs = []; showPluginLog = false }}>Clear</button>
+            </div>
+            <div class="plog-body">
+              {#each pluginLogs as line}<div class="plog-line">{line}</div>{/each}
+            </div>
           </div>
         {/if}
 
@@ -1017,6 +1087,39 @@
     align-items: center; justify-content: center;
     color: var(--fg-ghost, #3f3f46); font-size: 14px; gap: 8px;
   }
+  .plugin-bar {
+    display: flex; align-items: center; gap: 6px; padding: 5px 12px;
+    background: var(--bg-header, #0d0d12); border-bottom: 1px solid var(--border, #1e1e24);
+  }
+  .plugin-label { font-size: 9px; color: var(--fg-faint, #52525b); letter-spacing: 0.5px; text-transform: uppercase; }
+  .plugin-select {
+    flex: 1; max-width: 200px; background: var(--bg, #0a0a0f); border: 1px solid var(--border, #27272a);
+    border-radius: 4px; padding: 3px 6px; color: var(--fg, #e4e4e7); font-size: 11px; font-family: inherit; outline: none;
+  }
+  .btn-plugin {
+    padding: 3px 10px; font-size: 10px; border: 1px solid var(--border, #27272a);
+    background: transparent; color: var(--fg-dim, #71717a); border-radius: 4px; cursor: pointer; font-family: inherit;
+  }
+  .btn-plugin:hover { background: var(--bg-btn, #1a1a22); color: var(--fg-muted, #a1a1aa); }
+  .btn-plugin:disabled { opacity: 0.3; }
+  .btn-plugin-log {
+    padding: 3px 8px; font-size: 10px; border: 1px solid transparent;
+    background: transparent; color: var(--fg-ghost, #3f3f46); border-radius: 4px; cursor: pointer; font-family: inherit; margin-left: auto;
+  }
+  .btn-plugin-log.has-logs { color: var(--green, #34d399); border-color: var(--green, #34d399); }
+
+  .plugin-log-panel {
+    max-height: 150px; display: flex; flex-direction: column;
+    border-bottom: 1px solid var(--border, #1e1e24); background: var(--bg, #0a0a0f);
+  }
+  .plog-header {
+    display: flex; justify-content: space-between; padding: 4px 12px;
+    font-size: 9px; color: var(--accent, #38bdf8); letter-spacing: 1px;
+  }
+  .plog-clear { background: none; border: none; color: var(--fg-ghost, #3f3f46); font-size: 9px; cursor: pointer; font-family: inherit; }
+  .plog-body { flex: 1; overflow-y: auto; padding: 0 12px 6px; font-size: 10px; }
+  .plog-line { color: var(--fg-muted, #a1a1aa); line-height: 1.5; font-family: 'SF Mono', monospace; }
+
   .detail-empty-icon { font-size: 32px; opacity: 0.5; }
 
   .right-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }

@@ -40,6 +40,18 @@
   let activeShellTab = null
   let shellTabCounter = 0
 
+  let capturePaused = false
+
+  async function toggleCapturePause() {
+    if (capturePaused) {
+      await window.go.wailsgui.App.ResumeCapture()
+      capturePaused = false
+    } else {
+      await window.go.wailsgui.App.PauseCapture()
+      capturePaused = true
+    }
+  }
+
   const languages = ['curl', 'python', 'go', 'java', 'js']
 
   async function loadFlows() {
@@ -472,11 +484,15 @@
       {viewMode === 'grouped' ? '☰ Flat' : '⊞ Group'}
     </button>
     <button class="btn-clear" on:click={clearFlows} title="Clear all flows">✕ Clear</button>
+    <button class="btn-pause" on:click={toggleCapturePause} title="Pause/resume capture">
+      {capturePaused ? '▶ Resume' : '⏸ Pause'}
+    </button>
   </div>
 
   <div class="main-split">
     <div class="flow-list" style="width: {listWidth}%">
       <div class="list-header">
+        <span class="col-id">ID</span>
         <span class="col-method">MTD</span>
         <span class="col-status">ST</span>
         <span class="col-host">Host</span>
@@ -509,6 +525,7 @@
         {:else}
           {#each flows as f}
             <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} on:click={() => selectFlow(f)}>
+              <span class="col-id">{f.id}</span>
               <span class="col-method {methodClass(f.method)}">{f.method}</span>
               <span class="col-status {statusClass(f.status)}">{f.status}</span>
               <span class="col-host">{f.host}</span>
@@ -594,13 +611,14 @@
     {:else if selectedFlow}
       <div class="detail-panel">
         <div class="detail-header">
+          <span class="flow-id-badge">{selectedFlow.id}</span>
           <span class="detail-method {methodClass(selectedFlow.method)}">{selectedFlow.method}</span>
           <span class="detail-url" title={selectedFlow.url}>{selectedFlow.url}</span>
           <button class="btn-icon" on:click={() => copyText(selectedFlow.url)} title="Copy URL">📋</button>
           <span class="{statusClass(selectedFlow.status)}">{selectedFlow.status}</span>
           <span class="detail-latency">{selectedFlow.latency_ms}ms</span>
           <button class="btn-replay" on:click={replayFlow} disabled={replaying}>▶ Replay</button>
-          <button class="btn-replay-edit" on:click={openReplayEditor}>✎ Modify</button>
+          <button class="btn-replay-edit" on:click={openReplayEditor}>✎ Modify & Replay</button>
         </div>
 
         {#if showReplayEditor}
@@ -801,6 +819,14 @@
   }
   .btn-view:hover { background: var(--bg-btn, #1a1a22); color: var(--fg-muted, #a1a1aa); }
   .btn-view-active { background: var(--accent-bg, #1e3a5f); border-color: var(--accent, #38bdf8); color: var(--accent, #7dd3fc); }
+  .col-id { width: 36px; flex-shrink: 0; color: var(--fg-ghost, #3f3f46); font-size: 10px; }
+
+  .btn-pause {
+    padding: 4px 10px; font-size: 11px; border: 1px solid var(--border, #27272a);
+    background: transparent; color: var(--fg-dim, #71717a); border-radius: 4px; cursor: pointer; font-family: inherit;
+  }
+  .btn-pause:hover { background: var(--bg-btn, #1a1a22); }
+
   .btn-clear {
     padding: 4px 10px; font-size: 11px; border: 1px solid #3f3f46;
     background: transparent; color: var(--fg-dim, #71717a); border-radius: 4px; cursor: pointer; font-family: inherit;
@@ -890,6 +916,10 @@
   .detail-header {
     display: flex; gap: 8px; padding: 8px 12px; align-items: center;
     background: var(--bg-header, #0d0d12); border-bottom: 1px solid var(--border, #1e1e24); font-size: 12px;
+  }
+  .flow-id-badge {
+    padding: 2px 6px; background: var(--accent-bg, #1e3a5f); color: var(--accent, #38bdf8);
+    border-radius: 3px; font-size: 10px; font-weight: 600; font-family: 'SF Mono', monospace;
   }
   .detail-method { font-weight: 700; }
   .detail-url { flex: 1; color: var(--fg-muted, #a1a1aa); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

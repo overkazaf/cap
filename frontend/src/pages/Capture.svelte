@@ -34,6 +34,13 @@
   let deviceEnv = null
   let envLoading = false
 
+  // RE tools
+  let appDetail = null
+  let inspectPkg = ''
+  let fridaStatus = null
+  let logcatOutput = ''
+  let logcatFilter = ''
+
   function log(msg) {
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
     logs = [...logs, `[${ts}] ${msg}`]
@@ -176,6 +183,46 @@
     envLoading = false
   }
 
+  async function inspectApp() {
+    if (!selectedDevice || !inspectPkg.trim()) return
+    log(`Inspecting ${inspectPkg}...`)
+    try {
+      appDetail = await window.go.wailsgui.App.InspectApp(selectedDevice, inspectPkg.trim())
+      log(`Inspected ${inspectPkg}`)
+    } catch(e) { log(`Inspect failed: ${e}`) }
+  }
+
+  async function pullAPK() {
+    if (!selectedDevice || !inspectPkg.trim()) return
+    log(`Pulling APK for ${inspectPkg}...`)
+    try {
+      const path = await window.go.wailsgui.App.PullAPK(selectedDevice, inspectPkg.trim())
+      log(`APK saved: ${path}`)
+    } catch(e) { log(`Pull failed: ${e}`) }
+  }
+
+  async function checkFrida() {
+    if (!selectedDevice) return
+    try { fridaStatus = await window.go.wailsgui.App.CheckFrida(selectedDevice) } catch(e) {}
+  }
+
+  async function startFrida() {
+    if (!selectedDevice) return
+    log('Starting frida-server...')
+    try {
+      await window.go.wailsgui.App.StartFrida(selectedDevice)
+      log('Frida started')
+      setTimeout(checkFrida, 1000)
+    } catch(e) { log(`Frida failed: ${e}`) }
+  }
+
+  async function getLogcat() {
+    if (!selectedDevice) return
+    try {
+      logcatOutput = await window.go.wailsgui.App.RunLogcat(selectedDevice, logcatFilter, 50)
+    } catch(e) { logcatOutput = `Error: ${e}` }
+  }
+
   async function checkTLS() {
     try {
       tlsErrors = await window.go.wailsgui.App.GetTLSErrors() || []
@@ -287,9 +334,66 @@
         {/if}
       {:else}
         <div class="env-empty-msg">
-          {envLoading ? '⏳ Scanning...' : 'Device env will appear after connect'}
+          {envLoading ? '⏳ Scanning...' : 'Connect a device to see environment'}
         </div>
       {/if}
+
+      <!-- App Inspector -->
+      <div class="re-card">
+        <div class="re-title">📦 APP INSPECTOR</div>
+        <div class="row">
+          <input type="text" bind:value={inspectPkg} placeholder="com.example.app" class="input mono" />
+          <button class="btn btn-ghost" on:click={inspectApp}>Inspect</button>
+          <button class="btn btn-ghost" on:click={pullAPK}>Pull APK</button>
+        </div>
+        {#if appDetail}
+          <div class="app-info">
+            <div class="ai-row"><span class="ak">Version</span><span>{appDetail.version}</span></div>
+            <div class="ai-row"><span class="ak">SDK</span><span>min={appDetail.min_sdk} target={appDetail.target_sdk}</span></div>
+            <div class="ai-row"><span class="ak">Debug</span><span class:g={appDetail.debuggable}>{appDetail.debuggable ? '✓ YES' : '✗'}</span></div>
+            <div class="ai-row"><span class="ak">UID</span><span>{appDetail.uid}</span></div>
+            <div class="ai-row"><span class="ak">Path</span><span class="sm">{appDetail.apk_path}</span></div>
+            {#if appDetail.native_libs && appDetail.native_libs.length > 0}
+              <div class="ai-row"><span class="ak">Native</span><span class="sm">{appDetail.native_libs.join(', ')}</span></div>
+            {/if}
+            {#if appDetail.permissions && appDetail.permissions.length > 0}
+              <details class="ai-details">
+                <summary>{appDetail.permissions.length} permissions</summary>
+                {#each appDetail.permissions.slice(0, 20) as p}<div class="perm">{p}</div>{/each}
+              </details>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <!-- Frida -->
+      <div class="re-card">
+        <div class="re-row">
+          <span class="re-title">🔧 FRIDA</span>
+          <button class="btn btn-ghost" on:click={checkFrida}>Check</button>
+          <button class="btn btn-ghost" on:click={startFrida}>Start</button>
+        </div>
+        {#if fridaStatus}
+          <div class="frida-info">
+            <span class:g={fridaStatus.status === 'running'} class:r={fridaStatus.status !== 'running'}>
+              {fridaStatus.status === 'running' ? '● Running' : '○ Not running'}
+            </span>
+            {#if fridaStatus.binary}<span class="sm">{fridaStatus.binary}</span>{/if}
+          </div>
+        {/if}
+      </div>
+
+      <!-- Logcat -->
+      <div class="re-card">
+        <div class="re-row">
+          <span class="re-title">📜 LOGCAT</span>
+          <input type="text" bind:value={logcatFilter} placeholder="tag filter" class="input mono" style="max-width:120px" />
+          <button class="btn btn-ghost" on:click={getLogcat}>Fetch</button>
+        </div>
+        {#if logcatOutput}
+          <pre class="logcat-out">{logcatOutput}</pre>
+        {/if}
+      </div>
     </div>
 
     <!-- Right: Log -->
@@ -370,7 +474,33 @@
   .ev2.y { color: var(--yellow, #fbbf24); }
   .ev2.sm { font-size: 9px; font-family: 'SF Mono', monospace; }
   .env-fp { font-size: 8px; color: var(--fg-ghost, #3f3f46); margin-top: 8px; word-break: break-all; font-family: 'SF Mono', monospace; }
-  .env-empty-msg { color: var(--fg-ghost, #3f3f46); font-size: 12px; padding: 40px; text-align: center; }
+  .env-empty-msg { color: var(--fg-ghost, #3f3f46); font-size: 12px; padding: 20px; text-align: center; }
+
+  .re-card {
+    background: var(--bg-panel, #111116); border: 1px solid var(--border, #1e1e24);
+    border-radius: 8px; padding: 10px;
+  }
+  .re-title { font-size: 10px; color: var(--accent, #38bdf8); letter-spacing: 1px; font-weight: 600; margin-bottom: 6px; }
+  .re-row { display: flex; align-items: center; gap: 6px; }
+  .re-row .re-title { margin-bottom: 0; }
+
+  .app-info { margin-top: 6px; font-size: 11px; }
+  .ai-row { display: flex; gap: 8px; padding: 2px 0; }
+  .ak { color: var(--fg-dim, #71717a); min-width: 52px; }
+  .sm { font-size: 9px; font-family: 'SF Mono', monospace; color: var(--fg-faint, #52525b); word-break: break-all; }
+  .g { color: var(--green, #34d399); }
+  .r { color: var(--red, #f87171); }
+  .ai-details { font-size: 10px; color: var(--fg-dim, #71717a); margin-top: 4px; cursor: pointer; }
+  .ai-details summary { color: var(--fg-muted, #a1a1aa); }
+  .perm { font-size: 9px; color: var(--fg-faint, #52525b); font-family: 'SF Mono', monospace; padding: 1px 0; }
+
+  .frida-info { font-size: 11px; margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+
+  .logcat-out {
+    max-height: 120px; overflow-y: auto; font-size: 9px; color: var(--fg-muted, #a1a1aa);
+    margin: 6px 0 0; white-space: pre-wrap; word-break: break-all;
+    background: var(--bg, #0a0a0f); padding: 6px; border-radius: 4px;
+  }
   .tls-card {
     background: var(--bg-panel, #111116); border: 1px solid var(--border, #1e1e24);
     border-radius: 8px; padding: 10px;

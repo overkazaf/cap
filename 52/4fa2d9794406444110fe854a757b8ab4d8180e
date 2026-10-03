@@ -1,0 +1,58 @@
+frontend/dist/assets/index-B8HFczsk.js
+  936d2bd656d204f8 1-8,10,20-26
+frontend/src/pages/DeepTrace.svelte
+  936d2bd656d204f8 10-11,17-21,26-34,37-56,58-59,92-103,106-114,120-157,334-365
+cmd/cap/frontend/dist/assets/index-B8HFczsk.js
+  936d2bd656d204f8 1-8,10,20-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "524fa2d9794406444110fe854a757b8ab4d8180e",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 183,
+      "total_deletions": 57,
+      "accepted_lines": 183,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/dist/assets/index-NEmfgYWR.css": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-9JjRwv0T.js": {
+          "deletions": 26
+        },
+        "cmd/cap/frontend/dist/assets/index-NEmfgYWR.css": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-B8HFczsk.js": {
+          "additions": 26,
+          "accepted_lines": 26
+        },
+        "cmd/cap/frontend/dist/assets/index-9JjRwv0T.js": {
+          "deletions": 26
+        },
+        "frontend/dist/assets/index-B8HFczsk.js": {
+          "additions": 26,
+          "accepted_lines": 26
+        },
+        "frontend/src/pages/DeepTrace.svelte": {
+          "additions": 129,
+          "deletions": 3,
+          "accepted_lines": 129
+        }
+      }
+    }
+  }
+}

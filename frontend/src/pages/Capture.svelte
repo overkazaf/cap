@@ -30,6 +30,10 @@
   // TLS errors
   let tlsErrors = []
 
+  // Device env
+  let deviceEnv = null
+  let envLoading = false
+
   function log(msg) {
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
     logs = [...logs, `[${ts}] ${msg}`]
@@ -157,6 +161,17 @@
     } catch(e) { log(`Launch failed: ${e}`) }
   }
 
+  async function scanDeviceEnv() {
+    if (!selectedDevice) { log('Select a device first'); return }
+    envLoading = true
+    log(`Scanning ${selectedDevice} environment...`)
+    try {
+      deviceEnv = await window.go.wailsgui.App.GetDeviceEnv(selectedDevice)
+      log('Device scan complete')
+    } catch(e) { log(`Scan failed: ${e}`) }
+    envLoading = false
+  }
+
   async function checkTLS() {
     try {
       tlsErrors = await window.go.wailsgui.App.GetTLSErrors() || []
@@ -255,21 +270,77 @@
       </div>
     </div>
 
-    <!-- Right: TLS Errors -->
-    {#if tlsErrors.length > 0}
-      <div class="panel tls-panel">
-        <h2>⚠ SSL PINNING DETECTED</h2>
-        <div class="tls-list">
-          {#each tlsErrors as e}
-            <div class="tls-row">
-              <span class="tls-host">{e.host}</span>
-              <span class="tls-count">×{e.count}</span>
+    <!-- Right: Device Info -->
+    <div class="panel env-panel">
+      <div class="env-header">
+        <h2>DEVICE ENV</h2>
+        <button class="btn btn-ghost" on:click={scanDeviceEnv} disabled={envLoading}>
+          {envLoading ? '...' : '⟳ Scan'}
+        </button>
+      </div>
+
+      {#if deviceEnv}
+        <div class="env-grid">
+          <div class="env-section">
+            <div class="env-label">HARDWARE</div>
+            <div class="env-row"><span class="ek">Model</span><span class="ev">{deviceEnv.brand} {deviceEnv.model}</span></div>
+            <div class="env-row"><span class="ek">Android</span><span class="ev">{deviceEnv.android} (SDK {deviceEnv.sdk})</span></div>
+            <div class="env-row"><span class="ek">CPU</span><span class="ev">{deviceEnv.cpu}</span></div>
+            <div class="env-row"><span class="ek">RAM</span><span class="ev">{deviceEnv.ram}</span></div>
+            <div class="env-row"><span class="ek">Screen</span><span class="ev">{deviceEnv.screen}</span></div>
+            <div class="env-row"><span class="ek">Kernel</span><span class="ev mono-sm">{deviceEnv.kernel}</span></div>
+            <div class="env-row"><span class="ek">Battery</span><span class="ev">{deviceEnv.battery}</span></div>
+          </div>
+          <div class="env-section">
+            <div class="env-label">SECURITY</div>
+            <div class="env-row">
+              <span class="ek">Root</span>
+              <span class="ev" class:ev-on={deviceEnv.rooted} class:ev-off={!deviceEnv.rooted}>
+                {deviceEnv.rooted ? '✓ ' + deviceEnv.root_method : '✗ Not rooted'}
+              </span>
             </div>
+            <div class="env-row">
+              <span class="ek">Magisk</span>
+              <span class="ev" class:ev-on={deviceEnv.magisk === 'installed'}>
+                {deviceEnv.magisk === 'installed' ? '✓ ' + (deviceEnv.magisk_ver || 'installed') : '✗'}
+              </span>
+            </div>
+            <div class="env-row">
+              <span class="ek">Zygisk</span>
+              <span class="ev" class:ev-on={deviceEnv.zygisk}>{deviceEnv.zygisk ? '✓ Active' : '✗'}</span>
+            </div>
+            <div class="env-row">
+              <span class="ek">LSPosed</span>
+              <span class="ev" class:ev-on={deviceEnv.lsposed}>
+                {deviceEnv.lsposed ? '✓ ' + (deviceEnv.lsposed_ver || 'installed') : '✗'}
+              </span>
+            </div>
+            <div class="env-row">
+              <span class="ek">SELinux</span>
+              <span class="ev" class:ev-warn={deviceEnv.selinux === 'Enforcing'} class:ev-on={deviceEnv.selinux === 'Permissive'}>
+                {deviceEnv.selinux || '?'}
+              </span>
+            </div>
+            <div class="env-row">
+              <span class="ek">Integrity</span>
+              <span class="ev mono-sm">{deviceEnv.integrity || 'N/A'}</span>
+            </div>
+          </div>
+        </div>
+        <div class="env-fp mono-sm">{deviceEnv.fingerprint}</div>
+      {:else}
+        <div class="env-empty">Click Scan to detect device environment</div>
+      {/if}
+
+      {#if tlsErrors.length > 0}
+        <div class="env-section" style="margin-top: 8px;">
+          <div class="env-label">⚠ SSL PINNING</div>
+          {#each tlsErrors.slice(0, 8) as e}
+            <div class="env-row"><span class="ek tls-host">{e.host}</span><span class="ev">×{e.count}</span></div>
           {/each}
         </div>
-        <div class="tls-hint">These hosts rejected the CA cert. The app may use SSL pinning.</div>
-      </div>
-    {/if}
+      {/if}
+    </div>
   </div>
 
   <div class="log-panel">
@@ -342,11 +413,25 @@
     margin-top: 4px;
   }
 
-  .tls-list { max-height: 200px; overflow-y: auto; }
-  .tls-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 11px; border-bottom: 1px solid var(--border-subtle, #0f0f14); }
+  .env-panel { min-width: 280px; max-width: 340px; flex: none; overflow-y: auto; }
+  .env-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .env-header h2 { font-size: 10px; color: var(--accent, #38bdf8); letter-spacing: 1.5px; font-weight: 600; }
+  .env-grid { display: flex; flex-direction: column; gap: 8px; }
+  .env-section { }
+  .env-label {
+    font-size: 9px; color: var(--fg-faint, #52525b); letter-spacing: 1px; margin-bottom: 4px;
+    padding-bottom: 3px; border-bottom: 1px solid var(--border, #1e1e24);
+  }
+  .env-row { display: flex; padding: 2px 0; font-size: 11px; gap: 6px; }
+  .ek { color: var(--fg-dim, #71717a); min-width: 60px; flex-shrink: 0; }
+  .ev { color: var(--fg, #e4e4e7); word-break: break-all; }
+  .ev-on { color: var(--green, #34d399); }
+  .ev-off { color: var(--fg-faint, #52525b); }
+  .ev-warn { color: var(--yellow, #fbbf24); }
+  .mono-sm { font-family: 'SF Mono', monospace; font-size: 10px; }
+  .env-fp { font-size: 9px; color: var(--fg-ghost, #3f3f46); margin-top: 8px; word-break: break-all; }
+  .env-empty { font-size: 11px; color: var(--fg-ghost, #3f3f46); font-style: italic; padding: 12px 0; }
   .tls-host { color: var(--orange, #fb923c); }
-  .tls-count { color: var(--fg-faint, #52525b); }
-  .tls-hint { font-size: 10px; color: var(--fg-ghost, #3f3f46); margin-top: 8px; font-style: italic; }
 
   .log-panel {
     flex: 1; background: var(--bg-panel, #111116); border: 1px solid var(--border, #1e1e24); border-radius: 8px;

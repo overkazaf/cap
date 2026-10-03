@@ -31,6 +31,10 @@
   let screenInterval = null
   let screenSize = [1080, 2400]
   let deviceSerial = ''
+  let shellInput = ''
+  let shellOutput = ''
+  let shellHeight = 180
+  let shellDragging = false
 
   const languages = ['curl', 'python', 'go', 'java', 'js']
 
@@ -289,6 +293,30 @@
     if (panel === 'detail' && screenActive) stopScreen()
   }
 
+  async function runShellCmd(e) {
+    if (e.key !== 'Enter' || !shellInput.trim()) return
+    const cmd = shellInput.trim()
+    shellInput = ''
+    shellOutput += `$ ${cmd}\n`
+    try {
+      const result = await window.go.wailsgui.App.ExecCommand(cmd)
+      if (result) shellOutput += result + '\n'
+    } catch(err) { shellOutput += `error: ${err}\n` }
+    const el = document.querySelector('.shell-output')
+    if (el) setTimeout(() => el.scrollTop = el.scrollHeight, 50)
+  }
+
+  function startShellDrag(e) {
+    shellDragging = true
+    e.preventDefault()
+    const startY = e.clientY
+    const startH = shellHeight
+    const onMove = (ev) => { if (shellDragging) shellHeight = Math.max(60, Math.min(500, startH - (ev.clientY - startY))) }
+    const onUp = () => { shellDragging = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   function startExportDrag(e) {
     exportDragging = true
     e.preventDefault()
@@ -399,20 +427,35 @@
       </div>
 
     {#if rightPanel === 'device'}
-      <div class="device-panel">
-        <div class="device-screen-container">
-          {#if screenSrc}
-            <!-- svelte-ignore a11y-click-events-have-key-events -->
-            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-            <img class="device-screen" src={screenSrc} alt="device" on:click={handleScreenClick} />
-          {:else}
-            <div class="device-placeholder">Connecting to device...</div>
-          {/if}
+      <div class="device-layout">
+        <div class="device-main">
+          <div class="device-frame">
+            <div class="device-screen-wrapper" style="aspect-ratio: {screenSize[0]} / {screenSize[1]}">
+              {#if screenSrc}
+                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+                <img class="device-screen" src={screenSrc} alt="device" on:click={handleScreenClick} />
+              {:else}
+                <div class="device-placeholder">Connecting...</div>
+              {/if}
+            </div>
+            <div class="device-controls">
+              <button class="dev-btn" on:click={deviceBack}>◀ Back</button>
+              <button class="dev-btn" on:click={deviceHome}>● Home</button>
+              <button class="dev-btn" on:click={captureFrame}>⟳</button>
+              <span class="dev-info">{screenSize[0]}×{screenSize[1]}</span>
+            </div>
+          </div>
         </div>
-        <div class="device-controls">
-          <button class="dev-btn" on:click={deviceBack}>◀ Back</button>
-          <button class="dev-btn" on:click={deviceHome}>● Home</button>
-          <button class="dev-btn" on:click={captureFrame}>⟳ Refresh</button>
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="shell-drag" on:mousedown={startShellDrag}></div>
+        <div class="device-shell" style="height: {shellHeight}px">
+          <div class="shell-header">SHELL</div>
+          <pre class="shell-output">{shellOutput || 'Type commands below...'}</pre>
+          <div class="shell-input-row">
+            <span class="shell-prompt">$</span>
+            <input class="shell-input" bind:value={shellInput} on:keydown={runShellCmd} placeholder="adb shell ..." />
+          </div>
         </div>
       </div>
     {:else if selectedFlow}
@@ -825,20 +868,45 @@
   .toggle-btn:hover { color: var(--fg-muted, #a1a1aa); }
   .toggle-active { color: var(--accent, #38bdf8); border-bottom-color: var(--accent, #38bdf8); }
 
-  .device-panel { flex: 1; display: flex; flex-direction: column; align-items: center; background: #000; }
-  .device-screen-container { flex: 1; display: flex; align-items: center; justify-content: center; padding: 8px; min-height: 0; }
-  .device-screen { max-height: 100%; max-width: 100%; object-fit: contain; cursor: pointer; border-radius: 4px; }
-  .device-placeholder { color: var(--fg-ghost, #3f3f46); font-size: 13px; }
+  .device-layout { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .device-main { flex: 1; display: flex; justify-content: center; align-items: flex-start; background: #000; overflow: hidden; padding: 4px; min-height: 0; }
+  .device-frame { display: flex; flex-direction: column; align-items: center; height: 100%; }
+  .device-screen-wrapper {
+    height: 100%; max-width: 100%; display: flex; align-items: center; justify-content: center;
+    border-radius: 8px; overflow: hidden; border: 2px solid #222;
+  }
+  .device-screen { width: 100%; height: 100%; object-fit: contain; cursor: pointer; display: block; }
+  .device-placeholder { color: var(--fg-ghost, #3f3f46); font-size: 13px; padding: 40px; }
   .device-controls {
-    display: flex; gap: 8px; padding: 8px; background: var(--bg-header, #0d0d12);
-    border-top: 1px solid var(--border, #1e1e24); width: 100%; justify-content: center;
+    display: flex; gap: 6px; padding: 6px; align-items: center;
   }
   .dev-btn {
-    padding: 5px 16px; font-size: 12px; border: 1px solid var(--border, #27272a);
+    padding: 4px 12px; font-size: 11px; border: 1px solid var(--border, #27272a);
     background: var(--bg-btn, #1a1a22); color: var(--fg-muted, #a1a1aa);
-    border-radius: 6px; cursor: pointer; font-family: inherit;
+    border-radius: 5px; cursor: pointer; font-family: inherit;
   }
   .dev-btn:hover { background: var(--bg-hover, #27272a); }
+  .dev-info { font-size: 10px; color: var(--fg-ghost, #3f3f46); margin-left: 4px; }
+
+  .shell-drag { height: 5px; cursor: row-resize; background: var(--border, #1e1e24); flex-shrink: 0; }
+  .shell-drag:hover, .shell-drag:active { background: var(--accent, #38bdf8); }
+  .device-shell {
+    display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden;
+    background: var(--bg, #0a0a0f);
+  }
+  .shell-header { font-size: 9px; color: var(--fg-ghost, #3f3f46); padding: 4px 10px; letter-spacing: 1px; }
+  .shell-output {
+    flex: 1; overflow-y: auto; padding: 0 10px; font-size: 12px; color: var(--green, #34d399);
+    margin: 0; white-space: pre-wrap; word-break: break-all;
+  }
+  .shell-input-row {
+    display: flex; align-items: center; padding: 4px 10px; border-top: 1px solid var(--border, #1e1e24);
+  }
+  .shell-prompt { color: var(--green, #34d399); font-size: 12px; margin-right: 6px; font-weight: 600; }
+  .shell-input {
+    flex: 1; background: transparent; border: none; color: var(--fg, #e4e4e7);
+    font-size: 12px; font-family: inherit; outline: none; caret-color: var(--green, #34d399);
+  }
 
   .btn-replay, .btn-replay-edit {
     padding: 3px 10px; font-size: 11px; border: 1px solid var(--border, #27272a);

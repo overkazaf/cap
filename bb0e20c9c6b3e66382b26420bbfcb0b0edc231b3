@@ -1,0 +1,60 @@
+cmd/cap/frontend/dist/assets/index-D0XaQik7.js
+  936d2bd656d204f8 1-7,10,20
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 159
+internal/wailsgui/app.go
+  936d2bd656d204f8 743-744,846-866
+frontend/dist/assets/index-D0XaQik7.js
+  936d2bd656d204f8 1-7,10,20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "bb0e20c9c6b3e66382b26420bbfcb0b0edc231b3",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 65,
+      "total_deletions": 41,
+      "accepted_lines": 65,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap/frontend/dist/assets/index-BtnwJLGz.js": {
+          "deletions": 20
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-D0XaQik7.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 23,
+          "accepted_lines": 23
+        },
+        "frontend/dist/assets/index-BtnwJLGz.js": {
+          "deletions": 20
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-D0XaQik7.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        }
+      }
+    }
+  }
+}

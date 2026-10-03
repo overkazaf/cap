@@ -1015,25 +1015,35 @@ func (a *App) PullAPK(serial, pkg string) (string, error) {
 }
 
 func (a *App) CheckFrida(serial string) map[string]string {
-	result := map[string]string{"status": "not running", "version": ""}
-	args := []string{}
-	if serial != "" {
-		args = append(args, "-s", serial)
+	result := map[string]string{"status": "not running"}
+
+	adbShell := func(cmd string) string {
+		args := []string{}
+		if serial != "" {
+			args = append(args, "-s", serial)
+		}
+		args = append(args, "shell", cmd)
+		out, _ := exec.Command("adb", args...).CombinedOutput()
+		return strings.TrimSpace(string(out))
 	}
 
-	// Check if frida-server is running
-	psArgs := append(args, "shell", "ps -A | grep frida")
-	out, _ := exec.Command("adb", psArgs...).Output()
-	if strings.Contains(string(out), "frida") {
+	psOut := adbShell("ps -A 2>/dev/null | grep frida || ps | grep frida")
+	if strings.Contains(psOut, "frida") {
 		result["status"] = "running"
+		for _, line := range strings.Split(psOut, "\n") {
+			if strings.Contains(line, "frida") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					result["pid"] = fields[1]
+				}
+				break
+			}
+		}
 	}
 
-	// Check frida-server binary
-	lsArgs := append([]string{}, args...)
-	lsArgs = append(lsArgs, "shell", "ls /data/local/tmp/frida-server* 2>/dev/null")
-	out2, _ := exec.Command("adb", lsArgs...).Output()
-	if len(strings.TrimSpace(string(out2))) > 0 {
-		result["binary"] = strings.TrimSpace(string(out2))
+	binOut := adbShell("ls /data/local/tmp/frida-server* 2>/dev/null")
+	if binOut != "" && !strings.Contains(binOut, "No such") {
+		result["binary"] = binOut
 	}
 
 	return result
@@ -1044,9 +1054,9 @@ func (a *App) StartFrida(serial string) (string, error) {
 	if serial != "" {
 		args = append(args, "-s", serial)
 	}
-	args = append(args, "shell", "su -c '/data/local/tmp/frida-server -D &'")
+	args = append(args, "shell", "su -c 'nohup /data/local/tmp/frida-server -D > /dev/null 2>&1 &'")
 	out, err := exec.Command("adb", args...).CombinedOutput()
-	return string(out), err
+	return strings.TrimSpace(string(out)), err
 }
 
 func (a *App) RunLogcat(serial, filter string, lines int) (string, error) {

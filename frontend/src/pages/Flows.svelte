@@ -45,6 +45,8 @@
   // Context menu
   let ctxMenu = null // { x, y, flow }
   let pluginList = []
+  let activeRules = [] // cached rules for marking flows
+  let ctxMessage = '' // toast message
 
   async function toggleCapturePause() {
     if (capturePaused) {
@@ -60,6 +62,39 @@
     try { pluginList = await window.go.wailsgui.App.ListPlugins() || [] } catch(e) {}
   }
 
+  async function loadActiveRules() {
+    try { activeRules = await window.go.wailsgui.App.ListRules() || [] } catch(e) {}
+  }
+
+  function flowHasRule(f) {
+    return activeRules.some(r => r.enabled &&
+      (!r.match?.method || r.match.method === f.method) &&
+      (!r.match?.host || f.host.includes(r.match.host)) &&
+      (!r.match?.path || f.path.includes(r.match.path))
+    )
+  }
+
+  function flowRuleIcon(f) {
+    const r = activeRules.find(r => r.enabled &&
+      (!r.match?.method || r.match.method === f.method) &&
+      (!r.match?.host || f.host.includes(r.match.host)) &&
+      (!r.match?.path || f.path.includes(r.match.path))
+    )
+    if (!r) return ''
+    switch (r.action?.type) {
+      case 'breakpoint': return '⏸'
+      case 'mock': return '🎭'
+      case 'modify_request': case 'modify_response': return '✏'
+      case 'drop': return '🚫'
+      default: return '🎯'
+    }
+  }
+
+  function showToast(msg) {
+    ctxMessage = msg
+    setTimeout(() => ctxMessage = '', 3000)
+  }
+
   function showContextMenu(e, f) {
     e.preventDefault()
     ctxMenu = { x: e.clientX, y: e.clientY, flow: f }
@@ -69,48 +104,41 @@
     ctxMenu = null
   }
 
-  async function ctxAddMockRule() {
+  async function ctxAddRule(type, name, action) {
     if (!ctxMenu) return
     const f = ctxMenu.flow
     await window.go.wailsgui.App.AddRule({
-      id: 'r-' + Date.now(), name: `Mock ${f.method} ${f.path}`, enabled: true, priority: 10,
+      id: 'r-' + Date.now(), name, enabled: true, priority: type === 'breakpoint' ? 5 : 10,
       match: { method: f.method, host: f.host, path: f.path },
-      action: { type: 'mock', mock_status: f.status, mock_body: '', mock_headers: {} }
+      action
     })
+    await loadActiveRules()
     hideContextMenu()
+    showToast(`✓ Rule "${name}" created → Go to Rules tab to edit`)
   }
 
-  async function ctxAddBreakpoint() {
-    if (!ctxMenu) return
-    const f = ctxMenu.flow
-    await window.go.wailsgui.App.AddRule({
-      id: 'r-' + Date.now(), name: `Break ${f.method} ${f.path}`, enabled: true, priority: 5,
-      match: { method: f.method, host: f.host, path: f.path },
-      action: { type: 'breakpoint', break_on_req: true, break_on_resp: false }
-    })
-    hideContextMenu()
+  function ctxAddBreakpoint() {
+    const f = ctxMenu?.flow
+    if (!f) return
+    ctxAddRule('breakpoint', `Break ${f.method} ${f.path}`, { type: 'breakpoint', break_on_req: true, break_on_resp: false })
   }
 
-  async function ctxAddModifyRule() {
-    if (!ctxMenu) return
-    const f = ctxMenu.flow
-    await window.go.wailsgui.App.AddRule({
-      id: 'r-' + Date.now(), name: `Modify ${f.method} ${f.path}`, enabled: true, priority: 10,
-      match: { method: f.method, host: f.host, path: f.path },
-      action: { type: 'modify_request', set_headers: {}, del_headers: [] }
-    })
-    hideContextMenu()
+  function ctxAddMockRule() {
+    const f = ctxMenu?.flow
+    if (!f) return
+    ctxAddRule('mock', `Mock ${f.method} ${f.path}`, { type: 'mock', mock_status: 200, mock_body: '', mock_headers: {} })
   }
 
-  async function ctxAddDropRule() {
-    if (!ctxMenu) return
-    const f = ctxMenu.flow
-    await window.go.wailsgui.App.AddRule({
-      id: 'r-' + Date.now(), name: `Block ${f.host}${f.path}`, enabled: true, priority: 10,
-      match: { host: f.host, path: f.path },
-      action: { type: 'drop' }
-    })
-    hideContextMenu()
+  function ctxAddModifyRule() {
+    const f = ctxMenu?.flow
+    if (!f) return
+    ctxAddRule('modify', `Modify ${f.method} ${f.path}`, { type: 'modify_request', set_headers: {}, del_headers: [] })
+  }
+
+  function ctxAddDropRule() {
+    const f = ctxMenu?.flow
+    if (!f) return
+    ctxAddRule('drop', `Block ${f.host}${f.path}`, { type: 'drop' })
   }
 
   async function ctxRunPlugin(pluginName) {
@@ -537,7 +565,7 @@
   }
 
   let interval
-  onMount(() => { loadFlows(); loadPlugins(); interval = setInterval(loadFlows, 2000) })
+  onMount(() => { loadFlows(); loadPlugins(); loadActiveRules(); interval = setInterval(() => { loadFlows(); loadActiveRules() }, 2000) })
   onDestroy(() => { clearInterval(interval); stopScreen() })
 </script>
 
@@ -595,7 +623,8 @@
           {/if}
         {:else}
           {#each flows as f}
-            <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} on:click={() => selectFlow(f)} on:contextmenu={(e) => showContextMenu(e, f)}>
+            <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} class:has-rule={flowHasRule(f)} on:click={() => selectFlow(f)} on:contextmenu={(e) => showContextMenu(e, f)}>
+              <span class="col-rule">{flowRuleIcon(f)}</span>
               <span class="col-id">{f.id}</span>
               <span class="col-method {methodClass(f.method)}">{f.method}</span>
               <span class="col-status {statusClass(f.status)}">{f.status}</span>
@@ -872,6 +901,10 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
 <!-- svelte-ignore a11y-no-static-element-interactions -->
+{#if ctxMessage}
+  <div class="toast">{ctxMessage}</div>
+{/if}
+
 {#if ctxMenu}
   <div class="ctx-overlay" on:click={hideContextMenu}></div>
   <div class="ctx-menu" style="left:{ctxMenu.x}px;top:{ctxMenu.y}px">
@@ -909,7 +942,9 @@
   }
   .btn-view:hover { background: var(--bg-btn, #1a1a22); color: var(--fg-muted, #a1a1aa); }
   .btn-view-active { background: var(--accent-bg, #1e3a5f); border-color: var(--accent, #38bdf8); color: var(--accent, #7dd3fc); }
+  .col-rule { width: 16px; flex-shrink: 0; font-size: 10px; text-align: center; }
   .col-id { width: 36px; flex-shrink: 0; color: var(--fg-ghost, #3f3f46); font-size: 10px; }
+  .flow-row.has-rule { border-left: 2px solid var(--yellow, #fbbf24); }
 
   .btn-pause {
     padding: 4px 10px; font-size: 11px; border: 1px solid var(--border, #27272a);
@@ -1125,6 +1160,12 @@
   }
   .ctx-item:hover { background: var(--accent-bg, #1e3a5f); color: var(--accent, #7dd3fc); }
   .ctx-sep { height: 1px; background: var(--border, #1e1e24); margin: 4px 0; }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    padding: 10px 20px; background: var(--accent-bg, #1e3a5f); color: var(--accent, #7dd3fc);
+    border: 1px solid var(--accent, #38bdf8); border-radius: 8px; font-size: 12px;
+    z-index: 2000; box-shadow: 0 4px 16px rgba(0,0,0,0.4); font-family: inherit;
+  }
 
   .detail-empty-icon { font-size: 32px; opacity: 0.5; }
 

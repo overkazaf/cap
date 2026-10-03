@@ -42,11 +42,9 @@
 
   let capturePaused = false
 
-  // Plugins
+  // Context menu
+  let ctxMenu = null // { x, y, flow }
   let pluginList = []
-  let selectedPlugin = ''
-  let pluginLogs = []
-  let showPluginLog = false
 
   async function toggleCapturePause() {
     if (capturePaused) {
@@ -62,37 +60,67 @@
     try { pluginList = await window.go.wailsgui.App.ListPlugins() || [] } catch(e) {}
   }
 
-  async function applyPlugin() {
-    if (!selectedFlow || !selectedPlugin) return
-    const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
-    pluginLogs = [...pluginLogs, `[${ts}] Running "${selectedPlugin}" on ${selectedFlow.id}...`]
-    showPluginLog = true
-    try {
-      const result = await window.go.wailsgui.App.RunPlugin(selectedPlugin, selectedFlow.id)
-      if (result.error) {
-        pluginLogs = [...pluginLogs, `[${ts}] ERROR: ${result.error}`]
-      } else {
-        pluginLogs = [...pluginLogs, `[${ts}] ${result.output}`]
-      }
-    } catch(e) {
-      pluginLogs = [...pluginLogs, `[${ts}] FAIL: ${e}`]
-    }
+  function showContextMenu(e, f) {
+    e.preventDefault()
+    ctxMenu = { x: e.clientX, y: e.clientY, flow: f }
   }
 
-  async function applyPluginToAll() {
-    if (!selectedPlugin) return
-    const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
-    pluginLogs = [...pluginLogs, `[${ts}] Running "${selectedPlugin}" on ${flows.length} flows...`]
-    showPluginLog = true
-    for (const f of flows) {
-      try {
-        const result = await window.go.wailsgui.App.RunPlugin(selectedPlugin, f.id)
-        if (result.output) {
-          pluginLogs = [...pluginLogs, `[${ts}] ${f.id}: ${result.output.split('\n')[0]}`]
-        }
-      } catch(e) {}
-    }
-    pluginLogs = [...pluginLogs, `[${ts}] Done.`]
+  function hideContextMenu() {
+    ctxMenu = null
+  }
+
+  async function ctxAddMockRule() {
+    if (!ctxMenu) return
+    const f = ctxMenu.flow
+    await window.go.wailsgui.App.AddRule({
+      id: 'r-' + Date.now(), name: `Mock ${f.method} ${f.path}`, enabled: true, priority: 10,
+      match: { method: f.method, host: f.host, path: f.path },
+      action: { type: 'mock', mock_status: f.status, mock_body: '', mock_headers: {} }
+    })
+    hideContextMenu()
+  }
+
+  async function ctxAddBreakpoint() {
+    if (!ctxMenu) return
+    const f = ctxMenu.flow
+    await window.go.wailsgui.App.AddRule({
+      id: 'r-' + Date.now(), name: `Break ${f.method} ${f.path}`, enabled: true, priority: 5,
+      match: { method: f.method, host: f.host, path: f.path },
+      action: { type: 'breakpoint', break_on_req: true, break_on_resp: false }
+    })
+    hideContextMenu()
+  }
+
+  async function ctxAddModifyRule() {
+    if (!ctxMenu) return
+    const f = ctxMenu.flow
+    await window.go.wailsgui.App.AddRule({
+      id: 'r-' + Date.now(), name: `Modify ${f.method} ${f.path}`, enabled: true, priority: 10,
+      match: { method: f.method, host: f.host, path: f.path },
+      action: { type: 'modify_request', set_headers: {}, del_headers: [] }
+    })
+    hideContextMenu()
+  }
+
+  async function ctxAddDropRule() {
+    if (!ctxMenu) return
+    const f = ctxMenu.flow
+    await window.go.wailsgui.App.AddRule({
+      id: 'r-' + Date.now(), name: `Block ${f.host}${f.path}`, enabled: true, priority: 10,
+      match: { host: f.host, path: f.path },
+      action: { type: 'drop' }
+    })
+    hideContextMenu()
+  }
+
+  async function ctxRunPlugin(pluginName) {
+    if (!ctxMenu) return
+    try {
+      const result = await window.go.wailsgui.App.RunPlugin(pluginName, ctxMenu.flow.id)
+      if (result.output) alert(result.output)
+      else if (result.error) alert(result.error)
+    } catch(e) { alert(`Error: ${e}`) }
+    hideContextMenu()
   }
 
   const languages = ['curl', 'python', 'go', 'java', 'js']
@@ -567,7 +595,7 @@
           {/if}
         {:else}
           {#each flows as f}
-            <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} on:click={() => selectFlow(f)}>
+            <button class="flow-row" class:selected={selectedFlow && selectedFlow.id === f.id} on:click={() => selectFlow(f)} on:contextmenu={(e) => showContextMenu(e, f)}>
               <span class="col-id">{f.id}</span>
               <span class="col-method {methodClass(f.method)}">{f.method}</span>
               <span class="col-status {statusClass(f.status)}">{f.status}</span>
@@ -728,33 +756,6 @@
           </div>
         {/if}
 
-        <div class="plugin-bar">
-          <span class="plugin-label">PLUGIN</span>
-          <select bind:value={selectedPlugin} class="plugin-select">
-            <option value="">Select plugin...</option>
-            {#each pluginList as p}
-              <option value={p.name}>{p.name} ({p.type})</option>
-            {/each}
-          </select>
-          <button class="btn-plugin" on:click={applyPlugin} disabled={!selectedPlugin}>▶ Apply</button>
-          <button class="btn-plugin" on:click={applyPluginToAll} disabled={!selectedPlugin}>▶ All</button>
-          <button class="btn-plugin-log" class:has-logs={pluginLogs.length > 0} on:click={() => showPluginLog = !showPluginLog}>
-            Log {pluginLogs.length > 0 ? `(${pluginLogs.length})` : ''}
-          </button>
-        </div>
-
-        {#if showPluginLog && pluginLogs.length > 0}
-          <div class="plugin-log-panel">
-            <div class="plog-header">
-              <span>PLUGIN LOG</span>
-              <button class="plog-clear" on:click={() => { pluginLogs = []; showPluginLog = false }}>Clear</button>
-            </div>
-            <div class="plog-body">
-              {#each pluginLogs as line}<div class="plog-line">{line}</div>{/each}
-            </div>
-          </div>
-        {/if}
-
         <div class="detail-tabs">
           {#each [
             {id: 'params', label: 'Params'},
@@ -868,6 +869,25 @@
     </div>
   </div>
 </div>
+
+<!-- svelte-ignore a11y-click-events-have-key-events -->
+<!-- svelte-ignore a11y-no-static-element-interactions -->
+{#if ctxMenu}
+  <div class="ctx-overlay" on:click={hideContextMenu}></div>
+  <div class="ctx-menu" style="left:{ctxMenu.x}px;top:{ctxMenu.y}px">
+    <div class="ctx-header">{ctxMenu.flow.method} {ctxMenu.flow.host}{ctxMenu.flow.path}</div>
+    <button class="ctx-item" on:click={ctxAddBreakpoint}>⏸ Add Breakpoint Rule</button>
+    <button class="ctx-item" on:click={ctxAddMockRule}>🎭 Add Mock Rule</button>
+    <button class="ctx-item" on:click={ctxAddModifyRule}>✏ Add Modify Rule</button>
+    <button class="ctx-item" on:click={ctxAddDropRule}>🚫 Add Block Rule</button>
+    {#if pluginList.length > 0}
+      <div class="ctx-sep"></div>
+      {#each pluginList as p}
+        <button class="ctx-item" on:click={() => ctxRunPlugin(p.name)}>🔌 {p.name}</button>
+      {/each}
+    {/if}
+  </div>
+{/if}
 
 <style>
   .page { display: flex; flex-direction: column; height: 100%; }
@@ -1087,38 +1107,24 @@
     align-items: center; justify-content: center;
     color: var(--fg-ghost, #3f3f46); font-size: 14px; gap: 8px;
   }
-  .plugin-bar {
-    display: flex; align-items: center; gap: 6px; padding: 5px 12px;
-    background: var(--bg-header, #0d0d12); border-bottom: 1px solid var(--border, #1e1e24);
+  .ctx-overlay { position: fixed; inset: 0; z-index: 999; }
+  .ctx-menu {
+    position: fixed; z-index: 1000; min-width: 220px;
+    background: var(--bg-panel, #111116); border: 1px solid var(--border, #1e1e24);
+    border-radius: 8px; padding: 4px 0; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   }
-  .plugin-label { font-size: 9px; color: var(--fg-faint, #52525b); letter-spacing: 0.5px; text-transform: uppercase; }
-  .plugin-select {
-    flex: 1; max-width: 200px; background: var(--bg, #0a0a0f); border: 1px solid var(--border, #27272a);
-    border-radius: 4px; padding: 3px 6px; color: var(--fg, #e4e4e7); font-size: 11px; font-family: inherit; outline: none;
+  .ctx-header {
+    padding: 6px 12px; font-size: 10px; color: var(--fg-faint, #52525b);
+    border-bottom: 1px solid var(--border, #1e1e24); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 250px;
   }
-  .btn-plugin {
-    padding: 3px 10px; font-size: 10px; border: 1px solid var(--border, #27272a);
-    background: transparent; color: var(--fg-dim, #71717a); border-radius: 4px; cursor: pointer; font-family: inherit;
+  .ctx-item {
+    display: block; width: 100%; padding: 7px 14px; border: none;
+    background: transparent; color: var(--fg, #e4e4e7); font-size: 12px;
+    cursor: pointer; font-family: inherit; text-align: left;
   }
-  .btn-plugin:hover { background: var(--bg-btn, #1a1a22); color: var(--fg-muted, #a1a1aa); }
-  .btn-plugin:disabled { opacity: 0.3; }
-  .btn-plugin-log {
-    padding: 3px 8px; font-size: 10px; border: 1px solid transparent;
-    background: transparent; color: var(--fg-ghost, #3f3f46); border-radius: 4px; cursor: pointer; font-family: inherit; margin-left: auto;
-  }
-  .btn-plugin-log.has-logs { color: var(--green, #34d399); border-color: var(--green, #34d399); }
-
-  .plugin-log-panel {
-    max-height: 150px; display: flex; flex-direction: column;
-    border-bottom: 1px solid var(--border, #1e1e24); background: var(--bg, #0a0a0f);
-  }
-  .plog-header {
-    display: flex; justify-content: space-between; padding: 4px 12px;
-    font-size: 9px; color: var(--accent, #38bdf8); letter-spacing: 1px;
-  }
-  .plog-clear { background: none; border: none; color: var(--fg-ghost, #3f3f46); font-size: 9px; cursor: pointer; font-family: inherit; }
-  .plog-body { flex: 1; overflow-y: auto; padding: 0 12px 6px; font-size: 10px; }
-  .plog-line { color: var(--fg-muted, #a1a1aa); line-height: 1.5; font-family: 'SF Mono', monospace; }
+  .ctx-item:hover { background: var(--accent-bg, #1e3a5f); color: var(--accent, #7dd3fc); }
+  .ctx-sep { height: 1px; background: var(--border, #1e1e24); margin: 4px 0; }
 
   .detail-empty-icon { font-size: 32px; opacity: 0.5; }
 

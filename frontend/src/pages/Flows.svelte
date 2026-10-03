@@ -24,6 +24,14 @@
   let replayHeaders = ''
   let replaying = false
 
+  // Device screen mirror
+  let rightPanel = 'detail' // 'detail' or 'device'
+  let screenSrc = ''
+  let screenActive = false
+  let screenInterval = null
+  let screenSize = [1080, 2400]
+  let deviceSerial = ''
+
   const languages = ['curl', 'python', 'go', 'java', 'js']
 
   async function loadFlows() {
@@ -224,6 +232,63 @@
     if (viewMode === 'grouped') loadGroups()
   }
 
+  async function startScreen() {
+    try {
+      const devs = await window.go.wailsgui.App.ListDevices()
+      if (devs && devs.length > 0) {
+        deviceSerial = devs[0].serial
+        screenSize = await window.go.wailsgui.App.GetScreenSize(deviceSerial)
+      }
+    } catch(e) { console.error(e) }
+
+    screenActive = true
+    captureFrame()
+    screenInterval = setInterval(captureFrame, 600)
+  }
+
+  function stopScreen() {
+    screenActive = false
+    if (screenInterval) clearInterval(screenInterval)
+    screenInterval = null
+    screenSrc = ''
+  }
+
+  async function captureFrame() {
+    if (!screenActive) return
+    try {
+      screenSrc = await window.go.wailsgui.App.CaptureScreen(deviceSerial)
+    } catch(e) { /* skip frame */ }
+  }
+
+  async function handleScreenClick(e) {
+    const img = e.target
+    const rect = img.getBoundingClientRect()
+    const scaleX = screenSize[0] / rect.width
+    const scaleY = screenSize[1] / rect.height
+    const x = Math.round((e.clientX - rect.left) * scaleX)
+    const y = Math.round((e.clientY - rect.top) * scaleY)
+    try {
+      await window.go.wailsgui.App.DeviceTap(deviceSerial, x, y)
+      setTimeout(captureFrame, 300)
+    } catch(err) { console.error(err) }
+  }
+
+  async function deviceBack() {
+    await window.go.wailsgui.App.DeviceBack(deviceSerial)
+    setTimeout(captureFrame, 300)
+  }
+
+  async function deviceHome() {
+    await window.go.wailsgui.App.DeviceHome(deviceSerial)
+    setTimeout(captureFrame, 300)
+  }
+
+  function toggleRightPanel(panel) {
+    rightPanel = panel
+    if (panel === 'device' && !screenActive) startScreen()
+    if (panel === 'detail' && screenActive) stopScreen()
+  }
+
   function startExportDrag(e) {
     exportDragging = true
     e.preventDefault()
@@ -255,7 +320,7 @@
 
   let interval
   onMount(() => { loadFlows(); interval = setInterval(loadFlows, 2000) })
-  onDestroy(() => clearInterval(interval))
+  onDestroy(() => { clearInterval(interval); stopScreen() })
 </script>
 
 <div class="page">
@@ -327,7 +392,30 @@
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div class="drag-handle" on:mousedown={startDrag}></div>
 
-    {#if selectedFlow}
+    <div class="right-area">
+      <div class="right-toggle">
+        <button class="toggle-btn" class:toggle-active={rightPanel === 'detail'} on:click={() => toggleRightPanel('detail')}>Detail</button>
+        <button class="toggle-btn" class:toggle-active={rightPanel === 'device'} on:click={() => toggleRightPanel('device')}>📱 Device</button>
+      </div>
+
+    {#if rightPanel === 'device'}
+      <div class="device-panel">
+        <div class="device-screen-container">
+          {#if screenSrc}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <img class="device-screen" src={screenSrc} alt="device" on:click={handleScreenClick} />
+          {:else}
+            <div class="device-placeholder">Connecting to device...</div>
+          {/if}
+        </div>
+        <div class="device-controls">
+          <button class="dev-btn" on:click={deviceBack}>◀ Back</button>
+          <button class="dev-btn" on:click={deviceHome}>● Home</button>
+          <button class="dev-btn" on:click={captureFrame}>⟳ Refresh</button>
+        </div>
+      </div>
+    {:else if selectedFlow}
       <div class="detail-panel">
         <div class="detail-header">
           <span class="detail-method {methodClass(selectedFlow.method)}">{selectedFlow.method}</span>
@@ -508,13 +596,12 @@
         </div>
       </div>
     {:else}
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
-      <div class="drag-handle" on:mousedown={startDrag}></div>
       <div class="detail-empty">
         <div class="detail-empty-icon">📡</div>
         <div>Select a flow to inspect</div>
       </div>
     {/if}
+    </div>
   </div>
 </div>
 
@@ -725,6 +812,33 @@
     color: var(--fg-ghost, #3f3f46); font-size: 14px; gap: 8px;
   }
   .detail-empty-icon { font-size: 32px; opacity: 0.5; }
+
+  .right-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .right-toggle {
+    display: flex; background: var(--bg-header, #0d0d12); border-bottom: 1px solid var(--border, #1e1e24);
+  }
+  .toggle-btn {
+    padding: 6px 16px; font-size: 11px; border: none; background: transparent;
+    color: var(--fg-dim, #71717a); cursor: pointer; font-family: inherit;
+    border-bottom: 2px solid transparent; transition: all 0.1s;
+  }
+  .toggle-btn:hover { color: var(--fg-muted, #a1a1aa); }
+  .toggle-active { color: var(--accent, #38bdf8); border-bottom-color: var(--accent, #38bdf8); }
+
+  .device-panel { flex: 1; display: flex; flex-direction: column; align-items: center; background: #000; }
+  .device-screen-container { flex: 1; display: flex; align-items: center; justify-content: center; padding: 8px; min-height: 0; }
+  .device-screen { max-height: 100%; max-width: 100%; object-fit: contain; cursor: pointer; border-radius: 4px; }
+  .device-placeholder { color: var(--fg-ghost, #3f3f46); font-size: 13px; }
+  .device-controls {
+    display: flex; gap: 8px; padding: 8px; background: var(--bg-header, #0d0d12);
+    border-top: 1px solid var(--border, #1e1e24); width: 100%; justify-content: center;
+  }
+  .dev-btn {
+    padding: 5px 16px; font-size: 12px; border: 1px solid var(--border, #27272a);
+    background: var(--bg-btn, #1a1a22); color: var(--fg-muted, #a1a1aa);
+    border-radius: 6px; cursor: pointer; font-family: inherit;
+  }
+  .dev-btn:hover { background: var(--bg-hover, #27272a); }
 
   .btn-replay, .btn-replay-edit {
     padding: 3px 10px; font-size: 11px; border: 1px solid var(--border, #27272a);

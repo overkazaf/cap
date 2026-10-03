@@ -20,8 +20,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/flows-tab.png" alt="cap Flows" width="800"><br>
-  <em>Flows — request table, params analysis, code export, replay</em>
+  <img src="docs/screenshots/flows-detail.png" alt="cap Flows" width="800"><br>
+  <em>Flows — 49 captured requests, JSON body viewer, Python export, sign detection</em>
 </p>
 
 ## Why cap?

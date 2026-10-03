@@ -20,8 +20,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/flows-tab.png" alt="cap 流量分析" width="800"><br>
-  <em>Flows — 请求列表、参数分析、代码导出、重放</em>
+  <img src="docs/screenshots/flows-detail.png" alt="cap 流量分析" width="800"><br>
+  <em>Flows — 49 条请求、JSON 响应查看、Python 导出、签名检测</em>
 </p>
 
 ## 为什么选择 cap？

@@ -1,0 +1,80 @@
+frontend/dist/assets/index-CYtkCMbs.css
+  936d2bd656d204f8 1
+cmd/cap/frontend/dist/assets/index-hJv7mBMW.js
+  936d2bd656d204f8 1-11,21
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 34-37,296-319,430-448,450-458,871-879,881,884,886,889-909
+frontend/dist/assets/index-hJv7mBMW.js
+  936d2bd656d204f8 1-11,21
+cmd/cap/frontend/dist/assets/index-CYtkCMbs.css
+  936d2bd656d204f8 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "b440488379c1b5e9c6141d7f5e696eaa7f0efa4b",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 137,
+      "total_deletions": 63,
+      "accepted_lines": 137,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap/frontend/dist/assets/index-BQzfNqZZ.js": {
+          "deletions": 18
+        },
+        "cmd/cap/frontend/dist/assets/index-hJv7mBMW.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "frontend/dist/assets/index-CYtkCMbs.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-hJv7mBMW.js": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 89,
+          "deletions": 21,
+          "accepted_lines": 89
+        },
+        "frontend/dist/assets/index-BQzfNqZZ.js": {
+          "deletions": 18
+        },
+        "cmd/cap/frontend/dist/assets/index-CvRBVaNl.css": {
+          "deletions": 1
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-CvRBVaNl.css": {
+          "deletions": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-CYtkCMbs.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

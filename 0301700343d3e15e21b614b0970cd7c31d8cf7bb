@@ -1,0 +1,92 @@
+frontend/dist/assets/index-CX-8x8tZ.css
+  936d2bd656d204f8 1
+frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/assets/index-Bmkkgd8Z.js
+  936d2bd656d204f8 1-10,20
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7-8
+cmd/cap/frontend/dist/assets/index-CX-8x8tZ.css
+  936d2bd656d204f8 1
+frontend/src/pages/Capture.svelte
+  936d2bd656d204f8 21-22,25,33-35,42,48-49,53,57,59,64-65,68,76-77,81,84-85,89,94-100,102-104,106-117,119-124,128-131,133-135,139-149,152,157-160,162-163,172-175,177-181,183-188,190-195,197-202,205-206,208,210-212,214,216,218-222,224-228,230-239,242-249,252-253,255,257-260,264-265
+frontend/dist/assets/index-Bmkkgd8Z.js
+  936d2bd656d204f8 1-10,20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "0301700343d3e15e21b614b0970cd7c31d8cf7bb",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 201,
+      "total_deletions": 516,
+      "accepted_lines": 201,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-Ctur46eI.css": {
+          "deletions": 1
+        },
+        "frontend/src/pages/Capture.svelte": {
+          "additions": 155,
+          "deletions": 424,
+          "accepted_lines": 155
+        },
+        "cmd/cap/frontend/dist/assets/index-uzLDn7NF.js": {
+          "deletions": 21
+        },
+        "frontend/dist/assets/index-Bmkkgd8Z.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-ctur46ei.css": {
+          "deletions": 1
+        },
+        "frontend/dist/assets/index-uzldn7nf.js": {
+          "deletions": 21
+        },
+        "cmd/cap/frontend/dist/assets/index-Ctur46eI.css": {
+          "deletions": 1
+        },
+        "frontend/dist/assets/index-CX-8x8tZ.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/assets/index-CX-8x8tZ.css": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/index.html": {
+          "additions": 2,
+          "deletions": 2,
+          "accepted_lines": 2
+        },
+        "frontend/dist/assets/index-ctur46ei.css": {
+          "deletions": 1
+        },
+        "frontend/dist/assets/index-uzLDn7NF.js": {
+          "deletions": 21
+        },
+        "cmd/cap/frontend/dist/assets/index-Bmkkgd8Z.js": {
+          "additions": 20,
+          "accepted_lines": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-uzldn7nf.js": {
+          "deletions": 21
+        }
+      }
+    }
+  }
+}

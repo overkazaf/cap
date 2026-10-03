@@ -44,7 +44,7 @@
 
   async function loadFlows() {
     try {
-      flows = await window.go.wailsgui.App.GetFlows(filterHost, filterMethod, filterSearch, 200) || []
+      flows = await window.go.wailsgui.App.GetFlows(filterHost, filterMethod, filterSearch, 0) || []
     } catch(e) { console.error(e) }
   }
 

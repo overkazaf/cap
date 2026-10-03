@@ -78,6 +78,21 @@ func (a *App) Startup(ctx context.Context) {
 	proxy.EnsureCA(a.certDir)
 }
 
+func (a *App) Shutdown(ctx context.Context) {
+	// Stop proxy
+	a.mu.Lock()
+	if a.isRunning && a.proxy != nil {
+		a.proxy.Stop()
+	}
+	a.mu.Unlock()
+
+	// Disconnect all devices (restore proxy settings)
+	devices, _ := android.ListDevices()
+	for _, d := range devices {
+		android.Teardown(d.Serial)
+	}
+}
+
 // ==================== Proxy ====================
 
 type FlowEvent struct {

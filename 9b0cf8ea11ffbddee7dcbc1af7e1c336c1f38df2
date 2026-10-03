@@ -1,0 +1,49 @@
+frontend/src/pages/Plugins.svelte
+  936d2bd656d204f8 58-60,97-100
+cmd/cap/frontend/dist/index.html
+  936d2bd656d204f8 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "9b0cf8ea11ffbddee7dcbc1af7e1c336c1f38df2",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 10,
+      "total_deletions": 23,
+      "accepted_lines": 10,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/src/pages/Plugins.svelte": {
+          "additions": 7,
+          "accepted_lines": 7
+        },
+        "cmd/cap/frontend/dist/assets/index-d0xaqik7.js": {
+          "deletions": 20
+        },
+        "cmd/cap/frontend/dist/assets/index-D0XaQik7.js": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "cmd/cap/frontend/dist/index.html": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        },
+        "frontend/dist/assets/index-D0XaQik7.js": {
+          "additions": 1,
+          "deletions": 1,
+          "accepted_lines": 1
+        }
+      }
+    }
+  }
+}

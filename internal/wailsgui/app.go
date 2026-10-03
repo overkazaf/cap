@@ -860,6 +860,214 @@ func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
 	return env, nil
 }
 
+// ==================== RE Tools ====================
+
+type AppDetail struct {
+	Package     string   `json:"package"`
+	Version     string   `json:"version"`
+	TargetSDK   string   `json:"target_sdk"`
+	MinSDK      string   `json:"min_sdk"`
+	Permissions []string `json:"permissions"`
+	Activities  []string `json:"activities"`
+	Services    []string `json:"services"`
+	Receivers   []string `json:"receivers"`
+	NativeLibs  []string `json:"native_libs"`
+	APKPath     string   `json:"apk_path"`
+	DataDir     string   `json:"data_dir"`
+	UID         string   `json:"uid"`
+	Debuggable  bool     `json:"debuggable"`
+}
+
+func (a *App) InspectApp(serial, pkg string) (*AppDetail, error) {
+	shell := func(cmd string) string {
+		args := []string{}
+		if serial != "" {
+			args = append(args, "-s", serial)
+		}
+		args = append(args, "shell", cmd)
+		out, _ := exec.Command("adb", args...).CombinedOutput()
+		return strings.TrimSpace(string(out))
+	}
+
+	dump := shell(fmt.Sprintf("dumpsys package %s", pkg))
+	detail := &AppDetail{Package: pkg}
+
+	for _, line := range strings.Split(dump, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "versionName=") {
+			detail.Version = strings.TrimPrefix(line, "versionName=")
+		} else if strings.HasPrefix(line, "targetSdk=") {
+			detail.TargetSDK = strings.TrimPrefix(line, "targetSdk=")
+		} else if strings.HasPrefix(line, "minSdk=") {
+			detail.MinSDK = strings.TrimPrefix(line, "minSdk=")
+		} else if strings.HasPrefix(line, "codePath=") {
+			detail.APKPath = strings.TrimPrefix(line, "codePath=")
+		} else if strings.HasPrefix(line, "dataDir=") {
+			detail.DataDir = strings.TrimPrefix(line, "dataDir=")
+		} else if strings.HasPrefix(line, "userId=") {
+			detail.UID = strings.TrimPrefix(line, "userId=")
+		} else if strings.Contains(line, "android.permission.") {
+			perm := line
+			if idx := strings.Index(perm, "android.permission."); idx >= 0 {
+				perm = perm[idx:]
+				if spIdx := strings.IndexAny(perm, " :"); spIdx > 0 {
+					perm = perm[:spIdx]
+				}
+				detail.Permissions = append(detail.Permissions, perm)
+			}
+		} else if strings.Contains(line, "flags=") && strings.Contains(line, "DEBUGGABLE") {
+			detail.Debuggable = true
+		}
+	}
+
+	// Activities
+	actDump := shell(fmt.Sprintf("cmd package query-activities --brief %s 2>/dev/null || dumpsys package %s | grep -A1 'Activity Resolver'", pkg, pkg))
+	for _, line := range strings.Split(actDump, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, pkg) && strings.Contains(line, "/") {
+			detail.Activities = append(detail.Activities, line)
+		}
+	}
+
+	// Services
+	svcDump := shell(fmt.Sprintf("dumpsys package %s | grep '%s' | grep -i service", pkg, pkg))
+	for _, line := range strings.Split(svcDump, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, pkg) && len(line) > 5 {
+			detail.Services = append(detail.Services, line)
+		}
+	}
+
+	// Native libs
+	libDump := shell(fmt.Sprintf("ls %s/lib/arm64/ 2>/dev/null || ls %s/lib/arm/ 2>/dev/null", detail.APKPath, detail.APKPath))
+	for _, line := range strings.Split(libDump, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasSuffix(line, ".so") {
+			detail.NativeLibs = append(detail.NativeLibs, line)
+		}
+	}
+
+	return detail, nil
+}
+
+type ProcessInfo struct {
+	PID  string `json:"pid"`
+	Name string `json:"name"`
+	User string `json:"user"`
+}
+
+func (a *App) ListProcesses(serial string) ([]ProcessInfo, error) {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "ps -A -o PID,USER,NAME 2>/dev/null || ps")
+	out, err := exec.Command("adb", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	var procs []ProcessInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 3 && fields[0] != "PID" {
+			procs = append(procs, ProcessInfo{PID: fields[0], User: fields[1], Name: fields[2]})
+		}
+	}
+	return procs, nil
+}
+
+func (a *App) PullAPK(serial, pkg string) (string, error) {
+	shell := func(cmd string) string {
+		args := []string{}
+		if serial != "" {
+			args = append(args, "-s", serial)
+		}
+		args = append(args, "shell", cmd)
+		out, _ := exec.Command("adb", args...).Output()
+		return strings.TrimSpace(string(out))
+	}
+
+	pathOut := shell(fmt.Sprintf("pm path %s", pkg))
+	apkPath := ""
+	for _, line := range strings.Split(pathOut, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "package:") {
+			apkPath = strings.TrimPrefix(strings.TrimSpace(line), "package:")
+			break
+		}
+	}
+	if apkPath == "" {
+		return "", fmt.Errorf("package %s not found", pkg)
+	}
+
+	localDir := filepath.Join(a.certDir, "apks")
+	os.MkdirAll(localDir, 0755)
+	localPath := filepath.Join(localDir, pkg+".apk")
+
+	pullArgs := []string{}
+	if serial != "" {
+		pullArgs = append(pullArgs, "-s", serial)
+	}
+	pullArgs = append(pullArgs, "pull", apkPath, localPath)
+	if err := exec.Command("adb", pullArgs...).Run(); err != nil {
+		return "", err
+	}
+	return localPath, nil
+}
+
+func (a *App) CheckFrida(serial string) map[string]string {
+	result := map[string]string{"status": "not running", "version": ""}
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+
+	// Check if frida-server is running
+	psArgs := append(args, "shell", "ps -A | grep frida")
+	out, _ := exec.Command("adb", psArgs...).Output()
+	if strings.Contains(string(out), "frida") {
+		result["status"] = "running"
+	}
+
+	// Check frida-server binary
+	lsArgs := append([]string{}, args...)
+	lsArgs = append(lsArgs, "shell", "ls /data/local/tmp/frida-server* 2>/dev/null")
+	out2, _ := exec.Command("adb", lsArgs...).Output()
+	if len(strings.TrimSpace(string(out2))) > 0 {
+		result["binary"] = strings.TrimSpace(string(out2))
+	}
+
+	return result
+}
+
+func (a *App) StartFrida(serial string) (string, error) {
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "shell", "su -c '/data/local/tmp/frida-server -D &'")
+	out, err := exec.Command("adb", args...).CombinedOutput()
+	return string(out), err
+}
+
+func (a *App) RunLogcat(serial, filter string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 100
+	}
+	args := []string{}
+	if serial != "" {
+		args = append(args, "-s", serial)
+	}
+	args = append(args, "logcat", "-d", "-t", fmt.Sprintf("%d", lines))
+	if filter != "" {
+		args = append(args, "-s", filter)
+	}
+	out, err := exec.Command("adb", args...).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // ==================== Deep Trace ====================
 
 func (a *App) DeepTrace(flowID, packageName string) (*captrace.TraceResult, error) {

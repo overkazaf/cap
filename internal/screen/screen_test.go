@@ -495,10 +495,45 @@ func TestCapture_DefaultEngineIsScreencap(t *testing.T) {
 	}
 }
 
-func TestCapture_ScrcpyNotImplemented(t *testing.T) {
+// withFakeScrcpyCapture substitutes scrcpyCaptureFunc (the seam Capture's
+// EngineScrcpy case calls through) for the duration of the test, restoring
+// the original afterward.
+func withFakeScrcpyCapture(t *testing.T, fn func(opts Options) ([]byte, error)) {
+	t.Helper()
+	orig := scrcpyCaptureFunc
+	scrcpyCaptureFunc = fn
+	t.Cleanup(func() { scrcpyCaptureFunc = orig })
+}
+
+func TestCapture_ScrcpyDelegatesToScrcpyCaptureFunc(t *testing.T) {
+	want := []byte{0xca, 0xfe}
+	var got Options
+	withFakeScrcpyCapture(t, func(opts Options) ([]byte, error) {
+		got = opts
+		return want, nil
+	})
+
+	out, err := Capture(Options{Engine: EngineScrcpy, Serial: "S123", MaxSize: 300, Quality: 80})
+	if err != nil {
+		t.Fatalf("Capture() error = %v, want nil", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Errorf("Capture() = %v, want %v", out, want)
+	}
+	if got.Serial != "S123" || got.MaxSize != 300 || got.Quality != 80 {
+		t.Errorf("Capture() forwarded opts = %+v, want serial=S123 maxSize=300 quality=80", got)
+	}
+}
+
+func TestCapture_ScrcpyPropagatesError(t *testing.T) {
+	wantErr := errors.New("scrcpy: no device")
+	withFakeScrcpyCapture(t, func(opts Options) ([]byte, error) {
+		return nil, wantErr
+	})
+
 	_, err := Capture(Options{Engine: EngineScrcpy})
-	if err == nil {
-		t.Fatal("Capture() with EngineScrcpy: want error, got nil")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Capture() error = %v, want %v", err, wantErr)
 	}
 }
 

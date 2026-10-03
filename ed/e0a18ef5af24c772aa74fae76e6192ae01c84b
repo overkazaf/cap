@@ -1,0 +1,30 @@
+frontend/src/pages/Flows.svelte
+  936d2bd656d204f8 45-46,63-117,119-123,598,873-891,1110-1114,1116-1119,1121-1124,1126-1127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "ede0a18ef5af24c772aa74fae76e6192ae01c84b",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 100,
+      "total_deletions": 94,
+      "accepted_lines": 100,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 100,
+          "deletions": 94,
+          "accepted_lines": 100
+        }
+      }
+    }
+  }
+}

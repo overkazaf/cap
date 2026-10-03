@@ -1,0 +1,48 @@
+internal/screen/fast_capture.go
+  936d2bd656d204f8 1-194
+internal/screen/screen_test.go
+  936d2bd656d204f8 1-510
+internal/screen/stream.go
+  936d2bd656d204f8 1-153
+internal/screen/screen.go
+  936d2bd656d204f8 1-120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "8e6cd552c44e027c8da230732a0ab95c1639a056",
+  "prompts": {
+    "936d2bd656d204f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb92978-dbd5-4a47-824a-f9747948b755",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 986,
+      "total_deletions": 9,
+      "accepted_lines": 977,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/screen/fast_capture.go": {
+          "additions": 194,
+          "accepted_lines": 194
+        },
+        "internal/screen/stream.go": {
+          "additions": 153,
+          "accepted_lines": 153
+        },
+        "internal/screen/screen.go": {
+          "additions": 120,
+          "accepted_lines": 120
+        },
+        "internal/screen/screen_test.go": {
+          "additions": 519,
+          "deletions": 9,
+          "accepted_lines": 510
+        }
+      }
+    }
+  }
+}

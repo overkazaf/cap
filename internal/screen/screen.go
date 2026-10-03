@@ -12,9 +12,12 @@
 // standard library (encoding/binary, image, image/jpeg) — no CGo, no
 // ffmpeg, no external dependencies.
 //
-// A second engine, EngineScrcpy, is reserved for a future scrcpy-server
-// based H.264 streaming backend capable of true 30fps mirroring. It is not
-// implemented yet: Capture returns an error if it's selected.
+// A second engine, EngineScrcpy, drives scrcpy-server
+// (https://github.com/Genymobile/scrcpy) on the device to capture H.264 at
+// up to ~15-30 FPS, then shells out to `ffmpeg` (see scrcpy.go) to
+// transcode that into the same JPEG-frame shape FastCapture produces,
+// since decoding H.264 in pure Go isn't practical today. If ffmpeg isn't
+// installed, Capture transparently falls back to the EngineScreencap path.
 package screen
 
 import "fmt"
@@ -28,8 +31,9 @@ const (
 	// and FastStream in this package.
 	EngineScreencap Engine = iota
 
-	// EngineScrcpy is reserved for a future scrcpy-server-based H.264
-	// streaming engine. Not implemented yet.
+	// EngineScrcpy captures frames via a scrcpy-server H.264 stream
+	// transcoded to JPEG by ffmpeg, for substantially higher frame rates
+	// than EngineScreencap. Implemented by ScrcpyServer in scrcpy.go.
 	EngineScrcpy
 )
 
@@ -104,16 +108,23 @@ type Options struct {
 	Quality int
 }
 
+// scrcpyCaptureFunc is the seam Capture's EngineScrcpy case calls through;
+// it defaults to captureScrcpy (see scrcpy.go). Tests substitute it to
+// exercise Capture's dispatch logic without starting a real scrcpy-server/
+// ffmpeg pipeline.
+var scrcpyCaptureFunc = captureScrcpy
+
 // Capture grabs one JPEG-encoded frame using the backend selected by
 // opts.Engine. EngineScreencap is implemented by FastCapture; EngineScrcpy
-// is reserved for a future scrcpy-server backend and currently always
-// returns an error.
+// is implemented by the package-level scrcpy-server singleton (see
+// captureScrcpy in scrcpy.go), which transparently falls back to
+// FastCapture if ffmpeg isn't installed or hasn't produced a frame yet.
 func Capture(opts Options) ([]byte, error) {
 	switch opts.Engine {
 	case EngineScreencap:
 		return captureFunc(opts.Serial, opts.MaxSize, opts.Quality)
 	case EngineScrcpy:
-		return nil, fmt.Errorf("screen: engine %s is not implemented yet", opts.Engine)
+		return scrcpyCaptureFunc(opts)
 	default:
 		return nil, fmt.Errorf("screen: unknown engine %s", opts.Engine)
 	}

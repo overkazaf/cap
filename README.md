@@ -1,3 +1,12 @@
+<div align="center">
+
+![Stars](https://img.shields.io/github/stars/overkazaf/cap?style=flat-square&color=58a6ff)
+![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go&logoColor=white)
+![Svelte](https://img.shields.io/badge/Svelte-4+-FF3E00?style=flat-square&logo=svelte&logoColor=white)
+![Last Commit](https://img.shields.io/github/last-commit/overkazaf/cap?style=flat-square&color=58a6ff)
+
+</div>
+
 # cap
 
 <p align="center">

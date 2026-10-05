@@ -1,0 +1,65 @@
+internal/unpin/unpin_test.go
+  e4bf929c396eb614 1-138
+internal/unpin/magisk.go
+  e4bf929c396eb614 1-157
+internal/unpin/patch.go
+  e4bf929c396eb614 1-275
+internal/unpin/unpin.go
+  e4bf929c396eb614 1-65
+internal/unpin/frida.go
+  e4bf929c396eb614 1-384
+internal/cli/root.go
+  e4bf929c396eb614 29
+internal/cli/unpin.go
+  e4bf929c396eb614 1-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "b7777e7505d5012240795310b512bde87ee076c5",
+  "prompts": {
+    "e4bf929c396eb614": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "255d2a81-4cb4-4f07-b0ad-b5e4053f281b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 1200,
+      "total_deletions": 0,
+      "accepted_lines": 1200,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/unpin/unpin_test.go": {
+          "additions": 138,
+          "accepted_lines": 138
+        },
+        "internal/unpin/magisk.go": {
+          "additions": 157,
+          "accepted_lines": 157
+        },
+        "internal/cli/unpin.go": {
+          "additions": 180,
+          "accepted_lines": 180
+        },
+        "internal/unpin/frida.go": {
+          "additions": 384,
+          "accepted_lines": 384
+        },
+        "internal/cli/root.go": {
+          "additions": 1,
+          "accepted_lines": 1
+        },
+        "internal/unpin/patch.go": {
+          "additions": 275,
+          "accepted_lines": 275
+        },
+        "internal/unpin/unpin.go": {
+          "additions": 65,
+          "accepted_lines": 65
+        }
+      }
+    }
+  }
+}

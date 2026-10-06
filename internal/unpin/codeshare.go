@@ -131,23 +131,22 @@ func (c *CodeShareClient) fetch(url string) (string, error) {
 }
 
 // parseSearchResults extracts entries from CodeShare search/browse HTML.
-// CodeShare renders project cards with structure like:
+// Each result is an <article> containing:
 //
-//	<a href="/@user/project/">
-//	  <h3>Title ... likes ... views</h3>
-//	  <h4>Uploaded by: @user</h4>
-//	  <p>Description text</p>
-//	</a>
+//	<h2><a href="https://codeshare.frida.re/@user/project/">Title</a></h2>
+//	<h3><i>...</i> N | <i>...</i> NK</h3>
+//	<h4>Uploaded by: <a href="/@user/">@user</a></h4>
+//	<p>Description</p>
 func parseSearchResults(html string) []CodeShareEntry {
 	var entries []CodeShareEntry
 
-	// Match project links: href="/@user/project/"
-	slugRe := regexp.MustCompile(`href="(/@[^"]+/)"`)
-	slugMatches := slugRe.FindAllStringSubmatch(html, -1)
+	// Match full project URLs in <h2> links
+	projectRe := regexp.MustCompile(`href="(?:https://codeshare\.frida\.re)?(/@[^/]+/[^/]+/)"`)
+	matches := projectRe.FindAllStringSubmatchIndex(html, -1)
 
 	seen := make(map[string]bool)
-	for _, m := range slugMatches {
-		slug := m[1]
+	for _, loc := range matches {
+		slug := html[loc[2]:loc[3]]
 		if seen[slug] {
 			continue
 		}
@@ -158,47 +157,44 @@ func parseSearchResults(html string) []CodeShareEntry {
 			URL:  codeshareBase + slug,
 		}
 
-		// Extract surrounding context for this entry
-		idx := strings.Index(html, `href="`+slug+`"`)
-		if idx < 0 {
-			continue
+		// Find the <article> block containing this link
+		// Look backwards for <article> and forwards for </article>
+		blockStart := loc[0] - 200
+		if blockStart < 0 {
+			blockStart = 0
+		}
+		blockEnd := loc[0] + 2000
+		if blockEnd > len(html) {
+			blockEnd = len(html)
+		}
+		block := html[blockStart:blockEnd]
+
+		// Title from <h2><a ...>Title</a></h2>
+		h2Re := regexp.MustCompile(`<h2><a[^>]*>([^<]+)</a></h2>`)
+		if m := h2Re.FindStringSubmatch(block); len(m) > 1 {
+			entry.Title = strings.TrimSpace(m[1])
 		}
 
-		// Look at the block around this link (up to 2000 chars after)
-		end := idx + 2000
-		if end > len(html) {
-			end = len(html)
-		}
-		block := html[idx:end]
-
-		// Extract title from <h3>
+		// Likes and views from <h3>
 		if h3 := extractBetween(block, "<h3", "</h3>"); h3 != "" {
-			// Strip inner tags
-			entry.Title = stripTags(h3)
-			// Try to parse likes/views from the h3 text
-			parts := strings.Fields(entry.Title)
+			text := stripTags(h3)
+			// Format: "131 | 583K" or "5 | 29K"
+			parts := strings.Split(text, "|")
 			if len(parts) >= 2 {
-				// Last items are often "N likes N views"
-				for i, p := range parts {
-					if p == "likes" && i > 0 {
-						entry.Likes = parts[i-1]
-					}
-					if p == "views" && i > 0 {
-						entry.Views = parts[i-1]
-					}
-				}
+				entry.Likes = strings.TrimSpace(parts[0])
+				entry.Views = strings.TrimSpace(parts[1])
 			}
 		}
 
-		// Extract author from "Uploaded by: @user"
+		// Author from <h4>
 		if h4 := extractBetween(block, "<h4", "</h4>"); h4 != "" {
 			text := stripTags(h4)
 			if idx := strings.Index(text, "@"); idx >= 0 {
-				entry.Author = text[idx:]
+				entry.Author = strings.TrimSpace(text[idx:])
 			}
 		}
 
-		// Extract description from <p>
+		// Description from <p>
 		if p := extractBetween(block, "<p", "</p>"); p != "" {
 			desc := stripTags(p)
 			desc = strings.TrimSpace(desc)
@@ -208,12 +204,14 @@ func parseSearchResults(html string) []CodeShareEntry {
 			entry.Description = desc
 		}
 
-		// Extract slug parts for a clean title if title is empty
+		// Fallback title from slug
 		if entry.Title == "" {
 			parts := strings.Split(strings.Trim(slug, "/"), "/")
 			if len(parts) >= 2 {
 				entry.Title = parts[1]
-				entry.Author = parts[0]
+				if entry.Author == "" {
+					entry.Author = "@" + parts[0]
+				}
 			}
 		}
 

@@ -6,18 +6,18 @@ import (
 
 func TestParseSearchResults(t *testing.T) {
 	html := `
-<div>
-  <a href="/@user1/ssl-bypass/">
-    <h3>SSL Pinning Bypass 42 likes 1337 views</h3>
-    <h4>Uploaded by: @user1</h4>
-    <p>Universal SSL pinning bypass for Android apps</p>
-  </a>
-  <a href="/@user2/flutter-unpin/">
-    <h3>Flutter SSL Bypass 10 likes 200 views</h3>
-    <h4>Uploaded by: @user2</h4>
-    <p>Bypass SSL in Flutter apps</p>
-  </a>
-</div>`
+<article>
+  <h2><a href="https://codeshare.frida.re/@user1/ssl-bypass/">SSL Pinning Bypass</a></h2>
+  <h3><i class="fa fa-thumbs-o-up"></i> 42 | <i class="fa fa-eye"></i> 1337</h3>
+  <h4>Uploaded by: <a href="/@user1/">@user1</a></h4>
+  <p>Universal SSL pinning bypass for Android apps</p>
+</article>
+<article>
+  <h2><a href="https://codeshare.frida.re/@user2/flutter-unpin/">Flutter SSL Bypass</a></h2>
+  <h3><i class="fa fa-thumbs-o-up"></i> 10 | <i class="fa fa-eye"></i> 200</h3>
+  <h4>Uploaded by: <a href="/@user2/">@user2</a></h4>
+  <p>Bypass SSL in Flutter apps</p>
+</article>`
 
 	results := parseSearchResults(html)
 	if len(results) != 2 {
@@ -27,8 +27,17 @@ func TestParseSearchResults(t *testing.T) {
 	if results[0].Slug != "/@user1/ssl-bypass/" {
 		t.Errorf("result[0].Slug = %q", results[0].Slug)
 	}
+	if results[0].Title != "SSL Pinning Bypass" {
+		t.Errorf("result[0].Title = %q", results[0].Title)
+	}
 	if results[0].Author != "@user1" {
 		t.Errorf("result[0].Author = %q", results[0].Author)
+	}
+	if results[0].Likes != "42" {
+		t.Errorf("result[0].Likes = %q", results[0].Likes)
+	}
+	if results[0].Description != "Universal SSL pinning bypass for Android apps" {
+		t.Errorf("result[0].Description = %q", results[0].Description)
 	}
 	if results[1].Slug != "/@user2/flutter-unpin/" {
 		t.Errorf("result[1].Slug = %q", results[1].Slug)
@@ -37,8 +46,8 @@ func TestParseSearchResults(t *testing.T) {
 
 func TestParseSearchResultsDedup(t *testing.T) {
 	html := `
-<a href="/@user/project/">link1</a>
-<a href="/@user/project/">link2</a>
+<h2><a href="https://codeshare.frida.re/@user/project/">link1</a></h2>
+<h2><a href="https://codeshare.frida.re/@user/project/">link2</a></h2>
 `
 	results := parseSearchResults(html)
 	if len(results) != 1 {

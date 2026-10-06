@@ -106,6 +106,8 @@ footer { background: var(--code-bg); padding: 32px 20px; text-align: center; col
       <tr><td>Sign Inference</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>MD5/SHA/HMAC</b></td></tr>
       <tr><td>Source Mapping</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>jadx → URL</b></td></tr>
       <tr><td>Android Setup</td><td class="cross">manual</td><td class="cross">manual</td><td class="partial">app</td><td class="check"><b>ADB direct</b></td></tr>
+      <tr><td>SSL Unpinning</td><td class="partial">manual</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>Frida/patch/Magisk</b></td></tr>
+      <tr><td>CodeShare</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>auto-fingerprint</b></td></tr>
       <tr><td>Request Replay</td><td class="check">Repeater</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ + modify</b></td></tr>
       <tr><td>API Auto-Grouping</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>host + path</b></td></tr>
       <tr><td>Flow Comparison</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>side-by-side</b></td></tr>
@@ -155,6 +157,10 @@ footer { background: var(--code-bg); padding: 32px 20px; text-align: center; col
       <div class="feature">
         <h3>WebSocket & SSE</h3>
         <p>Capture WebSocket frames (text/binary, both directions) and Server-Sent Events streams alongside HTTP flows.</p>
+      </div>
+      <div class="feature">
+        <h3>SSL Unpinning</h3>
+        <p>Four bypass strategies: Frida (14+ hooks), APK patching, Magisk module, and CodeShare auto-search by app fingerprint.</p>
       </div>
       <div class="feature">
         <h3>Embedded Terminal</h3>
@@ -235,6 +241,8 @@ cap gui</code></pre>
       <tr><td>签名算法推理</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>MD5/SHA/HMAC</b></td></tr>
       <tr><td>源码映射</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>jadx → URL</b></td></tr>
       <tr><td>Android 连接</td><td class="cross">手动</td><td class="cross">手动</td><td class="partial">需装 App</td><td class="check"><b>ADB 直连</b></td></tr>
+      <tr><td>SSL Unpinning</td><td class="partial">手动</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>Frida/patch/Magisk</b></td></tr>
+      <tr><td>CodeShare 集成</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>自动指纹匹配</b></td></tr>
       <tr><td>请求重放</td><td class="check">Repeater</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ + 改参</b></td></tr>
       <tr><td>API 自动分组</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>host + 路径</b></td></tr>
       <tr><td>流量对比</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>并排 Diff</b></td></tr>
@@ -261,6 +269,7 @@ cap gui</code></pre>
       <div class="feature"><h3>源码映射</h3><p>扫描 jadx 反编译产物，把 URL 映射到 Java 源码文件和方法名。</p></div>
       <div class="feature"><h3>请求重放</h3><p>选中请求一键重发，支持修改参数，Diff 对比原始和重放响应。</p></div>
       <div class="feature"><h3>WebSocket & SSE</h3><p>抓取 WebSocket 帧和 SSE 流，和 HTTP 请求一起展示。</p></div>
+      <div class="feature"><h3>SSL Unpinning</h3><p>四种绕过策略：Frida（14+ hook）、APK 补丁、Magisk 模块、CodeShare 自动指纹搜索。</p></div>
       <div class="feature"><h3>内嵌终端</h3><p>GUI 内多 Tab 终端，执行 adb/frida/curl 不用切窗口。</p></div>
       <div class="feature"><h3>请求重放</h3><p>一键重放请求，支持修改 URL/Header/Body 后重发，Diff 对比响应差异。</p></div>
       <div class="feature"><h3>API 自动分组</h3><p>按 host + 路径前缀自动聚合，一眼看清目标 App 的 API 结构。</p></div>

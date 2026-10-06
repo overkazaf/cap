@@ -29,6 +29,8 @@ Existing tools (Burp Suite, mitmproxy, HTTP Toolkit) are built for web security 
 | Static analysis mapping | ✗ | ✗ | ✗ | **✓ jadx → URL** |
 | One-cmd Android setup | ✗ | ✗ | △ app-based | **✓ ADB direct** |
 | Cert inject (Android 10+) | ✗ manual | ✗ manual | ✓ | **✓ mount --bind + Magisk** |
+| SSL unpinning | △ manual | ✗ | ✗ | **✓ Frida/patch/Magisk** |
+| CodeShare integration | ✗ | ✗ | ✗ | **✓ auto-fingerprint** |
 | WebSocket capture | ✓ | ✓ | ✓ | **✓** |
 | SSE stream capture | ✗ | △ | ✗ | **✓** |
 | Request replay + diff | ✓ Repeater | ✗ | ✗ | **✓** |
@@ -81,6 +83,12 @@ flowchart TB
         ADB["Android ADB<br/>(proxy + cert)"]
     end
 
+    subgraph Unpin["Unpin Layer"]
+        FRIDA["Frida Hooks<br/>(14+ bypass)"]
+        PATCH["APK Patcher<br/>(NSConfig)"]
+        CODESHARE["CodeShare<br/>(fingerprint → script)"]
+    end
+
     CLI --> PROXY
     GUI --> PROXY
     GUI --> TTY
@@ -96,6 +104,9 @@ flowchart TB
     CONTEXT --> STORE
     DETECT --> STORE
     ADB --> PROXY
+    ADB --> FRIDA
+    ADB --> PATCH
+    CODESHARE --> FRIDA
 
     style Client fill:#2d5aa0,color:#fff
     style Core fill:#1a6b3c,color:#fff
@@ -103,6 +114,7 @@ flowchart TB
     style Export fill:#6b3a8a,color:#fff
     style Capture fill:#8a3a3a,color:#fff
     style Device fill:#3a6b8a,color:#fff
+    style Unpin fill:#8a6b3a,color:#fff
 ```
 
 ### Data Flow
@@ -139,10 +151,12 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     types["types<br/>Flow, WSFrame, SSEEvent"]
+    config["config<br/>shared paths"]
     store["store<br/>Store interface"]
     sqlite["store/sqlite<br/>SQLite impl"]
     proxy["proxy<br/>MITM core"]
-    android["android<br/>ADB setup"]
+    android["android<br/>ADB + device"]
+    unpin["unpin<br/>SSL bypass + CodeShare"]
     context["context<br/>jadx mapper"]
     codegen["export/codegen<br/>5 languages"]
     agent["export/agent<br/>JSONL"]
@@ -150,23 +164,25 @@ flowchart LR
     replay["replay<br/>replay + diff"]
     capture["capture<br/>WS + SSE"]
     cli["cli<br/>cobra commands"]
-    gui["gui<br/>Wails desktop"]
+    wailsgui["wailsgui<br/>Wails desktop"]
 
     sqlite --> store --> types
-    proxy --> types
+    proxy --> types & config
     android -.-> proxy
+    unpin --> android
     context --> types
     codegen --> types
     agent --> types
     sign --> types
     replay --> types
     capture --> types
-    cli --> proxy & sqlite & codegen & agent & android & context
-    gui --> proxy & sqlite & codegen & agent & android & sign & replay
+    cli --> proxy & sqlite & codegen & agent & android & context & unpin
+    wailsgui --> proxy & sqlite & codegen & agent & android & sign & replay & config
 
     style types fill:#e8b4b8
     style cli fill:#b4cce8
-    style gui fill:#b4cce8
+    style wailsgui fill:#b4cce8
+    style unpin fill:#e8d4b4
 ```
 
 ## Features
@@ -182,6 +198,19 @@ Three-strategy CA cert installation for modern Android:
 1. **mount --bind** (Android 10+, instant, non-persistent) — HTTP Toolkit approach
 2. **Magisk module** (persistent, requires reboot)
 3. **Legacy /system remount** (Android 9 and below)
+
+### SSL Unpinning
+Four strategies to bypass app-level certificate pinning:
+```bash
+cap unpin frida --pkg com.example.app     # Frida: hooks 14+ pinning implementations
+cap unpin patch --apk ./target.apk        # Patch: rewrite network_security_config.xml
+cap unpin magisk                          # Magisk: system-wide user cert promotion
+cap unpin codeshare --pkg com.example.app  # CodeShare: auto-fingerprint → find scripts
+```
+
+Frida script covers: TrustManagerImpl, OkHttp3 CertificatePinner, SSLContext, WebViewClient, Conscrypt, Flutter BoringSSL, Apache HTTP, TrustKit, Cordova, NetworkSecurityConfig, and more.
+
+CodeShare integration fingerprints the target APK (frameworks, pinning libraries, security features) and searches [codeshare.frida.re](https://codeshare.frida.re) for matching community scripts.
 
 ### Multi-Language Code Generation
 ```bash
@@ -334,12 +363,14 @@ cap gui
 ```
 internal/
 ├── types/          Flow, WSFrame, SSEEvent structs
+├── config/         Shared path defaults (~/.cap)
 ├── proxy/          goproxy MITM, CA cert gen, header filter
 ├── store/sqlite/   SQLite with WAL, filtering, JSON codec
 ├── export/
 │   ├── codegen/    Go templates → curl/python/go/java/js
 │   └── agent/      Compact JSONL + sign param detection
-├── android/        ADB device setup, 3-strategy cert install
+├── android/        ADB helpers, device setup, 3-strategy cert install
+├── unpin/          SSL unpinning: Frida hooks, APK patch, Magisk, CodeShare
 ├── context/        jadx scanner, Retrofit/OkHttp parser, URL matcher
 ├── sign/           Length analysis, pattern matching, brute-force verify
 ├── replay/         HTTP replay, request modification, response diff
@@ -351,9 +382,11 @@ internal/
 ├── sequence/       Request sequence record/replay with variable propagation
 ├── stats/          Traffic statistics (P95, error rate, timeline)
 ├── plugin/         Plugin engine with save/load/toggle
-├── wailsgui/       Wails backend bindings for all modules
-├── cli/            Cobra commands: start/flows/export/android/gui
-└── gui/            Legacy Fyne GUI (deprecated, use Wails)
+├── trace/          Deep Trace: DEX search, jadx, radare2 analysis
+├── screen/         Device screen capture (screencap + scrcpy)
+├── rules/          Request/response intercept rules engine
+├── wailsgui/       Wails backend (proxy, flows, device, analysis)
+└── cli/            Cobra commands: start/flows/export/android/unpin/gui
 frontend/           Svelte SPA (Capture, Flows, Terminal, Plugins, Settings)
 ```
 

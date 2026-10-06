@@ -29,6 +29,8 @@
 | 静态分析关联 | ✗ | ✗ | ✗ | **✓ jadx → URL 映射** |
 | 一键连接 Android | ✗ | ✗ | △ 需装 App | **✓ ADB 直连** |
 | 证书注入 (Android 10+) | ✗ 手动 | ✗ 手动 | ✓ | **✓ mount --bind + Magisk** |
+| SSL Unpinning | △ 手动 | ✗ | ✗ | **✓ Frida/patch/Magisk** |
+| CodeShare 集成 | ✗ | ✗ | ✗ | **✓ 自动指纹匹配** |
 | WebSocket 抓取 | ✓ | ✓ | ✓ | **✓** |
 | SSE 流抓取 | ✗ | △ | ✗ | **✓** |
 | 请求重放 + Diff | ✓ Repeater | ✗ | ✗ | **✓** |
@@ -74,6 +76,12 @@ flowchart TB
         ADB["Android ADB<br/>(代理 + 证书)"]
     end
 
+    subgraph 脱钉层["SSL Unpinning"]
+        FRIDA["Frida Hooks<br/>(14+ 实现)"]
+        PATCH["APK 补丁<br/>(NSConfig)"]
+        CODESHARE["CodeShare<br/>(指纹 → 脚本)"]
+    end
+
     CLI --> PROXY
     GUI --> PROXY
     GUI --> TTY
@@ -89,6 +97,9 @@ flowchart TB
     CONTEXT --> STORE
     DETECT --> STORE
     ADB --> PROXY
+    ADB --> FRIDA
+    ADB --> PATCH
+    CODESHARE --> FRIDA
 
     style 客户端 fill:#2d5aa0,color:#fff
     style 核心引擎 fill:#1a6b3c,color:#fff
@@ -96,6 +107,7 @@ flowchart TB
     style 导出层 fill:#6b3a8a,color:#fff
     style 抓取层 fill:#8a3a3a,color:#fff
     style 设备层 fill:#3a6b8a,color:#fff
+    style 脱钉层 fill:#8a6b3a,color:#fff
 ```
 
 ### 数据流
@@ -140,6 +152,19 @@ sequenceDiagram
 1. **mount --bind**（Android 10+，即时生效，非持久化）— HTTP Toolkit 方案
 2. **Magisk 模块**（持久化，需重启）
 3. **Legacy /system 挂载**（Android 9 及以下）
+
+### SSL Unpinning
+四种策略绕过 App 级别的证书固定：
+```bash
+cap unpin frida --pkg com.example.app     # Frida：hook 14+ 种 pinning 实现
+cap unpin patch --apk ./target.apk        # 补丁：重写 network_security_config.xml
+cap unpin magisk                          # Magisk：系统级用户证书提权
+cap unpin codeshare --pkg com.example.app  # CodeShare：自动指纹 → 搜索脚本
+```
+
+Frida 脚本覆盖：TrustManagerImpl、OkHttp3 CertificatePinner、SSLContext、WebViewClient、Conscrypt、Flutter BoringSSL、Apache HTTP、TrustKit、Cordova、NetworkSecurityConfig 等。
+
+CodeShare 集成会指纹识别目标 APK（框架、pinning 库、安全特征），然后在 [codeshare.frida.re](https://codeshare.frida.re) 搜索匹配的社区脚本。
 
 ### 多语言代码生成
 ```bash
@@ -269,6 +294,11 @@ cap gui
 | `cap export --format agent` | LLM 友好 JSONL |
 | `cap android connect` | 一键连接 Android |
 | `cap android disconnect` | 断开设备 |
+| `cap unpin frida --pkg PKG` | Frida 运行时 hook 绕过 SSL pinning |
+| `cap unpin patch --apk FILE` | 补丁 APK 信任用户证书 |
+| `cap unpin magisk` | 部署系统级 Magisk unpinning 模块 |
+| `cap unpin codeshare --pkg PKG` | 指纹识别 + 搜索 CodeShare 脚本 |
+| `cap unpin codeshare --query Q` | 直接搜索 CodeShare |
 | `cap gui` | 启动桌面 GUI |
 
 ## 协议

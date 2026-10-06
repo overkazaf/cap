@@ -6,9 +6,7 @@
 package unpin
 
 import (
-	"fmt"
 	"os/exec"
-	"strings"
 )
 
 // Method identifies which unpinning strategy to use.
@@ -39,24 +37,6 @@ type Result struct {
 	Success bool
 	Message string
 	Output  string // path to patched APK, deployed script, etc.
-}
-
-func adbCmd(serial string, args ...string) (string, error) {
-	full := make([]string, 0, len(args)+2)
-	if serial != "" {
-		full = append(full, "-s", serial)
-	}
-	full = append(full, args...)
-	out, err := exec.Command("adb", full...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
-}
-
-func adbShell(serial, cmd string) (string, error) {
-	return adbCmd(serial, "shell", cmd)
-}
-
-func suShell(serial, cmd string) (string, error) {
-	return adbShell(serial, fmt.Sprintf("su -c '%s'", strings.ReplaceAll(cmd, "'", "'\\''")))
 }
 
 func which(name string) bool {

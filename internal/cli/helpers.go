@@ -4,25 +4,18 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/overkazaf/cap/internal/config"
 	"github.com/overkazaf/cap/internal/store/sqlite"
 )
 
-// defaultCapDir returns cap's default data directory, "~/.cap", falling
-// back to a directory under the OS temp dir if the home directory can't be
-// determined. It is used as the default location for both the flow
-// database and the MITM CA certificate, matching internal/proxy's own
-// default (see proxy.Options.CertDir) so a bare `cap start` and
-// `cap android connect` agree on where the CA lives.
+// defaultCapDir returns cap's default data directory.
 func defaultCapDir() string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".cap")
-	}
-	return filepath.Join(os.TempDir(), "cap")
+	return config.DefaultDir()
 }
 
-// defaultDBPath returns the default flow database path, "~/.cap/flows.db".
+// defaultDBPath returns the default flow database path.
 func defaultDBPath() string {
-	return filepath.Join(defaultCapDir(), "flows.db")
+	return config.DefaultDBPath()
 }
 
 // openStore opens the SQLite-backed flow store at dbPath, defaulting to

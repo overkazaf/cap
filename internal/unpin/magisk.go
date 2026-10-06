@@ -3,6 +3,8 @@ package unpin
 import (
 	"fmt"
 	"strings"
+
+	"github.com/overkazaf/cap/internal/android"
 )
 
 // MagiskOptions configures the Magisk unpinning module deployment.
@@ -22,24 +24,15 @@ type MagiskOptions struct {
 func MagiskUnpin(opts MagiskOptions) (*Result, error) {
 	serial := opts.Serial
 	if serial == "" {
-		out, err := adbCmd("", "devices")
+		resolved, err := android.GetDeviceSerial("")
 		if err != nil {
-			return nil, fmt.Errorf("adb devices: %w", err)
+			return nil, err
 		}
-		for _, line := range strings.Split(out, "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && fields[1] == "device" {
-				serial = fields[0]
-				break
-			}
-		}
-		if serial == "" {
-			return nil, fmt.Errorf("no Android device connected")
-		}
+		serial = resolved
 	}
 
 	// Check root + Magisk
-	out, err := suShell(serial, "ls /data/adb/magisk 2>/dev/null && echo MAGISK_OK")
+	out, err := android.SuShell(serial, "ls /data/adb/magisk 2>/dev/null && echo MAGISK_OK")
 	if err != nil || !strings.Contains(out, "MAGISK_OK") {
 		return &Result{
 			Method:  MethodMagisk,
@@ -121,7 +114,7 @@ chmod 755 "$MODDIR/service.d/cap-unpin.sh"
 echo "OK"
 `
 
-	out, err = suShell(serial, script)
+	out, err = android.SuShell(serial, script)
 	if err != nil || !strings.Contains(out, "OK") {
 		return &Result{
 			Method:  MethodMagisk,
@@ -141,7 +134,7 @@ echo "OK"
 
 // MagiskUnpinRemove removes the cap-unpin Magisk module from the device.
 func MagiskUnpinRemove(serial string) (*Result, error) {
-	out, err := suShell(serial, "rm -rf /data/adb/modules/cap-unpin && echo OK")
+	out, err := android.SuShell(serial, "rm -rf /data/adb/modules/cap-unpin && echo OK")
 	if err != nil || !strings.Contains(out, "OK") {
 		return &Result{
 			Method:  MethodMagisk,

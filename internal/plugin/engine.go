@@ -110,14 +110,18 @@ func (e *Engine) Delete(name string) error {
 }
 
 func (e *Engine) Toggle(name string) error {
-	e.mu.Lock()
+	e.mu.RLock()
 	p, ok := e.plugins[name]
-	e.mu.Unlock()
+	e.mu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("plugin %q not found", name)
 	}
+
+	e.mu.Lock()
 	p.Enabled = !p.Enabled
+	e.mu.Unlock()
+
 	return e.Save(p)
 }
 

@@ -13,8 +13,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +20,7 @@ import (
 
 	"github.com/elazarl/goproxy"
 
+	"github.com/overkazaf/cap/internal/config"
 	"github.com/overkazaf/cap/internal/types"
 )
 
@@ -272,13 +271,8 @@ func flattenHeaders(h http.Header) map[string]string {
 	return m
 }
 
-// defaultCertDir returns "~/.cap", falling back to a directory under the OS
-// temp dir if the home directory can't be determined.
 func defaultCertDir() string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".cap")
-	}
-	return filepath.Join(os.TempDir(), "cap")
+	return config.DefaultDir()
 }
 
 // loadOrCreateCA ensures a CA exists under dir and loads it as a

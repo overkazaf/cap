@@ -28,7 +28,7 @@ func Setup(opts SetupOptions) error {
 	}
 
 	proxySetting := fmt.Sprintf("%s:%s", host, opts.ProxyPort)
-	if _, err := adbShell(serial, "settings put global http_proxy "+proxySetting); err != nil {
+	if _, err := AdbShell(serial, "settings put global http_proxy "+proxySetting); err != nil {
 		return fmt.Errorf("set proxy on %s: %w", serial, err)
 	}
 	fmt.Printf("device %s: proxy set to %s\n", serial, proxySetting)
@@ -57,7 +57,7 @@ func Teardown(serial string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := adbShell(serial, "settings put global http_proxy :0"); err != nil {
+	if _, err := AdbShell(serial, "settings put global http_proxy :0"); err != nil {
 		return fmt.Errorf("clear proxy on %s: %w", serial, err)
 	}
 	fmt.Printf("device %s: proxy cleared\n", serial)
@@ -72,14 +72,14 @@ func Status(serial string) error {
 		return err
 	}
 
-	model, _ := adbShell(serial, "getprop ro.product.model")
-	release, _ := adbShell(serial, "getprop ro.build.version.release")
-	proxySetting, _ := adbShell(serial, "settings get global http_proxy")
+	model, _ := AdbShell(serial, "getprop ro.product.model")
+	release, _ := AdbShell(serial, "getprop ro.build.version.release")
+	proxySetting, _ := AdbShell(serial, "settings get global http_proxy")
 	host, port := ParseProxySetting(proxySetting)
 
 	fmt.Printf("Device:  %s (%s)\n", serial, model)
 	fmt.Printf("Android: %s\n", release)
-	fmt.Printf("Rooted:  %v\n", isRooted(serial))
+	fmt.Printf("Rooted:  %v\n", IsRooted(serial))
 	if host == "" {
 		fmt.Println("Proxy:   (not set)")
 	} else {

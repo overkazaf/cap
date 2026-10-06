@@ -34,7 +34,7 @@ func subjectHashOld(rawSubject []byte) uint32 {
 }
 
 func installCACert(serial, certPath string) error {
-	if isRooted(serial) {
+	if IsRooted(serial) {
 		return installCACertRooted(serial, certPath)
 	}
 	return installCACertUser(serial, certPath)
@@ -51,7 +51,7 @@ func installCACertRooted(serial, certPath string) error {
 	}
 
 	remotePath := "/data/local/tmp/" + hashName
-	if _, err := adbCmd(serial, "push", certPath, remotePath); err != nil {
+	if _, err := AdbCmd(serial, "push", certPath, remotePath); err != nil {
 		return fmt.Errorf("push cert: %w", err)
 	}
 
@@ -62,7 +62,7 @@ func installCACertRooted(serial, certPath string) error {
 	}
 
 	// Strategy 2: Magisk module (persistent across reboots)
-	if hasMagisk(serial) {
+	if HasMagisk(serial) {
 		if err := installMagiskModule(serial, hashName, remotePath); err == nil {
 			fmt.Println("CA cert installed as Magisk module (reboot to activate)")
 			return nil
@@ -76,7 +76,7 @@ func installCACertRooted(serial, certPath string) error {
 	}
 
 	// cleanup
-	suShell(serial, "rm -f "+remotePath)
+	SuShell(serial, "rm -f "+remotePath)
 	return fmt.Errorf("all root cert install methods failed — try installing manually")
 }
 
@@ -97,7 +97,7 @@ rm -f %s
 echo "OK"
 `, remoteCertPath, hashName, remoteCertPath)
 
-	out, err := suShell(serial, script)
+	out, err := SuShell(serial, script)
 	if err != nil || !strings.Contains(out, "OK") {
 		return fmt.Errorf("bind mount failed: %s %v", out, err)
 	}
@@ -125,7 +125,7 @@ rm -f %s
 echo "OK"
 `, remoteCertPath, hashName, hashName, remoteCertPath)
 
-	out, err := suShell(serial, script)
+	out, err := SuShell(serial, script)
 	if err != nil || !strings.Contains(out, "OK") {
 		return fmt.Errorf("magisk module failed: %s %v", out, err)
 	}
@@ -143,25 +143,16 @@ func installLegacyRemount(serial, hashName, remoteCertPath string) error {
 		"rm -f " + remoteCertPath,
 	}
 	for _, c := range cmds {
-		if _, err := suShell(serial, c); err != nil {
+		if _, err := SuShell(serial, c); err != nil {
 			return fmt.Errorf("%s: %w", c, err)
 		}
 	}
 	return nil
 }
 
-func hasMagisk(serial string) bool {
-	out, _ := suShell(serial, "ls /data/adb/magisk 2>/dev/null && echo YES")
-	return strings.Contains(out, "YES")
-}
-
-func suShell(serial, cmd string) (string, error) {
-	return adbShell(serial, fmt.Sprintf("su -c '%s'", strings.ReplaceAll(cmd, "'", "'\\''")))
-}
-
 func installCACertUser(serial, certPath string) error {
 	remotePath := "/data/local/tmp/cap-ca.crt"
-	if _, err := adbCmd(serial, "push", certPath, remotePath); err != nil {
+	if _, err := AdbCmd(serial, "push", certPath, remotePath); err != nil {
 		return fmt.Errorf("push cert: %w", err)
 	}
 
@@ -169,14 +160,10 @@ func installCACertUser(serial, certPath string) error {
 		"am start -a android.intent.action.VIEW -t application/x-x509-ca-cert -d file://%s",
 		remotePath,
 	)
-	if _, err := adbShell(serial, intent); err != nil {
-		_, _ = adbShell(serial, "am start -a android.settings.SECURITY_SETTINGS")
+	if _, err := AdbShell(serial, intent); err != nil {
+		_, _ = AdbShell(serial, "am start -a android.settings.SECURITY_SETTINGS")
 		return fmt.Errorf("cert pushed to %s, install manually from Settings > Security: %w", remotePath, err)
 	}
 	return nil
 }
 
-func isRooted(serial string) bool {
-	out, err := adbShell(serial, "su -c id")
-	return err == nil && strings.Contains(out, "uid=0")
-}

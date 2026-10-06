@@ -73,7 +73,7 @@ func ParseProxySetting(setting string) (host, port string) {
 
 // ListDevices runs `adb devices` and parses the result.
 func ListDevices() ([]Device, error) {
-	out, err := adbCmd("", "devices")
+	out, err := AdbCmd("", "devices")
 	if err != nil {
 		return nil, fmt.Errorf("adb devices: %w", err)
 	}
@@ -116,9 +116,9 @@ func GetDeviceSerial(preferred string) (string, error) {
 	return "", fmt.Errorf("no ready device found, connected: %+v", devices)
 }
 
-// adbCmd runs `adb [-s serial] args...` and returns combined stdout+stderr,
+// AdbCmd runs `adb [-s serial] args...` and returns combined stdout+stderr,
 // trimmed of surrounding whitespace. serial may be empty to omit -s.
-func adbCmd(serial string, args ...string) (string, error) {
+func AdbCmd(serial string, args ...string) (string, error) {
 	full := make([]string, 0, len(args)+2)
 	if serial != "" {
 		full = append(full, "-s", serial)
@@ -129,7 +129,24 @@ func adbCmd(serial string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// adbShell runs `adb [-s serial] shell cmd`.
-func adbShell(serial, cmd string) (string, error) {
-	return adbCmd(serial, "shell", cmd)
+// AdbShell runs `adb [-s serial] shell cmd`.
+func AdbShell(serial, cmd string) (string, error) {
+	return AdbCmd(serial, "shell", cmd)
+}
+
+// SuShell runs a command via `su -c` on the device.
+func SuShell(serial, cmd string) (string, error) {
+	return AdbShell(serial, fmt.Sprintf("su -c '%s'", strings.ReplaceAll(cmd, "'", "'\\''")))
+}
+
+// IsRooted checks whether the device has a working su binary.
+func IsRooted(serial string) bool {
+	out, err := AdbShell(serial, "su -c id")
+	return err == nil && strings.Contains(out, "uid=0")
+}
+
+// HasMagisk checks whether Magisk is installed on the device.
+func HasMagisk(serial string) bool {
+	out, _ := SuShell(serial, "ls /data/adb/magisk 2>/dev/null && echo YES")
+	return strings.Contains(out, "YES")
 }

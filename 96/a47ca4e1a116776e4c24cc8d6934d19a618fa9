@@ -1,0 +1,43 @@
+internal/unpin/codeshare_integration_test.go
+  e4bf929c396eb614 1-190
+internal/unpin/codeshare_test.go
+  e4bf929c396eb614 9-20,30-32,36-40,49-50
+internal/unpin/codeshare.go
+  e4bf929c396eb614 134,136-139,143-145,148-149,160-164,166-168,170,172-175,178,180-182,184-185,189,193,197,207,212-214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "96a47ca4e1a116776e4c24cc8d6934d19a618fa9",
+  "prompts": {
+    "e4bf929c396eb614": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "255d2a81-4cb4-4f07-b0ad-b5e4053f281b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 251,
+      "total_deletions": 54,
+      "accepted_lines": 251,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/unpin/codeshare_integration_test.go": {
+          "additions": 190,
+          "accepted_lines": 190
+        },
+        "internal/unpin/codeshare.go": {
+          "additions": 38,
+          "deletions": 40,
+          "accepted_lines": 38
+        },
+        "internal/unpin/codeshare_test.go": {
+          "additions": 23,
+          "deletions": 14,
+          "accepted_lines": 23
+        }
+      }
+    }
+  }
+}

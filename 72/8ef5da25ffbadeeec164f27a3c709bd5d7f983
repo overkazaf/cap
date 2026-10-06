@@ -1,0 +1,54 @@
+internal/unpin/fingerprint_test.go
+  e4bf929c396eb614 1-144
+internal/cli/unpin.go
+  e4bf929c396eb614 4-5,7-8,12,22-25,30-32,39,179-441
+internal/unpin/codeshare_test.go
+  e4bf929c396eb614 1-148
+internal/unpin/fingerprint.go
+  e4bf929c396eb614 1-194
+internal/unpin/codeshare.go
+  e4bf929c396eb614 1-450
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "728ef5da25ffbadeeec164f27a3c709bd5d7f983",
+  "prompts": {
+    "e4bf929c396eb614": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "255d2a81-4cb4-4f07-b0ad-b5e4053f281b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 1212,
+      "total_deletions": 4,
+      "accepted_lines": 1212,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/cli/unpin.go": {
+          "additions": 276,
+          "deletions": 4,
+          "accepted_lines": 276
+        },
+        "internal/unpin/fingerprint_test.go": {
+          "additions": 144,
+          "accepted_lines": 144
+        },
+        "internal/unpin/fingerprint.go": {
+          "additions": 194,
+          "accepted_lines": 194
+        },
+        "internal/unpin/codeshare_test.go": {
+          "additions": 148,
+          "accepted_lines": 148
+        },
+        "internal/unpin/codeshare.go": {
+          "additions": 450,
+          "accepted_lines": 450
+        }
+      }
+    }
+  }
+}

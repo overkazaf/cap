@@ -139,6 +139,19 @@ func SuShell(serial, cmd string) (string, error) {
 	return AdbShell(serial, fmt.Sprintf("su -c '%s'", strings.ReplaceAll(cmd, "'", "'\\''")))
 }
 
+// SuShellMountMaster runs a command via Magisk's `su --mount-master -c`
+// so the command operates in the global mount namespace rather than an
+// isolated one. Falls back to plain SuShell if --mount-master isn't
+// supported.
+func SuShellMountMaster(serial, cmd string) (string, error) {
+	escaped := strings.ReplaceAll(cmd, "'", "'\\''")
+	out, err := AdbShell(serial, fmt.Sprintf("su --mount-master -c '%s'", escaped))
+	if err != nil && strings.Contains(out, "unknown option") {
+		return SuShell(serial, cmd)
+	}
+	return out, err
+}
+
 // IsRooted checks whether the device has a working su binary.
 func IsRooted(serial string) bool {
 	out, err := AdbShell(serial, "su -c id")

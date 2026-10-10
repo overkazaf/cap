@@ -1,0 +1,43 @@
+scripts/capture-kugou.sh
+  282a9bd308899f72 1-75
+internal/cli/start.go
+  282a9bd308899f72 11,23-24,30-32,66-68,72-79,81,88-89,109-111,123-125,136-138
+scripts/extract-kugou-creds.py
+  282a9bd308899f72 1-350
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "d40d733627cba253298c8d6f199b3a44da4303e5",
+  "prompts": {
+    "282a9bd308899f72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9bbbf0f3-36de-4bd0-8499-4cb0d46e8bfd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 457,
+      "total_deletions": 6,
+      "accepted_lines": 455,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "scripts/extract-kugou-creds.py": {
+          "additions": 352,
+          "deletions": 2,
+          "accepted_lines": 350
+        },
+        "scripts/capture-kugou.sh": {
+          "additions": 75,
+          "accepted_lines": 75
+        },
+        "internal/cli/start.go": {
+          "additions": 30,
+          "deletions": 4,
+          "accepted_lines": 30
+        }
+      }
+    }
+  }
+}

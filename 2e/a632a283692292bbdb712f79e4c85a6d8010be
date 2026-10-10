@@ -1,0 +1,60 @@
+internal/android/adb.go
+  282a9bd308899f72 29-31
+internal/android/proxy_setup.go
+  282a9bd308899f72 6-7,11-12,37-89,91-100,102-106,110,116-117,121-127
+internal/cli/android.go
+  282a9bd308899f72 35,40-44,61,70
+internal/android/embed.go
+  282a9bd308899f72 1-11
+cmd/cap-redir/main.go
+  282a9bd308899f72 1-2,29,152-154,173-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "2ea632a283692292bbdb712f79e4c85a6d8010be",
+  "prompts": {
+    "282a9bd308899f72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9bbbf0f3-36de-4bd0-8499-4cb0d46e8bfd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 10169,
+      "total_deletions": 155,
+      "accepted_lines": 10039,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "internal/android/embed.go": {
+          "additions": 11,
+          "accepted_lines": 11
+        },
+        "cmd/cap-redir/main.go": {
+          "additions": 9,
+          "deletions": 2,
+          "accepted_lines": 9
+        },
+        "internal/android/adb.go": {
+          "additions": 3,
+          "accepted_lines": 3
+        },
+        "internal/cli/android.go": {
+          "additions": 135,
+          "deletions": 128,
+          "accepted_lines": 10
+        },
+        "internal/android/bin/cap-redir-arm64": {
+          "additions": 9922,
+          "accepted_lines": 9922
+        },
+        "internal/android/proxy_setup.go": {
+          "additions": 89,
+          "deletions": 25,
+          "accepted_lines": 84
+        }
+      }
+    }
+  }
+}

@@ -29,21 +29,22 @@ from urllib.parse import parse_qs, urlparse
 KUGOU_HOST_PATTERN = re.compile(r"kugou\.com$", re.IGNORECASE)
 
 PLAY_DOWNLOAD_PATH_PATTERNS = [
+    re.compile(r"/v\d+/url", re.IGNORECASE),
+    re.compile(r"/v\d+/login", re.IGNORECASE),
+    re.compile(r"/v\d+/sync/", re.IGNORECASE),
+    re.compile(r"/freemode/", re.IGNORECASE),
+    re.compile(r"/api/v\d+/", re.IGNORECASE),
+    re.compile(r"/v\d+/update/", re.IGNORECASE),
     re.compile(r"/song/", re.IGNORECASE),
     re.compile(r"/play", re.IGNORECASE),
     re.compile(r"/download", re.IGNORECASE),
     re.compile(r"/yy/index\.php", re.IGNORECASE),
-    re.compile(r"/v\d+/play", re.IGNORECASE),
-    re.compile(r"/v\d+/song", re.IGNORECASE),
-    re.compile(r"/v\d+/download", re.IGNORECASE),
-    re.compile(r"/kmr/", re.IGNORECASE),
-    re.compile(r"/user/", re.IGNORECASE),
-    re.compile(r"/v\d+/nuser/", re.IGNORECASE),
     re.compile(r"/oceanus/", re.IGNORECASE),
+    re.compile(r"_us\d+_", re.IGNORECASE),
 ]
 
-USERID_KEYS = {"userid", "user_id", "uid", "kugou_userid", "kugouid", "mid"}
-TOKEN_KEYS = {"token", "access_token", "vip_token", "kugou_token", "dfid", "t"}
+USERID_KEYS = {"userid", "user_id", "uid", "kugou_userid", "kugouid", "kugouid"}
+TOKEN_KEYS = {"token", "access_token", "vip_token", "kugou_token"}
 
 
 def default_db_path():
@@ -57,10 +58,11 @@ def is_kugou_host(host):
     return bool(KUGOU_HOST_PATTERN.search(host))
 
 
-def is_play_download_path(path):
+def is_play_download_path(path, url=""):
     if not path:
         return True
-    return any(p.search(path) for p in PLAY_DOWNLOAD_PATH_PATTERNS)
+    text = path + " " + url
+    return any(p.search(text) for p in PLAY_DOWNLOAD_PATH_PATTERNS)
 
 
 def extract_from_params(params):
@@ -80,10 +82,25 @@ def extract_from_params(params):
     return result
 
 
+EMBEDDED_USERID_RE = re.compile(r"_us(\d{5,})_")
+EMBEDDED_DFID_RE = re.compile(r"_df([a-z0-9]{10,})_")
+
+
 def extract_from_url(url):
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=False)
-    return extract_from_params(params)
+    result = extract_from_params(params)
+
+    path = parsed.path
+    m = EMBEDDED_USERID_RE.search(path)
+    if m and "userId" not in result:
+        result["userId"] = m.group(1)
+        result["userId_key"] = "path:_us"
+    m = EMBEDDED_DFID_RE.search(path)
+    if m and "dfid" not in result:
+        result["dfid"] = m.group(1)
+
+    return result
 
 
 def extract_from_body(body, content_type=""):
@@ -219,7 +236,7 @@ def process_flow(row):
 
     if not is_kugou_host(host):
         return None
-    if not is_play_download_path(path):
+    if not is_play_download_path(path, url):
         return None
 
     headers = parse_headers_json(row["req_headers"])
@@ -242,6 +259,16 @@ def process_flow(row):
             creds["token"] = resp_creds["token"]
             creds["token_key"] = resp_creds.get("token_key", "")
 
+    # Also extract dfid and mid from query params
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=False)
+    for key, vals in params.items():
+        kl = key.lower()
+        if kl == "dfid" and vals[0]:
+            creds.setdefault("dfid", vals[0])
+        if kl == "mid" and vals[0]:
+            creds.setdefault("mid", vals[0])
+
     if not creds.get("userId") and not creds.get("token"):
         return None
 
@@ -257,6 +284,8 @@ def process_flow(row):
         "userId_key": creds.get("userId_key", ""),
         "token": creds.get("token", ""),
         "token_key": creds.get("token_key", ""),
+        "dfid": creds.get("dfid", ""),
+        "mid": creds.get("mid", ""),
     }
 
 
@@ -280,8 +309,11 @@ def print_table(results):
     for i, r in enumerate(unique, 1):
         print(f"  [{i}] userId : {r['userId']}")
         print(f"      token  : {r['token']}")
+        if r.get("dfid"):
+            print(f"      dfid   : {r['dfid']}")
+        if r.get("mid"):
+            print(f"      mid    : {r['mid']}")
         print(f"      source : {r['method']} {r['host']}{r['path']}")
-        print(f"      param  : userId={r['userId_key']}, token={r['token_key']}")
         print()
 
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -63,20 +64,20 @@ func newStartCmd() *cobra.Command {
 			fmt.Printf("cap: listening on      %s\n", p.Addr())
 			fmt.Printf("cap: database          %s\n", resolvedDB)
 			fmt.Printf("cap: CA certificate    %s\n", certFile)
-			if autoDisconnect {
-				fmt.Println("cap: auto-disconnect   enabled")
-			}
-			fmt.Println("cap: press Ctrl+C to stop")
-			fmt.Println()
 
-			var onShutdown func()
-			if autoDisconnect {
+			onShutdown := detectAndroidCleanup(deviceSerial, p.Addr())
+			if onShutdown == nil && autoDisconnect {
 				onShutdown = func() {
 					if err := android.Teardown(deviceSerial); err != nil {
 						fmt.Fprintf(os.Stderr, "cap: auto-disconnect: %v\n", err)
 					}
 				}
 			}
+			if onShutdown != nil {
+				fmt.Println("cap: auto-disconnect   enabled")
+			}
+			fmt.Println("cap: press Ctrl+C to stop")
+			fmt.Println()
 
 			return runProxyUntilSignal(p, onShutdown)
 		},
@@ -85,7 +86,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&addr, "addr", "a", "127.0.0.1:8080", "proxy listen address")
 	cmd.Flags().StringVarP(&dbPath, "db", "d", "", `database path (default "~/.cap/flows.db")`)
 	cmd.Flags().StringVar(&certDir, "cert-dir", "", `CA cert directory (default "~/.cap")`)
-	cmd.Flags().BoolVar(&autoDisconnect, "auto-disconnect", false, "clear device proxy on shutdown")
+	cmd.Flags().BoolVar(&autoDisconnect, "auto-disconnect", false, "clear device proxy on shutdown (auto-detected if device proxy points at cap)")
 	cmd.Flags().StringVar(&deviceSerial, "device", "", "device serial for auto-disconnect (auto-detect if omitted)")
 
 	return cmd
@@ -101,6 +102,48 @@ func onFlow(st *sqlite.SQLiteStore) func(*types.Flow) {
 			fmt.Fprintf(os.Stderr, "cap: save flow %s: %v\n", f.ID, err)
 		}
 		fmt.Printf("[%s] %s %s → %d (%dms)\n", f.ID, f.Method, f.URL, f.Status, f.LatencyMs)
+	}
+}
+
+// detectAndroidCleanup checks if a connected Android device has its proxy
+// set to an address that matches cap's listen address. If so, it returns a
+// cleanup function that clears the proxy on shutdown; otherwise nil.
+// This makes auto-disconnect work without an explicit flag: if you ran
+// `cap android connect` before `cap start`, the device proxy already
+// points at cap and will be cleaned up automatically.
+func detectAndroidCleanup(serial, listenAddr string) func() {
+	devices, err := android.ListDevices()
+	if err != nil || len(devices) == 0 {
+		return nil
+	}
+	resolvedSerial, err := android.GetDeviceSerial(serial)
+	if err != nil {
+		return nil
+	}
+
+	proxySetting, err := android.AdbShell(resolvedSerial, "settings get global http_proxy")
+	if err != nil {
+		return nil
+	}
+	host, port := android.ParseProxySetting(proxySetting)
+	if host == "" {
+		return nil
+	}
+
+	deviceProxy := host + ":" + port
+	_, listenPort, _ := strings.Cut(listenAddr, ":")
+
+	// Match if device proxy port matches cap's listen port
+	// (host may differ: device sees our LAN IP, we listen on 0.0.0.0)
+	if port != listenPort {
+		return nil
+	}
+
+	fmt.Printf("cap: detected device %s proxy → %s\n", resolvedSerial, deviceProxy)
+	return func() {
+		if err := android.Teardown(resolvedSerial); err != nil {
+			fmt.Fprintf(os.Stderr, "cap: auto-disconnect: %v\n", err)
+		}
 	}
 }
 

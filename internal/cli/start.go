@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/overkazaf/cap/internal/android"
 	"github.com/overkazaf/cap/internal/proxy"
 	"github.com/overkazaf/cap/internal/store/sqlite"
 	"github.com/overkazaf/cap/internal/types"
@@ -19,12 +20,16 @@ func newStartCmd() *cobra.Command {
 	var addr string
 	var dbPath string
 	var certDir string
+	var autoDisconnect bool
+	var deviceSerial string
 
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the MITM proxy and capture traffic",
 		Long: "Start cap's MITM proxy. Every intercepted HTTP(S) request/response pair is\n" +
-			"saved to the flow database and summarized on stdout as it's captured.",
+			"saved to the flow database and summarized on stdout as it's captured.\n\n" +
+			"Use --auto-disconnect to automatically clear the Android device's proxy\n" +
+			"when cap shuts down, so the phone can access the internet normally.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if certDir == "" {
 				certDir = defaultCapDir()
@@ -58,16 +63,30 @@ func newStartCmd() *cobra.Command {
 			fmt.Printf("cap: listening on      %s\n", p.Addr())
 			fmt.Printf("cap: database          %s\n", resolvedDB)
 			fmt.Printf("cap: CA certificate    %s\n", certFile)
+			if autoDisconnect {
+				fmt.Println("cap: auto-disconnect   enabled")
+			}
 			fmt.Println("cap: press Ctrl+C to stop")
 			fmt.Println()
 
-			return runProxyUntilSignal(p)
+			var onShutdown func()
+			if autoDisconnect {
+				onShutdown = func() {
+					if err := android.Teardown(deviceSerial); err != nil {
+						fmt.Fprintf(os.Stderr, "cap: auto-disconnect: %v\n", err)
+					}
+				}
+			}
+
+			return runProxyUntilSignal(p, onShutdown)
 		},
 	}
 
 	cmd.Flags().StringVarP(&addr, "addr", "a", "127.0.0.1:8080", "proxy listen address")
 	cmd.Flags().StringVarP(&dbPath, "db", "d", "", `database path (default "~/.cap/flows.db")`)
 	cmd.Flags().StringVar(&certDir, "cert-dir", "", `CA cert directory (default "~/.cap")`)
+	cmd.Flags().BoolVar(&autoDisconnect, "auto-disconnect", false, "clear device proxy on shutdown")
+	cmd.Flags().StringVar(&deviceSerial, "device", "", "device serial for auto-disconnect (auto-detect if omitted)")
 
 	return cmd
 }
@@ -87,8 +106,9 @@ func onFlow(st *sqlite.SQLiteStore) func(*types.Flow) {
 
 // runProxyUntilSignal starts p and blocks until either it stops on its own
 // (returning its error, if any) or SIGINT/SIGTERM requests a graceful
-// shutdown.
-func runProxyUntilSignal(p *proxy.Proxy) error {
+// shutdown. If onShutdown is non-nil it is called after stopping the proxy
+// (e.g. to clear the Android device's Wi-Fi proxy).
+func runProxyUntilSignal(p *proxy.Proxy, onShutdown func()) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- p.Start()
@@ -100,6 +120,9 @@ func runProxyUntilSignal(p *proxy.Proxy) error {
 
 	select {
 	case err := <-serveErr:
+		if onShutdown != nil {
+			onShutdown()
+		}
 		if err != nil {
 			return fmt.Errorf("proxy stopped: %w", err)
 		}
@@ -110,6 +133,9 @@ func runProxyUntilSignal(p *proxy.Proxy) error {
 			return fmt.Errorf("stop proxy: %w", err)
 		}
 		<-serveErr
+		if onShutdown != nil {
+			onShutdown()
+		}
 		return nil
 	}
 }

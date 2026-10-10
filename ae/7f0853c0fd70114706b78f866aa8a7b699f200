@@ -1,0 +1,43 @@
+cmd/cap-redir/main.go
+  282a9bd308899f72 1-184
+internal/cli/start.go
+  282a9bd308899f72 7,68-69,76-77,89,108-149
+scripts/extract-kugou-creds.py
+  282a9bd308899f72 32-37,43,46-47,61,64-65,85-88,92-103,239,262-271,287-288,312-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.9",
+  "base_commit_sha": "ae7f0853c0fd70114706b78f866aa8a7b699f200",
+  "prompts": {
+    "282a9bd308899f72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9bbbf0f3-36de-4bd0-8499-4cb0d46e8bfd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 285,
+      "total_deletions": 26,
+      "accepted_lines": 284,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "cmd/cap-redir/main.go": {
+          "additions": 184,
+          "accepted_lines": 184
+        },
+        "scripts/extract-kugou-creds.py": {
+          "additions": 45,
+          "deletions": 13,
+          "accepted_lines": 45
+        },
+        "internal/cli/start.go": {
+          "additions": 56,
+          "deletions": 13,
+          "accepted_lines": 55
+        }
+      }
+    }
+  }
+}

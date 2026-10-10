@@ -32,11 +32,16 @@ func newAndroidCmd() *cobra.Command {
 // certificate so intercepted HTTPS is trusted.
 func newAndroidConnectCmd() *cobra.Command {
 	var serial, proxyHost, proxyPort string
-	var noCert bool
+	var noCert, vpn bool
 
 	cmd := &cobra.Command{
 		Use:   "connect",
 		Short: "Point an Android device's proxy at cap",
+		Long: "Connect an Android device to cap's proxy.\n\n" +
+			"By default, sets the system-wide Wi-Fi proxy. Use --vpn for\n" +
+			"iptables-based transparent redirect that captures ALL traffic\n" +
+			"(requires root). VPN mode pushes cap-redir to the device and\n" +
+			"sets up iptables REDIRECT rules.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var certFile string
 			if !noCert {
@@ -53,6 +58,7 @@ func newAndroidConnectCmd() *cobra.Command {
 				Serial:      serial,
 				CACertPath:  certFile,
 				InstallCert: !noCert,
+				VPN:         vpn,
 			})
 		},
 	}
@@ -61,6 +67,7 @@ func newAndroidConnectCmd() *cobra.Command {
 	cmd.Flags().StringVar(&proxyHost, "proxy-host", "", "host IP the device should connect to (auto-detect if omitted)")
 	cmd.Flags().StringVarP(&proxyPort, "proxy-port", "p", "8080", "cap's proxy port")
 	cmd.Flags().BoolVar(&noCert, "no-cert", false, "skip installing cap's CA certificate on the device")
+	cmd.Flags().BoolVar(&vpn, "vpn", false, "use iptables redirect instead of system proxy (requires root)")
 
 	return cmd
 }

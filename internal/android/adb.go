@@ -26,6 +26,9 @@ type SetupOptions struct {
 	Serial      string // specific device serial (empty = auto-detect first)
 	CACertPath  string // path to CA cert file
 	InstallCert bool   // whether to push cert
+	VPN         bool   // use iptables + cap-redir instead of system proxy
+	RedirBinary string // path to cross-compiled cap-redir binary
+	RedirPort   string // local port for cap-redir on device (default "9999")
 }
 
 // ParseDeviceList parses the output of `adb devices`. The banner line

@@ -1,3 +1,5 @@
+//go:build linux
+
 // cap-redir is a transparent-to-explicit proxy adapter for rooted Android
 // devices. It accepts connections redirected by iptables REDIRECT, reads
 // the original destination via SO_ORIGINAL_DST, and converts them into
@@ -24,6 +26,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"encoding/binary"
 	"syscall"
 	"unsafe"
 )
@@ -146,7 +149,9 @@ func getOriginalDst(conn net.Conn) (string, error) {
 			0,
 		)
 		if errno == 0 {
-			port := uint16(addr.Port[0])<<8 | uint16(addr.Port[1])
+			portBytes := make([]byte, 2)
+			binary.BigEndian.PutUint16(portBytes, addr.Port)
+			port := binary.BigEndian.Uint16(portBytes)
 			ip := net.IPv4(addr.Addr[0], addr.Addr[1], addr.Addr[2], addr.Addr[3])
 			origDst = fmt.Sprintf("%s:%d", ip, port)
 			return
@@ -165,7 +170,9 @@ func getOriginalDst(conn net.Conn) (string, error) {
 			0,
 		)
 		if errno == 0 {
-			port := uint16(addr6.Port[0])<<8 | uint16(addr6.Port[1])
+			portBytes := make([]byte, 2)
+			binary.BigEndian.PutUint16(portBytes, addr6.Port)
+			port := binary.BigEndian.Uint16(portBytes)
 			ip := net.IP(addr6.Addr[:])
 			origDst = fmt.Sprintf("[%s]:%d", ip, port)
 			return

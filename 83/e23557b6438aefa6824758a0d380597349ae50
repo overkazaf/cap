@@ -1,0 +1,260 @@
+internal/proxy/proxy_test.go
+  a31f4f10ea3bf2b5 8,19,28,39,47-49,68,73,105-112,124,176,240,286,309-457
+README.md
+  a31f4f10ea3bf2b5 43-44,412
+frontend/src/pages/Flows.svelte
+  a31f4f10ea3bf2b5 101
+internal/fsutil/atomic_test.go
+  a31f4f10ea3bf2b5 1-38
+internal/redaction/redaction.go
+  a31f4f10ea3bf2b5 1-136
+internal/storemaintenance/maintenance.go
+  a31f4f10ea3bf2b5 1-39
+internal/storemaintenance/maintenance_test.go
+  a31f4f10ea3bf2b5 1-58
+Makefile
+  a31f4f10ea3bf2b5 1-6,14-39,41-42,44,46-57,60-65
+internal/buildinfo/version.go
+  a31f4f10ea3bf2b5 1-13
+internal/terminal/allowlist_test.go
+  a31f4f10ea3bf2b5 1-57
+README_CN.md
+  a31f4f10ea3bf2b5 43-44,410
+internal/proxy/stream.go
+  a31f4f10ea3bf2b5 1-458
+CONTRIBUTING.md
+  a31f4f10ea3bf2b5 1-49
+internal/wailsgui/events_test.go
+  a31f4f10ea3bf2b5 1-32
+internal/rules/persistence_test.go
+  a31f4f10ea3bf2b5 1-81
+internal/wailsgui/proxy_gui.go
+  a31f4f10ea3bf2b5 22-31,42,57-60,66-72,76,83,104-110,135,142,169,175-178
+internal/proxy/proxy.go
+  a31f4f10ea3bf2b5 35-39,69-78,114,196,198,253,258-259,264-280,283-284,288-291
+internal/cli/root.go
+  a31f4f10ea3bf2b5 11-12,23-26
+internal/rules/persistence.go
+  a31f4f10ea3bf2b5 1-57
+.github/workflows/ci.yml
+  a31f4f10ea3bf2b5 1-87
+Makefile.targets
+  a31f4f10ea3bf2b5 1-38,41,47-61
+internal/plugin/engine.go
+  a31f4f10ea3bf2b5 5,9,33-34,36-38,58-63,73-74,76,83-84,88,92-98,102-105,107,109-110,112,114,119,124,132-133,135,140-143,148-159,169-170,194-201
+internal/terminal/executor_test.go
+  a31f4f10ea3bf2b5 1-116
+internal/wailsgui/app.go
+  a31f4f10ea3bf2b5 14,21,30-32,35,37,73,83-85,261
+internal/terminal/allowlist.go
+  a31f4f10ea3bf2b5 1-93
+internal/wailsgui/events.go
+  a31f4f10ea3bf2b5 1-43
+.github/workflows/release.yml
+  a31f4f10ea3bf2b5 1-137
+LICENSE
+  a31f4f10ea3bf2b5 1-21
+internal/terminal/executor.go
+  a31f4f10ea3bf2b5 1-146
+cmd/cap/frontend/dist/.asset-check
+  a31f4f10ea3bf2b5 1-2
+internal/buildinfo/version_test.go
+  a31f4f10ea3bf2b5 1-9
+internal/storemaintenance/maintenance_sqlite_test.go
+  a31f4f10ea3bf2b5 1-38
+internal/redaction/redaction_test.go
+  a31f4f10ea3bf2b5 1-70
+internal/fsutil/atomic.go
+  a31f4f10ea3bf2b5 1-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.10",
+  "base_commit_sha": "83e23557b6438aefa6824758a0d380597349ae50",
+  "prompts": {
+    "a31f4f10ea3bf2b5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1feb8-8fda-7420-8d0a-b79bdcf6b73e",
+        "model": "group/gpt-dynamic-router"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 2503,
+      "total_deletions": 206,
+      "accepted_lines": 2304,
+      "overriden_lines": 27,
+      "per_file_stats": {
+        "frontend/dist/index.html": {
+          "additions": 1,
+          "deletions": 1,
+          "overriden_lines": 2
+        },
+        "CONTRIBUTING.md": {
+          "additions": 49,
+          "accepted_lines": 49
+        },
+        ".github/workflows/ci.yml": {
+          "additions": 95,
+          "deletions": 8,
+          "accepted_lines": 87
+        },
+        "internal/rules/persistence_test.go": {
+          "additions": 81,
+          "accepted_lines": 81
+        },
+        "internal/terminal/executor_test.go": {
+          "additions": 119,
+          "deletions": 3,
+          "accepted_lines": 116
+        },
+        "internal/proxy/stream.go": {
+          "additions": 460,
+          "deletions": 2,
+          "accepted_lines": 458
+        },
+        "internal/proxy/proxy_test.go": {
+          "additions": 185,
+          "deletions": 19,
+          "accepted_lines": 173
+        },
+        "internal/storemaintenance/maintenance.go": {
+          "additions": 39,
+          "accepted_lines": 39
+        },
+        "internal/wailsgui/app.go": {
+          "additions": 12,
+          "deletions": 5,
+          "accepted_lines": 12
+        },
+        "internal/redaction/redaction.go": {
+          "additions": 172,
+          "deletions": 36,
+          "accepted_lines": 136
+        },
+        "internal/buildinfo/version.go": {
+          "additions": 13,
+          "accepted_lines": 13
+        },
+        "internal/terminal/executor.go": {
+          "additions": 170,
+          "deletions": 24,
+          "accepted_lines": 146
+        },
+        "Makefile.targets": {
+          "additions": 61,
+          "deletions": 4,
+          "accepted_lines": 54,
+          "overriden_lines": 4
+        },
+        "internal/wailsgui/events.go": {
+          "additions": 43,
+          "accepted_lines": 43
+        },
+        "cmd/cap/frontend/dist/.asset-check": {
+          "additions": 2,
+          "accepted_lines": 2
+        },
+        "internal/fsutil/atomic.go": {
+          "additions": 53,
+          "accepted_lines": 53
+        },
+        "internal/cli/root.go": {
+          "additions": 6,
+          "deletions": 3,
+          "accepted_lines": 6
+        },
+        "internal/terminal/allowlist.go": {
+          "additions": 100,
+          "deletions": 7,
+          "accepted_lines": 93
+        },
+        "internal/storemaintenance/maintenance_test.go": {
+          "additions": 58,
+          "accepted_lines": 58
+        },
+        "internal/wailsgui/events_test.go": {
+          "additions": 32,
+          "accepted_lines": 32
+        },
+        "internal/storemaintenance/maintenance_sqlite_test.go": {
+          "additions": 38,
+          "accepted_lines": 38
+        },
+        ".github/workflows/release.yml": {
+          "additions": 137,
+          "accepted_lines": 137
+        },
+        "internal/buildinfo/version_test.go": {
+          "additions": 9,
+          "accepted_lines": 9
+        },
+        "Makefile": {
+          "additions": 70,
+          "deletions": 13,
+          "accepted_lines": 53,
+          "overriden_lines": 4
+        },
+        "LICENSE": {
+          "additions": 21,
+          "accepted_lines": 21
+        },
+        "frontend/dist/assets/index-DQhqgCOd.js": {
+          "additions": 26
+        },
+        "frontend/src/pages/Flows.svelte": {
+          "additions": 20,
+          "deletions": 2,
+          "accepted_lines": 4,
+          "overriden_lines": 10
+        },
+        "internal/plugin/engine.go": {
+          "additions": 85,
+          "deletions": 42,
+          "accepted_lines": 73
+        },
+        "internal/rules/persistence.go": {
+          "additions": 61,
+          "deletions": 4,
+          "accepted_lines": 57
+        },
+        "internal/redaction/redaction_test.go": {
+          "additions": 71,
+          "deletions": 1,
+          "accepted_lines": 70
+        },
+        "internal/fsutil/atomic_test.go": {
+          "additions": 38,
+          "accepted_lines": 38
+        },
+        "internal/proxy/proxy.go": {
+          "additions": 48,
+          "deletions": 18,
+          "accepted_lines": 48
+        },
+        "internal/wailsgui/proxy_gui.go": {
+          "additions": 38,
+          "deletions": 3,
+          "accepted_lines": 38
+        },
+        "README.md": {
+          "additions": 21,
+          "deletions": 8,
+          "accepted_lines": 5,
+          "overriden_lines": 6
+        },
+        "internal/terminal/allowlist_test.go": {
+          "additions": 58,
+          "deletions": 1,
+          "accepted_lines": 57
+        },
+        "README_CN.md": {
+          "additions": 11,
+          "deletions": 2,
+          "accepted_lines": 5,
+          "overriden_lines": 1
+        }
+      }
+    }
+  }
+}

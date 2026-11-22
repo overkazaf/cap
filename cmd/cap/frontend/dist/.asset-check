@@ -1,0 +1,2 @@
+This marker lets go:embed all:frontend/dist include an empty embedded asset
+directory even if generated files have not yet been committed.

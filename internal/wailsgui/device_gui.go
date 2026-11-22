@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/overkazaf/cap/internal/android"
 	"github.com/overkazaf/cap/internal/proxy"
@@ -16,9 +17,53 @@ import (
 
 // ==================== Android ====================
 
+const (
+	EventDeviceStatus       = "device:status"
+	EventDeviceDisconnected = "device:disconnected"
+)
+
 type DeviceInfo struct {
 	Serial string `json:"serial"`
 	State  string `json:"state"`
+}
+
+type DeviceConnectionStatus struct {
+	Serial           string                  `json:"serial"`
+	ADBState         string                  `json:"adb_state"` // "device", "offline", "unauthorized", "disconnected"
+	Connected        bool                    `json:"connected"`
+	ProxyAddress     string                  `json:"proxy_address"`
+	VPNActive        bool                    `json:"vpn_active"`
+	Mode             string                  `json:"mode"` // "proxy", "vpn", "none"
+	Rooted           bool                    `json:"rooted"`
+	Model            string                  `json:"model"`
+	AndroidVersion   string                  `json:"android_version"`
+	CertStatus       android.CertStatus      `json:"cert_status"`
+	Companion        android.CompanionStatus `json:"companion"`
+	CompanionWarning string                  `json:"companion_warning,omitempty"`
+}
+
+type DeviceDisconnectedEvent struct {
+	Serial          string `json:"serial"`
+	Reason          string `json:"reason"` // "adb_disconnected", "proxy_stopped", "user_disconnect", "app_shutdown", "reconnect_cleanup"
+	CompanionActive bool   `json:"companion_active"`
+	ProxyCleaned    bool   `json:"proxy_cleaned"`
+	Message         string `json:"message"`
+}
+
+type CACertInfo struct {
+	Path        string `json:"path"`
+	Hash        string `json:"hash"`
+	Exists      bool   `json:"exists"`
+	Fingerprint string `json:"fingerprint"`
+	Subject     string `json:"subject,omitempty"`
+}
+
+type connectedDeviceSession struct {
+	Serial          string
+	ProxyAddress    string
+	Mode            string
+	CompanionActive bool
+	ConnectedAt     time.Time
 }
 
 func (a *App) ListDevices() ([]DeviceInfo, error) {
@@ -33,28 +78,457 @@ func (a *App) ListDevices() ([]DeviceInfo, error) {
 	return result, nil
 }
 
+// ConnectDevice preserves the legacy Wails signature and delegates to
+// ConnectDeviceAdvanced with Wi-Fi proxy mode and Companion Guard enabled.
 func (a *App) ConnectDevice(serial, port string, installCert bool) error {
+	_, err := a.ConnectDeviceAdvanced(serial, port, installCert, false, true)
+	return err
+}
+
+// ConnectDeviceAdvanced connects an Android device with full control over CA
+// certificate installation, VPN/iptables vs Wi-Fi proxy mode, and the Cap Guard
+// Companion APK watchdog, returning live connection status.
+func (a *App) ConnectDeviceAdvanced(serial, port string, installCert, vpnMode, installCompanion bool) (*DeviceConnectionStatus, error) {
 	if port == "" {
 		port = "8080"
 	}
-	var certPath string
-	if installCert {
-		var err error
-		certPath, _, err = proxy.EnsureCA(a.certDir)
-		if err != nil {
-			return err
-		}
+
+	certPath, _, err := proxy.EnsureCA(a.certDir)
+	if err != nil && installCert {
+		return nil, err
 	}
-	return android.Setup(android.SetupOptions{
+
+	res, err := android.SetupDetailed(android.SetupOptions{
 		ProxyPort:   port,
 		Serial:      serial,
 		CACertPath:  certPath,
 		InstallCert: installCert,
+		VPN:         vpnMode,
+		NoCompanion: !installCompanion,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	proxyAddr := res.ProxyHost + ":" + res.ProxyPort
+	companionActive := res.CompanionStatus.Installed && res.CompanionStatus.WatchdogRunning
+
+	a.deviceMu.Lock()
+	if a.connectedDevices == nil {
+		a.connectedDevices = make(map[string]*connectedDeviceSession)
+	}
+	if a.staleDevices == nil {
+		a.staleDevices = make(map[string]bool)
+	}
+	delete(a.staleDevices, res.Serial)
+	a.connectedDevices[res.Serial] = &connectedDeviceSession{
+		Serial:          res.Serial,
+		ProxyAddress:    proxyAddr,
+		Mode:            res.Mode,
+		CompanionActive: companionActive,
+		ConnectedAt:     time.Now(),
+	}
+	a.deviceMu.Unlock()
+	a.ensureDeviceMonitor()
+
+	status, stErr := a.GetDeviceConnectionStatus(res.Serial)
+	if stErr != nil {
+		status = &DeviceConnectionStatus{
+			Serial:           res.Serial,
+			ADBState:         "device",
+			Connected:        true,
+			ProxyAddress:     proxyAddr,
+			VPNActive:        res.Mode == "vpn",
+			Mode:             res.Mode,
+			Rooted:           res.Rooted,
+			CertStatus:       res.CertStatus,
+			Companion:        res.CompanionStatus,
+			CompanionWarning: res.CompanionWarning,
+		}
+	} else if res.CompanionWarning != "" {
+		status.CompanionWarning = res.CompanionWarning
+	}
+
+	a.events.Emit(EventDeviceStatus, status)
+	return status, nil
 }
 
 func (a *App) DisconnectDevice(serial string) error {
-	return android.Teardown(serial)
+	resolved := serial
+	if r, err := android.GetDeviceSerial(serial); err == nil {
+		resolved = r
+	}
+
+	var companionActive bool
+	a.deviceMu.Lock()
+	if sess, ok := a.connectedDevices[resolved]; ok {
+		companionActive = sess.CompanionActive
+		delete(a.connectedDevices, resolved)
+	}
+	delete(a.staleDevices, resolved)
+	a.deviceMu.Unlock()
+
+	err := android.Teardown(resolved)
+	cleaned := err == nil
+	a.events.Emit(EventDeviceDisconnected, DeviceDisconnectedEvent{
+		Serial:          resolved,
+		Reason:          "user_disconnect",
+		CompanionActive: companionActive,
+		ProxyCleaned:    cleaned,
+		Message:         "Device disconnected and proxy cleared",
+	})
+	if st, stErr := a.GetDeviceConnectionStatus(resolved); stErr == nil {
+		a.events.Emit(EventDeviceStatus, st)
+	}
+	return err
+}
+
+// GetDeviceConnectionStatus inspects the device's live ADB state, proxy/VPN
+// routing, CA certificate store status, and Companion Guard watchdog status.
+func (a *App) GetDeviceConnectionStatus(serial string) (*DeviceConnectionStatus, error) {
+	devices, err := android.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+
+	targetSerial := serial
+	adbState := "disconnected"
+	if targetSerial == "" {
+		for _, d := range devices {
+			if d.State == "device" {
+				targetSerial = d.Serial
+				adbState = d.State
+				break
+			}
+		}
+		if targetSerial == "" && len(devices) > 0 {
+			targetSerial = devices[0].Serial
+			adbState = devices[0].State
+		}
+	} else {
+		for _, d := range devices {
+			if d.Serial == targetSerial {
+				adbState = d.State
+				break
+			}
+		}
+	}
+
+	if targetSerial == "" || adbState != "device" {
+		return &DeviceConnectionStatus{
+			Serial:    targetSerial,
+			ADBState:  adbState,
+			Connected: false,
+			Mode:      "none",
+			CertStatus: android.CertStatus{
+				Store: "none",
+			},
+		}, nil
+	}
+
+	certPath := filepath.Join(a.certDir, "cap-ca.crt")
+	if _, statErr := os.Stat(certPath); statErr != nil {
+		certPath, _, _ = proxy.EnsureCA(a.certDir)
+	}
+
+	st, err := android.GetDeviceStatus(targetSerial, certPath)
+	if err != nil {
+		return nil, err
+	}
+
+	mode := "none"
+	connected := false
+	if st.VPNActive {
+		mode = "vpn"
+		connected = true
+	} else if st.ProxyAddress != "" {
+		mode = "proxy"
+		connected = true
+	}
+
+	return &DeviceConnectionStatus{
+		Serial:         st.Serial,
+		ADBState:       st.State,
+		Connected:      connected,
+		ProxyAddress:   st.ProxyAddress,
+		VPNActive:      st.VPNActive,
+		Mode:           mode,
+		Rooted:         st.Rooted,
+		Model:          st.Model,
+		AndroidVersion: st.AndroidVersion,
+		CertStatus:     st.CertStatus,
+		Companion:      st.CompanionStatus,
+	}, nil
+}
+
+// InstallDeviceCert installs cap's CA certificate on the selected Android
+// device and returns the structured installation result.
+func (a *App) InstallDeviceCert(serial string) (*android.CertInstallResult, error) {
+	certPath, _, err := proxy.EnsureCA(a.certDir)
+	if err != nil {
+		return nil, err
+	}
+	res, err := android.InstallCACert(serial, certPath)
+	if err != nil {
+		return &res, err
+	}
+	if st, stErr := a.GetDeviceConnectionStatus(serial); stErr == nil {
+		a.events.Emit(EventDeviceStatus, st)
+	}
+	return &res, nil
+}
+
+// InstallCompanionAPK installs (or upgrades) the embedded Cap Guard Companion
+// APK on the selected device and grants required permissions.
+func (a *App) InstallCompanionAPK(serial string) (*android.CompanionStatus, error) {
+	resolved, err := android.GetDeviceSerial(serial)
+	if err != nil {
+		return nil, err
+	}
+	if err := android.InstallCompanion(resolved); err != nil {
+		st := android.GetCompanionStatus(resolved)
+		st.Error = err.Error()
+		return &st, err
+	}
+	st := android.GetCompanionStatus(resolved)
+	if connSt, stErr := a.GetDeviceConnectionStatus(resolved); stErr == nil {
+		a.events.Emit(EventDeviceStatus, connSt)
+	}
+	return &st, nil
+}
+
+// GetCACertInfo returns local CA certificate metadata (path, Android hash
+// filename, existence, SHA-256 fingerprint, and subject).
+func (a *App) GetCACertInfo() (*CACertInfo, error) {
+	certPath, _, err := proxy.EnsureCA(a.certDir)
+	if err != nil {
+		p := filepath.Join(a.certDir, "cap-ca.crt")
+		return &CACertInfo{Path: p, Exists: false}, err
+	}
+	_, statErr := os.Stat(certPath)
+	exists := statErr == nil
+	info := &CACertInfo{
+		Path:   certPath,
+		Exists: exists,
+	}
+	if exists {
+		info.Hash = android.CertHashFilename(certPath)
+		info.Fingerprint = android.CertSHA256Fingerprint(certPath)
+		info.Subject = android.CertSubject(certPath)
+	}
+	return info, nil
+}
+
+// teardownTrackedDevices cleans up all devices actively tracked by App (e.g.
+// when StopProxy is called) so no phone is left pointing at a stopped proxy.
+func (a *App) teardownTrackedDevices(reason string) {
+	a.deviceMu.Lock()
+	sessions := make([]*connectedDeviceSession, 0, len(a.connectedDevices))
+	for serial, sess := range a.connectedDevices {
+		sessions = append(sessions, sess)
+		delete(a.connectedDevices, serial)
+	}
+	a.deviceMu.Unlock()
+
+	for _, sess := range sessions {
+		err := android.Teardown(sess.Serial)
+		cleaned := err == nil
+		if !cleaned {
+			// Device may currently be unplugged; mark stale so reconnect auto-cleans it.
+			a.deviceMu.Lock()
+			if a.staleDevices == nil {
+				a.staleDevices = make(map[string]bool)
+			}
+			a.staleDevices[sess.Serial] = true
+			a.deviceMu.Unlock()
+			a.ensureDeviceMonitor()
+		}
+		a.events.Emit(EventDeviceDisconnected, DeviceDisconnectedEvent{
+			Serial:          sess.Serial,
+			Reason:          reason,
+			CompanionActive: sess.CompanionActive,
+			ProxyCleaned:    cleaned,
+			Message:         "Proxy stopped — device proxy cleared",
+		})
+		if st, stErr := a.GetDeviceConnectionStatus(sess.Serial); stErr == nil {
+			a.events.Emit(EventDeviceStatus, st)
+		}
+	}
+}
+
+// teardownAllDevices tears down all tracked devices plus any currently attached
+// ADB devices during App.Shutdown.
+func (a *App) teardownAllDevices(reason string) {
+	seen := make(map[string]bool)
+
+	a.deviceMu.Lock()
+	tracked := make([]string, 0, len(a.connectedDevices))
+	for serial := range a.connectedDevices {
+		tracked = append(tracked, serial)
+		seen[serial] = true
+		delete(a.connectedDevices, serial)
+	}
+	a.staleDevices = make(map[string]bool)
+	a.deviceMu.Unlock()
+
+	for _, serial := range tracked {
+		_ = android.Teardown(serial)
+	}
+
+	devices, _ := android.ListDevices()
+	for _, d := range devices {
+		if d.State != "device" || seen[d.Serial] {
+			continue
+		}
+		_ = android.Teardown(d.Serial)
+	}
+	_ = reason
+}
+
+func (a *App) ensureDeviceMonitor() {
+	a.deviceMu.Lock()
+	if a.monitorRunning {
+		a.deviceMu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	a.monitorStop = stopCh
+	a.monitorRunning = true
+	a.deviceMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				if !a.pollConnectedDevices() {
+					a.deviceMu.Lock()
+					if a.monitorStop == stopCh {
+						a.monitorRunning = false
+						a.monitorStop = nil
+					}
+					a.deviceMu.Unlock()
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (a *App) stopDeviceMonitor() {
+	a.deviceMu.Lock()
+	stopCh := a.monitorStop
+	a.monitorStop = nil
+	a.monitorRunning = false
+	a.deviceMu.Unlock()
+	if stopCh != nil {
+		close(stopCh)
+	}
+}
+
+// pollConnectedDevices checks ADB presence for tracked/stale devices and returns
+// false when there is nothing left to monitor.
+func (a *App) pollConnectedDevices() bool {
+	a.deviceMu.Lock()
+	if len(a.connectedDevices) == 0 && len(a.staleDevices) == 0 {
+		a.deviceMu.Unlock()
+		return false
+	}
+	connectedCopy := make(map[string]*connectedDeviceSession, len(a.connectedDevices))
+	for k, v := range a.connectedDevices {
+		connectedCopy[k] = v
+	}
+	staleCopy := make([]string, 0, len(a.staleDevices))
+	for k := range a.staleDevices {
+		staleCopy = append(staleCopy, k)
+	}
+	a.deviceMu.Unlock()
+
+	devices, err := android.ListDevices()
+	if err != nil {
+		return true
+	}
+	stateBySerial := make(map[string]string, len(devices))
+	for _, d := range devices {
+		stateBySerial[d.Serial] = d.State
+	}
+
+	// Detect unexpected ADB disconnects for active sessions
+	for serial, sess := range connectedCopy {
+		st, present := stateBySerial[serial]
+		if !present || st != "device" {
+			adbState := "disconnected"
+			if present {
+				adbState = st
+			}
+			a.deviceMu.Lock()
+			delete(a.connectedDevices, serial)
+			if a.staleDevices == nil {
+				a.staleDevices = make(map[string]bool)
+			}
+			a.staleDevices[serial] = true
+			a.deviceMu.Unlock()
+
+			msg := "Android device disconnected over ADB"
+			if sess.CompanionActive {
+				msg = "Android device disconnected — Cap Guard on device will automatically clear proxy and restore network"
+			}
+			a.events.Emit(EventDeviceDisconnected, DeviceDisconnectedEvent{
+				Serial:          serial,
+				Reason:          "adb_disconnected",
+				CompanionActive: sess.CompanionActive,
+				ProxyCleaned:    false,
+				Message:         msg,
+			})
+			a.events.Emit(EventDeviceStatus, &DeviceConnectionStatus{
+				Serial:    serial,
+				ADBState:  adbState,
+				Connected: false,
+				Mode:      "none",
+				CertStatus: android.CertStatus{
+					Store: "none",
+				},
+			})
+		}
+	}
+
+	// Auto-clean stale proxy if a previously disconnected device reconnects while proxy is stopped
+	for _, serial := range staleCopy {
+		if stateBySerial[serial] != "device" {
+			continue
+		}
+		a.deviceMu.Lock()
+		delete(a.staleDevices, serial)
+		a.deviceMu.Unlock()
+
+		if a.IsProxyRunning() {
+			continue
+		}
+		proxySetting, _ := android.AdbShell(serial, "settings get global http_proxy")
+		host, _ := android.ParseProxySetting(proxySetting)
+		psOut, _ := android.AdbShell(serial, "pidof cap-redir 2>/dev/null || true")
+		if host != "" || strings.TrimSpace(psOut) != "" {
+			if err := android.Teardown(serial); err == nil {
+				a.events.Emit(EventDeviceDisconnected, DeviceDisconnectedEvent{
+					Serial:       serial,
+					Reason:       "reconnect_cleanup",
+					ProxyCleaned: true,
+					Message:      "Stale proxy detected on reconnected device and cleared automatically",
+				})
+				if connSt, stErr := a.GetDeviceConnectionStatus(serial); stErr == nil {
+					a.events.Emit(EventDeviceStatus, connSt)
+				}
+			}
+		}
+	}
+
+	a.deviceMu.Lock()
+	keepRunning := len(a.connectedDevices) > 0 || len(a.staleDevices) > 0
+	a.deviceMu.Unlock()
+	return keepRunning
 }
 
 func (a *App) ConnectWiFiADB(ipPort string) (string, error) {

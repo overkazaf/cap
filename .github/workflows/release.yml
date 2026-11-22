@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build (without leading v)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+    env:
+      GOCACHE: /tmp/cap-gocache
+      GOPROXY: https://proxy.golang.org,direct
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Resolve version
+        id: version
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
+          elif [[ "$TAG_VERSION" == v* ]]; then
+            version="${TAG_VERSION#v}"
+          else
+            echo "release requires a vX.Y.Z tag or a workflow version input" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build frontend assets
+        run: make assets
+      - name: Verify network-safe Go tests
+        run: make test
+      - name: Build artifact
+        env:
+          DIST_DIR: dist
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          artifact_dir="dist/artifacts/$(uname -s)-$(uname -m)"
+          mkdir -p "$artifact_dir"
+          if [ "$GOOS" = "darwin" ]; then export CGO_ENABLED=1; fi
+          if [ "$GOOS" = "windows" ]; then
+            name="cap-$VERSION-$GOOS-$GOARCH.zip"
+            go build -trimpath -ldflags "-s -w -X github.com/overkazaf/cap/internal/buildinfo.version=$VERSION" -o "$artifact_dir/cap.exe" ./cmd/cap
+            (cd "$artifact_dir" && zip "$name" cap.exe)
+          else
+            name="cap-$VERSION-$GOOS-$GOARCH.tar.gz"
+            go build -trimpath -ldflags "-s -w -X github.com/overkazaf/cap/internal/buildinfo.version=$VERSION" -o "$artifact_dir/cap" ./cmd/cap
+            (cd "$artifact_dir" && tar -czf "$name" cap)
+          fi
+          if [ "$GOOS" = "linux" ] && [ "$GOARCH" = "arm64" ]; then
+            go build -trimpath -ldflags "-s -w -X github.com/overkazaf/cap/internal/buildinfo.version=$VERSION" -o "$artifact_dir/cap-redir" ./cmd/cap-redir
+            (cd "$artifact_dir" && tar -czf "cap-redir-$VERSION-linux-arm64.tar.gz" cap-redir)
+          fi
+      - name: Generate per-job checksum
+        working-directory: dist/artifacts
+        run: |
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec shasum -a 256 {} + | sed 's#  \./#  #' > checksums.txt
+          cat checksums.txt
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cap-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/artifacts/**/*.tar.gz
+            dist/artifacts/**/*.zip
+            dist/artifacts/**/checksums.txt
+          if-no-files-found: error
+
+  publish:
+    name: Publish checksums
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/artifacts
+          pattern: cap-*
+          merge-multiple: true
+      - name: Create combined SHA256SUMS
+        working-directory: dist/artifacts
+        run: |
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 \
+            | sort -z \
+            | xargs -0 shasum -a 256 \
+            | sed 's#  \./#  #' > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload release files
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/artifacts/**
+          generate-release-notes: true
+          fail_on_unmatched_files: true

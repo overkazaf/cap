@@ -1,7 +1,8 @@
 // Package android implements one-command Android device setup for HTTP(S)
 // traffic capture: discovering connected ADB devices, pointing the
-// device-wide Wi-Fi proxy at cap, and installing cap's CA certificate into
-// the device's trust store so intercepted HTTPS is trusted.
+// device-wide Wi-Fi proxy at cap, installing cap's CA certificate into
+// the device's trust store, and deploying the Cap Guard companion APK for
+// autonomous disconnect proxy cleanup.
 //
 // All device interaction goes through the `adb` binary via os/exec — there
 // is no direct ADB protocol implementation here.
@@ -15,20 +16,30 @@ import (
 
 // Device is a single entry reported by `adb devices`.
 type Device struct {
-	Serial string
-	State  string // "device", "unauthorized", "offline"
+	Serial string `json:"serial"`
+	State  string `json:"state"` // "device", "unauthorized", "offline"
 }
 
-// SetupOptions configures Setup.
+// SetupOptions configures Setup and SetupDetailed.
 type SetupOptions struct {
-	ProxyHost   string // host IP the device connects to (auto-detect if empty)
-	ProxyPort   string // cap's proxy port
-	Serial      string // specific device serial (empty = auto-detect first)
-	CACertPath  string // path to CA cert file
-	InstallCert bool   // whether to push cert
-	VPN         bool   // use iptables + cap-redir instead of system proxy
-	RedirBinary string // path to cross-compiled cap-redir binary
-	RedirPort   string // local port for cap-redir on device (default "9999")
+	ProxyHost     string // host IP the device connects to (auto-detect if empty)
+	ProxyPort     string // cap's proxy port (default "8080")
+	Serial        string // specific device serial (empty = auto-detect first)
+	CACertPath    string // path to CA cert file
+	InstallCert   bool   // whether to push & install CA cert
+	VPN           bool   // use iptables + cap-redir instead of system proxy
+	RedirBinary   string // path to cross-compiled cap-redir binary (optional)
+	RedirPort     string // local port for cap-redir on device (default "9999")
+	NoCompanion   bool   // disable installing/starting Companion Guard APK (enabled by default)
+	HeartbeatMs   int    // companion watchdog heartbeat interval ms (default 3000)
+	MissThreshold int    // companion consecutive misses before auto-cleanup (default 3)
+}
+
+// adbExecFunc executes `adb args...`. Replaced in unit tests to verify ADB
+// command sequences without requiring a physical device.
+var adbExecFunc = func(args ...string) (string, error) {
+	out, err := exec.Command("adb", args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 // ParseDeviceList parses the output of `adb devices`. The banner line
@@ -127,9 +138,7 @@ func AdbCmd(serial string, args ...string) (string, error) {
 		full = append(full, "-s", serial)
 	}
 	full = append(full, args...)
-
-	out, err := exec.Command("adb", full...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return adbExecFunc(full...)
 }
 
 // AdbShell runs `adb [-s serial] shell cmd`.

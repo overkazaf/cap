@@ -42,13 +42,14 @@ func newGUICmd() *cobra.Command {
 
 			err = wails.Run(&options.App{
 				Title:            "cap",
-				Width:            1400,
-				Height:           900,
-				MinWidth:         800,
-				MinHeight:        600,
+				Width:            1440,
+				Height:           920,
+				MinWidth:         900,
+				MinHeight:        620,
 				DisableResize:    false,
 				Fullscreen:       false,
 				WindowStartState: options.Normal,
+				BackgroundColour: options.NewRGB(11, 12, 16),
 				AssetServer: &assetserver.Options{
 					Assets: stripped,
 				},
@@ -61,6 +62,10 @@ func newGUICmd() *cobra.Command {
 					TitleBar:             mac.TitleBarDefault(),
 					WebviewIsTransparent: false,
 					WindowIsTranslucent:  false,
+					About: &mac.AboutInfo{
+						Title:   "cap",
+						Message: "HTTP(S) MITM Traffic Capture & Reverse-Engineering Workbench",
+					},
 				},
 			})
 			return err

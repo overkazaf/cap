@@ -1,334 +1,2051 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>cap — MITM Proxy for Reverse Engineering</title>
+<meta name="description" content="cap — Commercial-grade HTTP(S) MITM proxy & mobile reverse-engineering workbench with Wails Desktop GUI, interactive full-screen TUI, Android Companion Guard APK, and EN/ZH localization.">
+<title>cap — HTTP(S) MITM Proxy &amp; Reverse-Engineering Workbench</title>
 <style>
+/* ==========================================================================
+   cap Design Tokens — Synchronized with frontend/src/lib/tokens.css & theme.js
+   ========================================================================== */
 :root {
-  --bg: #fafafa;
-  --fg: #1a1a2e;
-  --muted: #6b7280;
-  --accent: #2563eb;
-  --accent2: #7c3aed;
-  --card-bg: #ffffff;
-  --card-border: #e5e7eb;
-  --code-bg: #f3f4f6;
-  --code-fg: #1f2937;
-  --green: #059669;
-  --red: #dc2626;
-  --table-stripe: #f9fafb;
-  --hero-gradient: linear-gradient(135deg, #1e3a5f 0%, #2d1b69 100%);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", "Cascadia Code", ui-monospace, Menlo, Monaco, Consolas, monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  --transition-fast: 140ms cubic-bezier(0.2, 0, 0, 1);
+  --transition-base: 220ms cubic-bezier(0.2, 0, 0, 1);
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.6; }
+
+/* Obsidian Dark (Default) */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-app: #0b0c10;
+  --bg-sidebar: #0e1015;
+  --bg-header: rgba(16, 18, 24, 0.84);
+  --bg-surface: #13151c;
+  --bg-elevated: #191c25;
+  --bg-input: #0d0f14;
+  --bg-hover: #1b1e28;
+  --bg-active: #1e2638;
+  --bg-subtle: rgba(255, 255, 255, 0.04);
+  --bg-terminal: #090a0e;
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  --text-primary: #eceef4;
+  --text-secondary: #a8b0c0;
+  --text-muted: #767f92;
+  --text-faint: #4d5566;
+  --text-inverse: #0b0c10;
+
+  --accent: #38bdf8;
+  --accent-hover: #5ccbfa;
+  --accent-soft: rgba(56, 189, 248, 0.13);
+  --accent-border: rgba(56, 189, 248, 0.36);
+
+  --status-success: #34d399;
+  --status-success-bg: rgba(52, 211, 153, 0.13);
+  --status-success-border: rgba(52, 211, 153, 0.32);
+
+  --status-warning: #fbbf24;
+  --status-warning-bg: rgba(251, 191, 36, 0.13);
+  --status-warning-border: rgba(251, 191, 36, 0.32);
+
+  --status-danger: #f87171;
+  --status-danger-bg: rgba(248, 113, 113, 0.13);
+  --status-danger-border: rgba(248, 113, 113, 0.32);
+
+  --status-purple: #c084fc;
+  --status-purple-bg: rgba(192, 132, 252, 0.13);
+
+  --method-get: #34d399;
+  --method-post: #38bdf8;
+  --method-put: #fb923c;
+  --method-patch: #c084fc;
+  --method-delete: #f87171;
+
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.65);
+  --hero-glow: radial-gradient(60% 55% at 50% 0%, rgba(56, 189, 248, 0.14) 0%, rgba(192, 132, 252, 0.05) 45%, transparent 75%);
+}
+
+/* Porcelain Light */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-app: #f6f7f9;
+  --bg-sidebar: #eff1f5;
+  --bg-header: rgba(255, 255, 255, 0.86);
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-input: #ffffff;
+  --bg-hover: #eef1f6;
+  --bg-active: #e3effc;
+  --bg-subtle: rgba(15, 23, 42, 0.04);
+  --bg-terminal: #0f172a;
+
+  --border-subtle: rgba(15, 23, 42, 0.06);
+  --border-default: rgba(15, 23, 42, 0.11);
+  --border-strong: rgba(15, 23, 42, 0.20);
+
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --text-faint: #94a3b8;
+  --text-inverse: #ffffff;
+
+  --accent: #0284c7;
+  --accent-hover: #0369a1;
+  --accent-soft: rgba(2, 132, 199, 0.11);
+  --accent-border: rgba(2, 132, 199, 0.32);
+
+  --status-success: #059669;
+  --status-success-bg: rgba(5, 150, 105, 0.10);
+  --status-success-border: rgba(5, 150, 105, 0.28);
+
+  --status-warning: #d97706;
+  --status-warning-bg: rgba(217, 119, 6, 0.11);
+  --status-warning-border: rgba(217, 119, 6, 0.30);
+
+  --status-danger: #dc2626;
+  --status-danger-bg: rgba(220, 38, 38, 0.10);
+  --status-danger-border: rgba(220, 38, 38, 0.28);
+
+  --status-purple: #7c3aed;
+  --status-purple-bg: rgba(124, 58, 237, 0.10);
+
+  --method-get: #059669;
+  --method-post: #0284c7;
+  --method-put: #ea580c;
+  --method-patch: #7c3aed;
+  --method-delete: #dc2626;
+
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 20px 52px rgba(15, 23, 42, 0.14);
+  --hero-glow: radial-gradient(60% 55% at 50% 0%, rgba(2, 132, 199, 0.12) 0%, rgba(124, 58, 237, 0.04) 45%, transparent 75%);
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  transition: background var(--transition-base), color var(--transition-base);
+}
 a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-code { font-family: 'SF Mono', 'Fira Code', monospace; background: var(--code-bg); color: var(--code-fg); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
-pre { background: #1e1e2e; color: #cdd6f4; padding: 20px; border-radius: 8px; overflow-x: auto; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 14px; line-height: 1.5; margin: 16px 0; }
-pre code { background: none; color: inherit; padding: 0; }
+a:hover { color: var(--accent-hover); }
+code, pre, kbd, .mono { font-family: var(--font-mono); }
+.tabular { font-variant-numeric: tabular-nums; }
 
-.hero { background: var(--hero-gradient); color: white; padding: 80px 20px 60px; text-align: center; }
-.hero h1 { font-size: 3.5rem; font-weight: 800; letter-spacing: -1px; font-family: 'SF Mono', monospace; }
-.hero p { font-size: 1.25rem; margin-top: 16px; opacity: 0.9; max-width: 700px; margin-left: auto; margin-right: auto; }
-.hero .badges { margin-top: 24px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-.hero .badge { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25); padding: 6px 16px; border-radius: 20px; font-size: 0.85rem; }
-.hero .cta { margin-top: 32px; display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
-.hero .cta a { padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 1rem; }
-.hero .cta-primary { background: white; color: var(--fg); }
-.hero .cta-secondary { border: 2px solid white; color: white; }
-.lang-switch { position: absolute; top: 20px; right: 20px; }
-.lang-switch a { color: white; opacity: 0.8; padding: 4px 12px; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; font-size: 0.85rem; }
-.lang-switch a.active { opacity: 1; background: rgba(255,255,255,0.15); }
+.container { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
 
-.container { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
-section { padding: 60px 0; }
-section h2 { font-size: 2rem; margin-bottom: 32px; text-align: center; }
-section h3 { font-size: 1.3rem; margin-bottom: 12px; color: var(--accent2); }
+/* ==========================================================================
+   Sticky Top Navigation
+   ========================================================================== */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: 60px;
+  background: var(--bg-header);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.topbar-inner {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.brand-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+.nav-links a { color: var(--text-secondary); font-weight: 500; transition: color var(--transition-fast); }
+.nav-links a:hover { color: var(--text-primary); }
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ctrl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.ctrl-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.ctrl-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.btn-github {
+  background: var(--text-primary);
+  color: var(--text-inverse);
+  border-color: transparent;
+}
+.btn-github:hover {
+  opacity: 0.9;
+  color: var(--text-inverse);
+  background: var(--text-primary);
+}
 
-.features { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
-.feature { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 28px; }
-.feature h3 { margin-top: 0; }
-.feature p { color: var(--muted); font-size: 0.95rem; }
+/* ==========================================================================
+   Hero Section
+   ========================================================================== */
+.hero {
+  position: relative;
+  padding: 76px 0 44px;
+  background-image: var(--hero-glow);
+  text-align: center;
+}
+.hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 13px;
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin-bottom: 20px;
+}
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-success);
+  box-shadow: 0 0 0 3px var(--status-success-bg);
+}
+.hero h1 {
+  font-size: clamp(2.2rem, 4.8vw, 3.6rem);
+  font-weight: 800;
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+  max-width: 860px;
+  margin: 0 auto 18px;
+}
+.hero h1 .accent { color: var(--accent); }
+.hero-sub {
+  font-size: clamp(1rem, 1.5vw, 1.15rem);
+  color: var(--text-secondary);
+  max-width: 700px;
+  margin: 0 auto 28px;
+}
+.hero-cta {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 26px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 20px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition-fast);
+}
+.btn svg { width: 16px; height: 16px; }
+.btn-primary {
+  background: var(--accent);
+  color: #081018;
+}
+.btn-primary:hover { background: var(--accent-hover); color: #081018; transform: translateY(-1px); }
+.btn-secondary {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+.btn-secondary:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--text-primary); }
 
-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin: 16px 0; }
-th { background: var(--code-bg); text-align: left; padding: 10px 12px; font-weight: 600; border-bottom: 2px solid var(--card-border); }
-td { padding: 8px 12px; border-bottom: 1px solid var(--card-border); }
-tr:nth-child(even) { background: var(--table-stripe); }
-.check { color: var(--green); font-weight: bold; }
-.cross { color: var(--red); }
-.partial { color: #d97706; }
+.hero-pills {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pill {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+}
 
-.install-block { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 32px; max-width: 700px; margin: 0 auto; }
-footer { background: var(--code-bg); padding: 32px 20px; text-align: center; color: var(--muted); font-size: 0.85rem; }
+/* ==========================================================================
+   Interactive Workbench Showcase (GUI + Android Guard + TUI)
+   ========================================================================== */
+.showcase-wrap { padding: 12px 0 72px; }
+.showcase-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.showcase-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 15px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.showcase-tab svg { width: 15px; height: 15px; }
+.showcase-tab:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.showcase-tab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
 
-@media (max-width: 768px) {
-  .hero h1 { font-size: 2.5rem; }
-  .features { grid-template-columns: 1fr; }
-  table { font-size: 0.8rem; }
-  th, td { padding: 6px 8px; }
+.window-frame {
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.window-chrome {
+  height: 38px;
+  padding: 0 14px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.traffic-lights { display: flex; gap: 7px; align-items: center; }
+.dot-r { width: 11px; height: 11px; border-radius: 50%; background: #ff5f56; }
+.dot-y { width: 11px; height: 11px; border-radius: 50%; background: #ffbd2e; }
+.dot-g { width: 11px; height: 11px; border-radius: 50%; background: #27c93f; }
+.chrome-center {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: var(--radius-full);
+  background: var(--status-success-bg);
+  border: 1px solid var(--status-success-border);
+  color: var(--status-success);
+  font-weight: 600;
+  font-size: 11px;
+}
+.chrome-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.kbd-chip {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.workbench-panel { display: none; }
+.workbench-panel.active { display: block; }
+
+/* GUI Shell Layout */
+.gui-shell {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  min-height: 430px;
+  background: var(--bg-app);
+}
+.gui-rail {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rail-group {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  padding: 8px 8px 4px;
+  font-weight: 600;
+}
+.rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.rail-item.active {
+  background: var(--bg-active);
+  color: var(--accent);
+}
+.rail-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+.gui-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.gui-toolbar {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.filter-box {
+  flex: 1;
+  min-width: 180px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.chip-mini {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.chip-mini.on {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* SplitPane Flows Mockup */
+.split-pane {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  flex: 1;
+  min-height: 360px;
+}
+.flow-list {
+  border-right: 1px solid var(--border-default);
+  overflow: hidden;
+  font-size: 12px;
+}
+.flow-head, .flow-row {
+  display: grid;
+  grid-template-columns: 54px 44px 1fr 56px;
+  gap: 8px;
+  padding: 7px 12px;
+  align-items: center;
+}
+.flow-head {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  font-weight: 600;
+}
+.flow-row {
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background var(--transition-fast);
+}
+.flow-row:hover { background: var(--bg-hover); }
+.flow-row.selected { background: var(--bg-active); }
+.m-badge {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-align: center;
+}
+.m-post { color: var(--method-post); background: var(--accent-soft); }
+.m-get { color: var(--method-get); background: var(--status-success-bg); }
+.m-put { color: var(--method-put); background: var(--status-warning-bg); }
+.m-del { color: var(--method-delete); background: var(--status-danger-bg); }
+.st-2xx { color: var(--status-success); font-family: var(--font-mono); font-weight: 600; }
+.st-4xx { color: var(--status-warning); font-family: var(--font-mono); font-weight: 600; }
+.flow-url {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+.flow-lat { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); text-align: right; }
+
+.inspector-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  min-width: 0;
+}
+.inspector-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+  font-size: 11.5px;
+}
+.itab {
+  padding: 6px 10px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.itab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.inspector-body {
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow-x: auto;
+  flex: 1;
+}
+.sign-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--status-purple-bg);
+  border: 1px solid rgba(192, 132, 252, 0.30);
+  color: var(--status-purple);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.json-k { color: var(--accent); }
+.json-s { color: var(--status-success); }
+.json-n { color: var(--status-warning); }
+.json-p { color: var(--status-purple); }
+
+.gui-statusbar {
+  height: 26px;
+  padding: 0 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Capture & Android Guard Mockup */
+.capture-body { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.kpi-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.kpi-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 11px 13px;
+}
+.kpi-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+.kpi-val { font-family: var(--font-mono); font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.kpi-sub { font-family: var(--font-mono); font-size: 10.5px; color: var(--status-success); margin-top: 2px; }
+
+.android-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.step-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.step-card.ok { border-color: var(--status-success-border); }
+.step-num {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.step-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  background: var(--status-success-bg);
+  color: var(--status-success);
+}
+.step-title { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.step-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); line-height: 1.45; }
+
+/* TUI Mockup */
+.tui-screen {
+  background: var(--bg-terminal);
+  color: #e2e8f0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 430px;
+  display: flex;
+  flex-direction: column;
+}
+.tui-header {
+  padding: 8px 14px;
+  background: #111827;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tui-pill {
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 11px;
+}
+.tui-pill-brand { background: #38bdf8; color: #0b0c10; }
+.tui-pill-live { background: #064e3b; color: #34d399; border: 1px solid #059669; }
+.tui-pill-follow { background: #1e293b; color: #93c5fd; }
+.tui-filterbar {
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.tui-split {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  flex: 1;
+}
+.tui-list {
+  border-right: 1px solid rgba(255, 255, 255, 0.10);
+  padding: 8px 0;
+}
+.tui-row {
+  padding: 4px 12px;
+  display: grid;
+  grid-template-columns: 16px 52px 38px 1fr 54px;
+  gap: 6px;
+  cursor: pointer;
+}
+.tui-row:hover { background: rgba(255, 255, 255, 0.04); }
+.tui-row.selected { background: #1e293b; color: #f8fafc; }
+.tui-detail { padding: 8px 14px; overflow-x: auto; }
+.tui-tabs {
+  display: flex;
+  gap: 10px;
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+  flex-wrap: wrap;
+}
+.tui-tab-btn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.tui-tab-btn.active { background: #38bdf8; color: #0b0c10; font-weight: 700; }
+.tui-footer {
+  padding: 7px 14px;
+  background: #111827;
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+  color: #94a3b8;
+  font-size: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.tui-key { color: #38bdf8; font-weight: 700; }
+
+/* ==========================================================================
+   Generic Sections
+   ========================================================================== */
+section.band { padding: 76px 0; }
+section.band-alt {
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.section-head { text-align: center; max-width: 680px; margin: 0 auto 44px; }
+.section-kicker {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+.section-head h2 {
+  font-size: clamp(1.65rem, 3vw, 2.25rem);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin-bottom: 12px;
+}
+.section-head p { color: var(--text-secondary); font-size: 15px; }
+
+/* Feature Grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(265px, 1fr));
+  gap: 16px;
+}
+.feature-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+.feature-card:hover { border-color: var(--accent-border); transform: translateY(-2px); }
+.feature-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.feature-icon svg { width: 18px; height: 18px; }
+.feature-card h3 { font-size: 15.5px; font-weight: 700; margin-bottom: 8px; }
+.feature-card p { font-size: 13.5px; color: var(--text-secondary); line-height: 1.55; }
+
+/* Android Guard Resilience Flow */
+.guard-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.guard-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  position: relative;
+}
+.guard-step {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  margin-bottom: 12px;
+}
+.guard-card h3 { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+.guard-card p { font-size: 13px; color: var(--text-secondary); }
+
+/* Shortcuts Grid */
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+}
+.shortcut-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+.shortcut-item span { color: var(--text-secondary); }
+.shortcut-item kbd {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* Comparison Table */
+.table-wrap {
+  overflow-x: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+}
+table.compare {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+table.compare th {
+  text-align: left;
+  padding: 13px 16px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-default);
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+table.compare th.col-cap { color: var(--accent); }
+table.compare td {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+table.compare tr:last-child td { border-bottom: none; }
+table.compare td:first-child { color: var(--text-primary); font-weight: 500; }
+.c-yes { color: var(--status-success); font-weight: 600; }
+.c-no { color: var(--text-faint); }
+.c-mid { color: var(--status-warning); font-weight: 500; }
+.c-exp { color: var(--status-purple); font-weight: 600; }
+.table-note {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* Code / Install Block */
+.code-tabs-wrap {
+  max-width: 820px;
+  margin: 0 auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+}
+.code-tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+.code-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.code-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.code-tab.active {
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.copy-btn:hover { color: var(--text-primary); border-color: var(--border-strong); }
+.code-pane { display: none; }
+.code-pane.active { display: block; }
+.code-pane pre {
+  background: var(--bg-terminal);
+  color: #e2e8f0;
+  padding: 20px 22px;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-x: auto;
+  margin: 0;
+}
+.code-meta {
+  padding: 12px 18px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Footer */
+footer {
+  padding: 40px 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.footer-links { display: flex; gap: 20px; flex-wrap: wrap; }
+.footer-links a { color: var(--text-secondary); }
+.footer-links a:hover { color: var(--accent); }
+
+/* Responsive */
+@media (max-width: 960px) {
+  .nav-links { display: none; }
+  .gui-shell { grid-template-columns: 1fr; }
+  .gui-rail { display: none; }
+  .split-pane, .tui-split { grid-template-columns: 1fr; }
+  .flow-list, .tui-list { border-right: none; border-bottom: 1px solid var(--border-default); }
+  .kpi-strip, .android-steps, .guard-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .kpi-strip, .android-steps, .guard-grid { grid-template-columns: 1fr; }
+  .hero { padding: 52px 0 32px; }
+  section.band { padding: 52px 0; }
 }
 </style>
 </head>
 <body>
 
-<!-- English Version -->
-<div id="en">
-<div class="hero" style="position:relative;">
-  <div class="lang-switch">
-    <a href="#en" class="active" onclick="showLang('en')">EN</a>
-    <a href="#cn" onclick="showLang('cn')">中文</a>
-  </div>
-  <h1>cap</h1>
-  <p>MITM proxy built for reverse engineering. LLM-ready output, multi-language codegen, sign algorithm inference, native desktop GUI.</p>
-  <div class="badges">
-    <span class="badge">Go</span>
-    <span class="badge">Single Binary</span>
-    <span class="badge">MIT License</span>
-    <span class="badge">CLI + GUI</span>
-  </div>
-  <div class="cta">
-    <a href="https://github.com/overkazaf/cap" class="cta-primary">GitHub</a>
-    <a href="#install-section" class="cta-secondary">Install</a>
-  </div>
-</div>
+<!-- Top Navigation -->
+<header class="topbar">
+  <div class="container topbar-inner">
+    <a href="#" class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+      </span>
+      <span>cap</span>
+      <span class="brand-pill">MIT</span>
+    </a>
 
-<section>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#preview" data-i18n="nav.preview">Workbench</a>
+      <a href="#features" data-i18n="nav.features">Features</a>
+      <a href="#android-guard" data-i18n="nav.android">Android Guard</a>
+      <a href="#tui-keys" data-i18n="nav.tui">TUI</a>
+      <a href="#compare" data-i18n="nav.compare">Compare</a>
+      <a href="#install" data-i18n="nav.install">Install</a>
+    </nav>
+
+    <div class="topbar-actions">
+      <button type="button" class="ctrl-btn" id="langToggle" aria-label="Switch Language">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <span id="langLabel">中文</span>
+      </button>
+      <button type="button" class="ctrl-btn" id="themeToggle" aria-label="Toggle Theme">
+        <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        <svg id="themeIconMoon" style="display:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span id="themeLabel">Porcelain</span>
+      </button>
+      <a href="https://github.com/overkazaf/cap" class="ctrl-btn btn-github" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        <span>GitHub</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- Hero -->
+<section class="hero">
   <div class="container">
-    <h2>Why cap?</h2>
-    <table>
-      <tr><th>Capability</th><th>Burp Suite</th><th>mitmproxy</th><th>HTTP Toolkit</th><th>cap</th></tr>
-      <tr><td>CLI Automation</td><td class="cross">✗</td><td class="check">✓</td><td class="cross">✗</td><td class="check"><b>✓</b></td></tr>
-      <tr><td>Native GUI</td><td class="cross">Java</td><td class="partial">△ basic</td><td class="partial">Electron</td><td class="check"><b>Wails + Svelte</b></td></tr>
-      <tr><td>LLM/Agent Output</td><td class="cross">XML</td><td class="partial">HAR</td><td class="partial">HAR</td><td class="check"><b>Compact JSONL</b></td></tr>
-      <tr><td>Multi-lang Codegen</td><td class="cross">✗</td><td class="partial">curl+py</td><td class="cross">✗</td><td class="check"><b>5 languages</b></td></tr>
-      <tr><td>Sign Detection</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ auto</b></td></tr>
-      <tr><td>Sign Inference</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>MD5/SHA/HMAC</b></td></tr>
-      <tr><td>Source Mapping</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>jadx → URL</b></td></tr>
-      <tr><td>Android Setup</td><td class="cross">manual</td><td class="cross">manual</td><td class="partial">app</td><td class="check"><b>ADB direct</b></td></tr>
-      <tr><td>SSL Unpinning</td><td class="partial">manual</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>Frida/patch/Magisk</b></td></tr>
-      <tr><td>CodeShare</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>auto-fingerprint</b></td></tr>
-      <tr><td>Request Replay</td><td class="check">Repeater</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ + modify</b></td></tr>
-      <tr><td>API Auto-Grouping</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>host + path</b></td></tr>
-      <tr><td>Flow Comparison</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>side-by-side</b></td></tr>
-      <tr><td>Sequence Replay</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>token propagation</b></td></tr>
-      <tr><td>Protobuf Decode</td><td class="cross">✗</td><td class="partial">addon</td><td class="cross">✗</td><td class="check"><b>schema-less</b></td></tr>
-      <tr><td>Traffic Dashboard</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>P95 / timeline</b></td></tr>
-      <tr><td>HAR/Charles Import</td><td class="check">✓</td><td class="check">✓</td><td class="check">✓</td><td class="check"><b>✓</b></td></tr>
-      <tr><td>Plugin System</td><td class="check">BApp</td><td class="check">addon</td><td class="cross">✗</td><td class="check"><b>live editor</b></td></tr>
-      <tr><td>Embedded Terminal</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>multi-tab</b></td></tr>
-      <tr><td>Open Source</td><td class="cross">$449/yr</td><td class="check">✓</td><td class="partial">core</td><td class="check"><b>MIT</b></td></tr>
-    </table>
+    <div class="hero-eyebrow">
+      <span class="pulse-dot"></span>
+      <span data-i18n="hero.eyebrow">Native Desktop GUI · Full-Screen TUI · Android Companion Guard · EN / 中文</span>
+    </div>
+    <h1 data-i18n-html="hero.title">HTTP(S) MITM Proxy Built for <span class="accent">Reverse Engineering</span></h1>
+    <p class="hero-sub" data-i18n="hero.sub">Inspect, replay, diff, and infer mobile API signatures in one single Go binary — featuring a Wails v2 desktop workbench, a flicker-free terminal UI, and a rootless self-healing Android Companion Guard APK.</p>
+    <div class="hero-cta">
+      <a href="#install" class="btn btn-primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        <span data-i18n="hero.ctaInstall">Install &amp; Build</span>
+      </a>
+      <a href="#preview" class="btn btn-secondary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <span data-i18n="hero.ctaPreview">Explore Live Preview</span>
+      </a>
+      <a href="https://github.com/overkazaf/cap" class="btn btn-secondary" target="_blank" rel="noopener">
+        <span data-i18n="hero.ctaGithub">View on GitHub</span>
+      </a>
+    </div>
+    <div class="hero-pills">
+      <span class="pill">Go Single Binary</span>
+      <span class="pill">Wails v2 + Svelte 4</span>
+      <span class="pill">Double-Buffered TUI</span>
+      <span class="pill">33 KB Companion APK</span>
+      <span class="pill">SQLite WAL</span>
+      <span class="pill">LLM-Ready JSONL</span>
+    </div>
   </div>
 </section>
 
-<section style="background: var(--code-bg);">
+<!-- Interactive Workbench Preview -->
+<section class="showcase-wrap" id="preview">
   <div class="container">
-    <h2>Features</h2>
-    <div class="features">
-      <div class="feature">
-        <h3>MITM Proxy</h3>
-        <p>HTTP/HTTPS interception with auto-generated ECDSA CA. SQLite persistence with WAL mode. Noise header stripping.</p>
+    <div class="showcase-tabs" role="tablist">
+      <button type="button" class="showcase-tab active" data-panel="gui-flows" role="tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span data-i18n="preview.tabFlows">Desktop GUI — Flows Inspector</span>
+      </button>
+      <button type="button" class="showcase-tab" data-panel="gui-capture" role="tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span data-i18n="preview.tabCapture">Desktop GUI — Capture &amp; Android Guard</span>
+      </button>
+      <button type="button" class="showcase-tab" data-panel="tui-live" role="tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        <span data-i18n="preview.tabTui">Full-Screen TUI (cap start --tui)</span>
+      </button>
+    </div>
+
+    <div class="window-frame">
+      <div class="window-chrome">
+        <div class="traffic-lights">
+          <span class="dot-r"></span><span class="dot-y"></span><span class="dot-g"></span>
+        </div>
+        <div class="chrome-center">
+          <span class="live-pill"><span class="pulse-dot"></span> LIVE 0.0.0.0:8080</span>
+          <span data-i18n="preview.chromeTitle">cap workbench</span>
+        </div>
+        <div class="chrome-right">
+          <span class="kbd-chip">⌘K</span>
+          <span class="kbd-chip" id="chromeLangChip">EN / 中文</span>
+        </div>
       </div>
-      <div class="feature">
-        <h3>Android One-Command</h3>
-        <p>cap android connect — sets proxy via ADB, injects CA cert (mount --bind / Magisk / legacy). Supports Android 7–15.</p>
+
+      <!-- Panel 1: GUI Flows -->
+      <div class="workbench-panel active" id="panel-gui-flows">
+        <div class="gui-shell">
+          <aside class="gui-rail">
+            <div class="rail-group" data-i18n="rail.traffic">Traffic</div>
+            <div class="rail-item"><span data-i18n="rail.capture">Capture</span><span class="rail-badge">⌘1</span></div>
+            <div class="rail-item active"><span data-i18n="rail.flows">Flows</span><span class="rail-badge">142</span></div>
+            <div class="rail-group" data-i18n="rail.analysis">Analysis</div>
+            <div class="rail-item"><span data-i18n="rail.rules">Rules</span><span class="rail-badge">3</span></div>
+            <div class="rail-item"><span data-i18n="rail.trace">DeepTrace</span><span class="rail-badge">⌘4</span></div>
+            <div class="rail-item"><span data-i18n="rail.plugins">Plugins</span><span class="rail-badge">⌘5</span></div>
+            <div class="rail-group" data-i18n="rail.system">System</div>
+            <div class="rail-item"><span data-i18n="rail.terminal">Terminal</span><span class="rail-badge">⌘6</span></div>
+            <div class="rail-item"><span data-i18n="rail.settings">Settings</span><span class="rail-badge">⌘7</span></div>
+          </aside>
+          <div class="gui-main">
+            <div class="gui-toolbar">
+              <div class="filter-box">
+                <span>/ m:POST h:api.shopapp.io</span>
+                <span class="kbd-chip">142 flows</span>
+              </div>
+              <span class="chip-mini on">POST</span>
+              <span class="chip-mini">JSON</span>
+              <span class="chip-mini" data-i18n="preview.signTag">Sign Tagged</span>
+              <span class="chip-mini" data-i18n="preview.apiGroups">API Groups</span>
+            </div>
+            <div class="split-pane">
+              <div class="flow-list">
+                <div class="flow-head">
+                  <span>Method</span><span>Code</span><span>Endpoint</span><span style="text-align:right">Time</span>
+                </div>
+                <div class="flow-row selected" data-flow="0">
+                  <span class="m-badge m-post">POST</span>
+                  <span class="st-2xx">200</span>
+                  <span class="flow-url">api.shopapp.io/v2/auth/login</span>
+                  <span class="flow-lat tabular">84 ms</span>
+                </div>
+                <div class="flow-row" data-flow="1">
+                  <span class="m-badge m-get">GET</span>
+                  <span class="st-2xx">200</span>
+                  <span class="flow-url">api.shopapp.io/v2/orders/feed?page=1</span>
+                  <span class="flow-lat tabular">42 ms</span>
+                </div>
+                <div class="flow-row" data-flow="2">
+                  <span class="m-badge m-post">POST</span>
+                  <span class="st-4xx">403</span>
+                  <span class="flow-url">api.shopapp.io/v2/checkout/sign</span>
+                  <span class="flow-lat tabular">129 ms</span>
+                </div>
+                <div class="flow-row" data-flow="3">
+                  <span class="m-badge m-put">PUT</span>
+                  <span class="st-2xx">200</span>
+                  <span class="flow-url">api.shopapp.io/v2/profile/device</span>
+                  <span class="flow-lat tabular">63 ms</span>
+                </div>
+                <div class="flow-row" data-flow="4">
+                  <span class="m-badge m-del">DEL</span>
+                  <span class="st-2xx">204</span>
+                  <span class="flow-url">api.shopapp.io/v2/sessions/stale</span>
+                  <span class="flow-lat tabular">31 ms</span>
+                </div>
+              </div>
+              <div class="inspector-pane">
+                <div class="inspector-tabs">
+                  <span class="itab" data-i18n="preview.itabParams">Params</span>
+                  <span class="itab" data-i18n="preview.itabHeaders">Headers</span>
+                  <span class="itab active" data-i18n="preview.itabBody">Body · JSON</span>
+                  <span class="itab" data-i18n="preview.itabTiming">Timing</span>
+                  <span class="itab" data-i18n="preview.itabExport">Export</span>
+                </div>
+                <div class="inspector-body" id="guiInspectorBody"></div>
+              </div>
+            </div>
+            <div class="gui-statusbar tabular">
+              <span>● MITM 0.0.0.0:8080 · 142 flows · Pixel 8 Pro (Guard Active)</span>
+              <span>Obsidian / Porcelain / Mocha / Nord · ⌘K</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="feature">
-        <h3>Multi-Language Export</h3>
-        <p>Generate runnable code from any captured request: cURL, Python requests, Go net/http, Java OkHttp3, JavaScript fetch.</p>
+
+      <!-- Panel 2: GUI Capture & Android Guard -->
+      <div class="workbench-panel" id="panel-gui-capture">
+        <div class="gui-shell">
+          <aside class="gui-rail">
+            <div class="rail-group" data-i18n="rail.traffic">Traffic</div>
+            <div class="rail-item active"><span data-i18n="rail.capture">Capture</span><span class="rail-badge">LIVE</span></div>
+            <div class="rail-item"><span data-i18n="rail.flows">Flows</span><span class="rail-badge">142</span></div>
+            <div class="rail-group" data-i18n="rail.analysis">Analysis</div>
+            <div class="rail-item"><span data-i18n="rail.rules">Rules</span><span class="rail-badge">3</span></div>
+            <div class="rail-item"><span data-i18n="rail.trace">DeepTrace</span><span class="rail-badge">⌘4</span></div>
+            <div class="rail-item"><span data-i18n="rail.plugins">Plugins</span><span class="rail-badge">⌘5</span></div>
+            <div class="rail-group" data-i18n="rail.system">System</div>
+            <div class="rail-item"><span data-i18n="rail.terminal">Terminal</span><span class="rail-badge">⌘6</span></div>
+            <div class="rail-item"><span data-i18n="rail.settings">Settings</span><span class="rail-badge">⌘7</span></div>
+          </aside>
+          <div class="gui-main">
+            <div class="capture-body">
+              <div class="kpi-strip tabular">
+                <div class="kpi-card">
+                  <div class="kpi-label" data-i18n="capMock.kpiRate">Traffic Rate</div>
+                  <div class="kpi-val">18.4 req/s</div>
+                  <div class="kpi-sub">412 KB/s · Live</div>
+                </div>
+                <div class="kpi-card">
+                  <div class="kpi-label" data-i18n="capMock.kpiFlows">Captured Flows</div>
+                  <div class="kpi-val">1,284</div>
+                  <div class="kpi-sub">SQLite WAL · 14.2 MB</div>
+                </div>
+                <div class="kpi-card">
+                  <div class="kpi-label" data-i18n="capMock.kpiLat">Avg / P95 Latency</div>
+                  <div class="kpi-val">64 / 192 ms</div>
+                  <div class="kpi-sub">12 Active Hosts</div>
+                </div>
+                <div class="kpi-card">
+                  <div class="kpi-label" data-i18n="capMock.kpiErr">Error &amp; TLS</div>
+                  <div class="kpi-val">1.2%</div>
+                  <div class="kpi-sub">0 TLS Pinning Drops</div>
+                </div>
+              </div>
+
+              <div class="android-steps">
+                <div class="step-card ok">
+                  <div class="step-num"><span>STEP 1</span><span class="step-badge">USB</span></div>
+                  <div class="step-title" data-i18n="capMock.s1Title">ADB Device</div>
+                  <div class="step-meta">Pixel 8 Pro · Android 15<br>Non-Rooted · Connected</div>
+                </div>
+                <div class="step-card ok">
+                  <div class="step-num"><span>STEP 2</span><span class="step-badge">VERIFIED</span></div>
+                  <div class="step-title" data-i18n="capMock.s2Title">CA Certificate</div>
+                  <div class="step-meta">User / KeyChain Ready<br>SHA-1: 9F:4A:...:C2</div>
+                </div>
+                <div class="step-card ok">
+                  <div class="step-num"><span>STEP 3</span><span class="step-badge">WATCHDOG</span></div>
+                  <div class="step-title" data-i18n="capMock.s3Title">Cap Companion Guard</div>
+                  <div class="step-meta">WRITE_SECURE_SETTINGS ✓<br>3s Heartbeat · Auto-Restore</div>
+                </div>
+                <div class="step-card ok">
+                  <div class="step-num"><span>STEP 4</span><span class="step-badge">ACTIVE</span></div>
+                  <div class="step-title" data-i18n="capMock.s4Title">Proxy Route</div>
+                  <div class="step-meta">Wi-Fi Proxy 192.168.1.42:8080<br>Clean Teardown Armed</div>
+                </div>
+              </div>
+
+              <div class="kpi-card" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-secondary);">
+                <div style="color:var(--accent);font-weight:700;margin-bottom:6px;" data-i18n="capMock.logHead">ACTIVITY LOG · REAL-TIME DEVICE EVENTS</div>
+                <div>[14:22:01] device:status — Pixel 8 Pro attached (API 35, non-root)</div>
+                <div>[14:22:02] companion — Installed com.overkazaf.cap.companion (33 KB) &amp; granted WRITE_SECURE_SETTINGS</div>
+                <div>[14:22:03] guard — ProxyGuardService watchdog armed (heartbeat 3000ms, miss_threshold 3)</div>
+                <div style="color:var(--status-success);">[14:22:04] proxy — Intercepting HTTPS traffic on 0.0.0.0:8080</div>
+              </div>
+            </div>
+            <div class="gui-statusbar tabular">
+              <span>● Guard Watchdog Active · Disconnect auto-restores network</span>
+              <span>cap android status</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="feature">
-        <h3>LLM-Ready JSONL</h3>
-        <p>Compact one-line-per-flow output. Noise stripped, sign params tagged, bodies inline. Feed directly to your coding agent.</p>
-      </div>
-      <div class="feature">
-        <h3>Sign Inference</h3>
-        <p>Analyzes sign parameter values across requests. Guesses MD5/SHA1/SHA256/HMAC by length, encoding, and brute-force verification.</p>
-      </div>
-      <div class="feature">
-        <h3>Source Mapping</h3>
-        <p>Scans jadx decompiled output for Retrofit annotations and OkHttp patterns. Links each captured URL to its source file and method.</p>
-      </div>
-      <div class="feature">
-        <h3>Request Replay</h3>
-        <p>Replay any captured request. Modify headers, body, URL before sending. Diff the original and replayed responses.</p>
-      </div>
-      <div class="feature">
-        <h3>WebSocket & SSE</h3>
-        <p>Capture WebSocket frames (text/binary, both directions) and Server-Sent Events streams alongside HTTP flows.</p>
-      </div>
-      <div class="feature">
-        <h3>SSL Unpinning</h3>
-        <p>Four bypass strategies: Frida (14+ hooks), APK patching, Magisk module, and CodeShare auto-search by app fingerprint.</p>
-      </div>
-      <div class="feature">
-        <h3>Embedded Terminal</h3>
-        <p>Multi-tab PTY terminal inside the GUI. Run adb, frida, curl without leaving the app. Geek-style monospace interface.</p>
+
+      <!-- Panel 3: Full-Screen Interactive TUI -->
+      <div class="workbench-panel" id="panel-tui-live">
+        <div class="tui-screen">
+          <div class="tui-header">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="tui-pill tui-pill-brand"> CAP TUI </span>
+              <span class="tui-pill tui-pill-live">● LIVE 127.0.0.1:8080</span>
+              <span class="tui-pill tui-pill-follow">FOLLOW</span>
+              <span style="color:#94a3b8;">flows: 142 · err: 2</span>
+            </div>
+            <div style="color:#94a3b8;">Theme: Obsidian · Lang: <span id="tuiLangEcho" style="color:#38bdf8;font-weight:700;">EN</span></div>
+          </div>
+          <div class="tui-filterbar">
+            <span>/ <span style="color:#f8fafc;">m:POST s:2xx h:api.shopapp.io</span></span>
+            <span>[m] Method  [e] Errors  [c] Clear</span>
+          </div>
+          <div class="tui-split">
+            <div class="tui-list">
+              <div class="tui-row selected">
+                <span style="color:#38bdf8;">▸</span>
+                <span style="color:#38bdf8;font-weight:700;">POST</span>
+                <span style="color:#34d399;">200</span>
+                <span>api.shopapp.io/v2/auth/login</span>
+                <span style="color:#94a3b8;text-align:right;">84ms</span>
+              </div>
+              <div class="tui-row">
+                <span> </span>
+                <span style="color:#34d399;font-weight:700;">GET</span>
+                <span style="color:#34d399;">200</span>
+                <span>api.shopapp.io/v2/orders/feed</span>
+                <span style="color:#94a3b8;text-align:right;">42ms</span>
+              </div>
+              <div class="tui-row">
+                <span> </span>
+                <span style="color:#38bdf8;font-weight:700;">POST</span>
+                <span style="color:#fbbf24;">403</span>
+                <span>api.shopapp.io/v2/checkout/sign</span>
+                <span style="color:#94a3b8;text-align:right;">129ms</span>
+              </div>
+              <div class="tui-row">
+                <span> </span>
+                <span style="color:#fb923c;font-weight:700;">PUT</span>
+                <span style="color:#34d399;">200</span>
+                <span>api.shopapp.io/v2/profile/device</span>
+                <span style="color:#94a3b8;text-align:right;">63ms</span>
+              </div>
+              <div class="tui-row">
+                <span> </span>
+                <span style="color:#f87171;font-weight:700;">DEL</span>
+                <span style="color:#34d399;">204</span>
+                <span>api.shopapp.io/v2/sessions/stale</span>
+                <span style="color:#94a3b8;text-align:right;">31ms</span>
+              </div>
+            </div>
+            <div class="tui-detail">
+              <div class="tui-tabs" id="tuiTabs">
+                <button type="button" class="tui-tab-btn active" data-tuitab="overview">1 Overview</button>
+                <button type="button" class="tui-tab-btn" data-tuitab="request">2 Request</button>
+                <button type="button" class="tui-tab-btn" data-tuitab="response">3 Response</button>
+                <button type="button" class="tui-tab-btn" data-tuitab="curl">6 cURL/Code</button>
+              </div>
+              <pre id="tuiTabBody" style="margin:0;white-space:pre-wrap;color:#cbd5e1;"></pre>
+            </div>
+          </div>
+          <div class="tui-footer">
+            <span><span class="tui-key">/</span> Filter</span>
+            <span><span class="tui-key">1-6</span> Tab</span>
+            <span><span class="tui-key">r</span> Replay</span>
+            <span><span class="tui-key">y</span> Copy cURL</span>
+            <span><span class="tui-key">t</span> Theme</span>
+            <span><span class="tui-key">L</span> EN/中文</span>
+            <span><span class="tui-key">z</span> Zoom</span>
+            <span><span class="tui-key">?</span> Help</span>
+            <span><span class="tui-key">q</span> Quit</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </section>
 
-<section id="install-section">
+<!-- Core Features -->
+<section class="band band-alt" id="features">
   <div class="container">
-    <h2>Install</h2>
-    <div class="install-block">
-      <pre><code>git clone https://github.com/overkazaf/cap.git
+    <div class="section-head">
+      <div class="section-kicker" data-i18n="features.kicker">WORKBENCH CAPABILITIES</div>
+      <h2 data-i18n="features.title">Everything needed from packet capture to signature reversal</h2>
+      <p data-i18n="features.sub">Engineered for mobile reverse engineers and AI coding agents — fast, native, scriptable, and bilingual out of the box.</p>
+    </div>
+
+    <div class="feature-grid">
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg></div>
+        <h3 data-i18n="f1.title">Native Wails Desktop GUI</h3>
+        <p data-i18n="f1.desc">4 commercial themes (Obsidian Dark, Porcelain Light, Mocha, Nord), ⌘K Command Palette, collapsible nav rail, draggable SplitPane Flows inspector, and 7 integrated workspaces in a single binary.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></div>
+        <h3 data-i18n="f2.title">Flicker-Free Interactive TUI</h3>
+        <p data-i18n="f2.desc">Launch with cap tui or cap start --tui. Double-buffered ANSI rendering, 6 inspector tabs, live / query filtering, async replay, clipboard cURL copy, theme switch, and live EN/中文 toggle.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <h3 data-i18n="f3.title">Cap Companion Guard APK</h3>
+        <p data-i18n="f3.desc">33 KB signed pure-SDK APK embedded inside cap. Grants WRITE_SECURE_SETTINGS over ADB so its 3s heartbeat watchdog auto-restores Android network on USB unplug, Wi-Fi drop, or crash — even without root.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+        <h3 data-i18n="f4.title">Full EN / 简体中文 Localization</h3>
+        <p data-i18n="f4.desc">Synchronized English and Simplified Chinese across GUI, TUI, CLI (--lang, CAP_LANG), and the Android Companion APK. Hot-switch instantaneously without restarting capture sessions.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg></div>
+        <h3 data-i18n="f5.title">LLM-Ready JSONL &amp; 5-Lang Codegen</h3>
+        <p data-i18n="f5.desc">Strip noise headers, auto-tag sign_params, inline JSON bodies, and pipe compact JSONL straight to your coding agent — or generate runnable cURL, Python, Go, Java, and JS snippets.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+        <h3 data-i18n="f6.title">Sign Inference &amp; DeepTrace</h3>
+        <p data-i18n="f6.desc">Cross-request MD5/SHA/HMAC brute-force verification paired with jadx Retrofit/OkHttp source mapping, APK Manifest inspection, DEX string search, and Call Graph correlation.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg></div>
+        <h3 data-i18n="f7.title">Intercept Rules &amp; Breakpoints</h3>
+        <p data-i18n="f7.desc">Pause matching requests in a live Held Breakpoints queue to forward edited payloads, mock responses, or drop traffic — alongside Replay, Flow Diff, and token-propagating Sequence Replay.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+        <h3 data-i18n="f8.title">4-Strategy SSL Unpinning</h3>
+        <p data-i18n="f8.desc">Bypass pinning via Frida (14+ hooks including OkHttp3, Conscrypt, Flutter BoringSSL), APK NetworkSecurityConfig patching, Magisk cert promotion, or automatic Frida CodeShare search.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- Android Companion Guard -->
+<section class="band" id="android-guard">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-kicker" data-i18n="guard.kicker">SELF-HEALING ANDROID CAPTURE</div>
+      <h2 data-i18n="guard.title">Never leave your test phone stranded without internet</h2>
+      <p data-i18n="guard.sub">Cap embeds com.overkazaf.cap.companion directly inside the Go binary and deploys it automatically on connect.</p>
+    </div>
+
+    <div class="guard-grid">
+      <div class="guard-card">
+        <span class="guard-step">01 · DEPLOY</span>
+        <h3 data-i18n="g1.title">Auto-Installed via ADB</h3>
+        <p data-i18n="g1.desc">cap android connect pushes the embedded 33 KB signed APK, grants WRITE_SECURE_SETTINGS, and whitelists battery optimization automatically.</p>
+      </div>
+      <div class="guard-card">
+        <span class="guard-step">02 · CERT</span>
+        <h3 data-i18n="g2.title">CA Cert (Android 7–15)</h3>
+        <p data-i18n="g2.desc">Uses mount --bind, Magisk, or /system remount on rooted phones, and launches Android KeyChain directly via Companion MainActivity on non-rooted devices.</p>
+      </div>
+      <div class="guard-card">
+        <span class="guard-step">03 · WATCHDOG</span>
+        <h3 data-i18n="g3.title">3s Heartbeat Probe</h3>
+        <p data-i18n="g3.desc">ProxyGuardService continuously probes proxy_host:proxy_port every 3 seconds with a persistent notification and one-tap Restore Network action.</p>
+      </div>
+      <div class="guard-card">
+        <span class="guard-step">04 · RESTORE</span>
+        <h3 data-i18n="g4.title">Autonomous Teardown</h3>
+        <p data-i18n="g4.desc">3 missed probes, USB unplug, reboot (BootReceiver), or desktop StopProxy/Shutdown cleanly clears http_proxy and VPN iptables rules.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TUI Shortcuts -->
+<section class="band band-alt" id="tui-keys">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-kicker" data-i18n="tui.kicker">KEYBOARD-FIRST TERMINAL UI</div>
+      <h2 data-i18n="tui.title">Full-screen interactive TUI built for speed</h2>
+      <p data-i18n="tui.sub">Double-buffered DEC synchronized rendering with CJK double-width border precision. Zero flicker over SSH or local terminals.</p>
+    </div>
+
+    <div class="shortcut-grid">
+      <div class="shortcut-item"><span data-i18n="k.nav">Navigate list / scroll detail</span><kbd>↑ / ↓ / j / k</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.pane">Switch list ↔ inspector focus</span><kbd>Tab / Shift+Tab</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.tabs">Overview / Req / Resp / Headers / Timing / Code</span><kbd>1 – 6</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.filter">Live query filter (m:POST s:4xx !noise)</span><kbd>/</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.quick">Method cycle / Errors-only / Clear</span><kbd>m / e / c</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.replay">Async replay &amp; copy cURL snippet</span><kbd>r / y</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.theme">Toggle Obsidian Dark ↔ Porcelain Light</span><kbd>t</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.lang">Live switch English ↔ 简体中文</span><kbd>L</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.follow">Auto-follow / Pause live stream / Zoom</span><kbd>f / p / z</kbd></div>
+      <div class="shortcut-item"><span data-i18n="k.help">Help overlay / Quit cleanly</span><kbd>? / q</kbd></div>
+    </div>
+  </div>
+</section>
+
+<!-- Comparison Table -->
+<section class="band" id="compare">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-kicker" data-i18n="cmp.kicker">HONEST COMPARISON</div>
+      <h2 data-i18n="cmp.title">How cap compares to existing proxies</h2>
+      <p data-i18n="cmp.sub">Conservative maturity labels — experimental features are explicitly marked.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table class="compare">
+        <thead>
+          <tr>
+            <th data-i18n="cmp.colCap">Capability</th>
+            <th>Burp Suite</th>
+            <th>mitmproxy</th>
+            <th>HTTP Toolkit</th>
+            <th class="col-cap">cap</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td data-i18n="cmp.r1">Native Desktop GUI</td><td class="c-no">Java/Swing</td><td class="c-mid">△ mitmweb</td><td class="c-mid">Electron</td><td class="c-yes">✓ Wails v2 + Svelte 4</td></tr>
+          <tr><td data-i18n="cmp.r2">Interactive Full-Screen TUI</td><td class="c-no">✗</td><td class="c-yes">✓</td><td class="c-no">✗</td><td class="c-yes">✓ Split-pane (cap tui)</td></tr>
+          <tr><td data-i18n="cmp.r3">EN / 简体中文 Multi-Language</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-yes">✓ GUI + TUI + CLI + APK</td></tr>
+          <tr><td data-i18n="cmp.r4">LLM / Agent-Ready Output</td><td class="c-no">XML/HAR</td><td class="c-mid">△ HAR</td><td class="c-mid">△ HAR</td><td class="c-yes">✓ Compact JSONL</td></tr>
+          <tr><td data-i18n="cmp.r5">Multi-Language Codegen</td><td class="c-no">✗</td><td class="c-mid">△ curl+py</td><td class="c-no">✗</td><td class="c-yes">✓ 5 languages</td></tr>
+          <tr><td data-i18n="cmp.r6">Sign Inference &amp; DeepTrace</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-yes">✓ MD5/SHA/HMAC + jadx</td></tr>
+          <tr><td data-i18n="cmp.r7">Android Setup &amp; Guard Watchdog</td><td class="c-no">Manual</td><td class="c-no">Manual</td><td class="c-mid">△ App</td><td class="c-yes">✓ ADB + Rootless Guard APK</td></tr>
+          <tr><td data-i18n="cmp.r8">SSL Unpinning</td><td class="c-mid">△ Manual</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-yes">✓ Frida / Patch / Magisk / CodeShare</td></tr>
+          <tr><td data-i18n="cmp.r9">Intercept Rules &amp; Breakpoints</td><td class="c-yes">✓</td><td class="c-mid">△ Addon</td><td class="c-yes">✓ Pro</td><td class="c-yes">✓ Rules + Held Queue</td></tr>
+          <tr><td data-i18n="cmp.r10">WebSocket / SSE / Protobuf / Plugins</td><td class="c-yes">WS / BApp</td><td class="c-yes">WS / Addon</td><td class="c-yes">WS</td><td class="c-exp">⧗ Experimental</td></tr>
+          <tr><td data-i18n="cmp.r11">Distribution &amp; License</td><td class="c-no">JVM · $449/yr</td><td class="c-yes">Python · MIT</td><td class="c-mid">Electron · Partial</td><td class="c-yes">✓ Go Single Binary · MIT</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="table-note" data-i18n="cmp.note">⧗ Experimental: implemented and tested, with deliberately conservative maturity labeling until validated across broader protocol and device matrices.</p>
+  </div>
+</section>
+
+<!-- Install & Quick Start -->
+<section class="band band-alt" id="install">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-kicker" data-i18n="inst.kicker">GET STARTED IN SECONDS</div>
+      <h2 data-i18n="inst.title">Build &amp; run cap locally</h2>
+      <p data-i18n="inst.sub">Compiles a self-contained binary with embedded Svelte GUI assets and the signed Android Companion Guard APK.</p>
+    </div>
+
+    <div class="code-tabs-wrap">
+      <div class="code-tabbar">
+        <div class="code-tabs" role="tablist">
+          <button type="button" class="code-tab active" data-code="full" data-i18n="inst.tabFull">Full Build (GUI + TUI + CLI)</button>
+          <button type="button" class="code-tab" data-code="cli" data-i18n="inst.tabCli">CLI &amp; TUI Only</button>
+          <button type="button" class="code-tab" data-code="quick" data-i18n="inst.tabQuick">Quick Start</button>
+          <button type="button" class="code-tab" data-code="android" data-i18n="inst.tabAndroid">Android Guard</button>
+        </div>
+        <button type="button" class="copy-btn" id="copyCodeBtn">
+          <span data-i18n="inst.copy">Copy</span>
+        </button>
+      </div>
+
+      <div class="code-pane active" id="code-full">
+<pre><code>git clone https://github.com/overkazaf/cap.git
 cd cap
-go build -o cap ./cmd/cap
-./cap --help</code></pre>
-      <p style="margin-top:16px; color: var(--muted);">Requirements: Go 1.21+, macOS or Linux. GUI needs Xcode CLI tools on macOS.</p>
-    </div>
-  </div>
-</section>
 
-<section style="background: var(--code-bg);">
-  <div class="container">
-    <h2>Quick Start</h2>
-    <pre><code># Start proxy
-cap start -a 0.0.0.0:8080
+# Build frontend, verify asset SHA-256, and compile Wails desktop binary
+make assets &amp;&amp; make build
 
-# Connect Android
-cap android connect
+# Launch Desktop GUI or Full-Screen Interactive TUI
+./dist/cap gui
+./dist/cap tui --live</code></pre>
+      </div>
 
-# View flows
-cap flows --host api.example.com
-
-# Export code
-cap export --flow f1 --lang python
-
-# Feed to LLM
-cap export --format agent | pbcopy
-
-# Desktop GUI
-cap gui</code></pre>
-  </div>
-</section>
-</div>
-
-<!-- Chinese Version (hidden by default) -->
-<div id="cn" style="display:none;">
-<div class="hero" style="position:relative;">
-  <div class="lang-switch">
-    <a href="#en" onclick="showLang('en')">EN</a>
-    <a href="#cn" class="active" onclick="showLang('cn')">中文</a>
-  </div>
-  <h1>cap</h1>
-  <p>为逆向工程打造的 MITM 抓包工具。LLM 友好输出、多语言代码生成、签名算法推理、原生桌面 GUI。</p>
-  <div class="badges">
-    <span class="badge">Go 语言</span>
-    <span class="badge">单文件分发</span>
-    <span class="badge">MIT 协议</span>
-    <span class="badge">CLI + GUI</span>
-  </div>
-  <div class="cta">
-    <a href="https://github.com/overkazaf/cap" class="cta-primary">GitHub</a>
-    <a href="#install-section-cn" class="cta-secondary">安装</a>
-  </div>
-</div>
-
-<section>
-  <div class="container">
-    <h2>为什么选择 cap？</h2>
-    <table>
-      <tr><th>能力</th><th>Burp Suite</th><th>mitmproxy</th><th>HTTP Toolkit</th><th>cap</th></tr>
-      <tr><td>CLI 自动化</td><td class="cross">✗ 纯GUI</td><td class="check">✓</td><td class="cross">✗</td><td class="check"><b>✓</b></td></tr>
-      <tr><td>桌面 GUI</td><td class="cross">Java</td><td class="partial">△ 简陋</td><td class="partial">Electron</td><td class="check"><b>Wails + Svelte</b></td></tr>
-      <tr><td>LLM 友好输出</td><td class="cross">XML</td><td class="partial">HAR</td><td class="partial">HAR</td><td class="check"><b>精简 JSONL</b></td></tr>
-      <tr><td>多语言代码生成</td><td class="cross">✗</td><td class="partial">curl+py</td><td class="cross">✗</td><td class="check"><b>5 种语言</b></td></tr>
-      <tr><td>签名自动识别</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ 自动</b></td></tr>
-      <tr><td>签名算法推理</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>MD5/SHA/HMAC</b></td></tr>
-      <tr><td>源码映射</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>jadx → URL</b></td></tr>
-      <tr><td>Android 连接</td><td class="cross">手动</td><td class="cross">手动</td><td class="partial">需装 App</td><td class="check"><b>ADB 直连</b></td></tr>
-      <tr><td>SSL Unpinning</td><td class="partial">手动</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>Frida/patch/Magisk</b></td></tr>
-      <tr><td>CodeShare 集成</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>自动指纹匹配</b></td></tr>
-      <tr><td>请求重放</td><td class="check">Repeater</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>✓ + 改参</b></td></tr>
-      <tr><td>API 自动分组</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>host + 路径</b></td></tr>
-      <tr><td>流量对比</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>并排 Diff</b></td></tr>
-      <tr><td>序列回放</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>Token 传递</b></td></tr>
-      <tr><td>Protobuf 解码</td><td class="cross">✗</td><td class="partial">插件</td><td class="cross">✗</td><td class="check"><b>无 Schema</b></td></tr>
-      <tr><td>流量仪表盘</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>P95 / 时间线</b></td></tr>
-      <tr><td>HAR/Charles 导入</td><td class="check">✓</td><td class="check">✓</td><td class="check">✓</td><td class="check"><b>✓</b></td></tr>
-      <tr><td>插件系统</td><td class="check">BApp</td><td class="check">addon</td><td class="cross">✗</td><td class="check"><b>实时编辑器</b></td></tr>
-      <tr><td>内嵌终端</td><td class="cross">✗</td><td class="cross">✗</td><td class="cross">✗</td><td class="check"><b>多 Tab</b></td></tr>
-      <tr><td>开源免费</td><td class="cross">$449/年</td><td class="check">✓</td><td class="partial">核心开源</td><td class="check"><b>MIT</b></td></tr>
-    </table>
-  </div>
-</section>
-
-<section style="background: var(--code-bg);">
-  <div class="container">
-    <h2>核心功能</h2>
-    <div class="features">
-      <div class="feature"><h3>MITM 代理</h3><p>HTTP/HTTPS 中间人拦截，自动生成 CA 证书。SQLite WAL 模式持久化。</p></div>
-      <div class="feature"><h3>一键连手机</h3><p>cap android connect — ADB 设代理 + 装证书（mount --bind / Magisk / legacy），支持 Android 7–15。</p></div>
-      <div class="feature"><h3>多语言导出</h3><p>任意请求一键生成 cURL、Python、Go、Java、JavaScript 可运行代码。</p></div>
-      <div class="feature"><h3>LLM 友好 JSONL</h3><p>精简单行输出，噪声头剥离，签名参数标记，直接喂给 AI 分析。</p></div>
-      <div class="feature"><h3>签名推理</h3><p>跨请求分析 sign 参数值，猜测 MD5/SHA/HMAC 算法，暴力验证。</p></div>
-      <div class="feature"><h3>源码映射</h3><p>扫描 jadx 反编译产物，把 URL 映射到 Java 源码文件和方法名。</p></div>
-      <div class="feature"><h3>请求重放</h3><p>选中请求一键重发，支持修改参数，Diff 对比原始和重放响应。</p></div>
-      <div class="feature"><h3>WebSocket & SSE</h3><p>抓取 WebSocket 帧和 SSE 流，和 HTTP 请求一起展示。</p></div>
-      <div class="feature"><h3>SSL Unpinning</h3><p>四种绕过策略：Frida（14+ hook）、APK 补丁、Magisk 模块、CodeShare 自动指纹搜索。</p></div>
-      <div class="feature"><h3>内嵌终端</h3><p>GUI 内多 Tab 终端，执行 adb/frida/curl 不用切窗口。</p></div>
-      <div class="feature"><h3>请求重放</h3><p>一键重放请求，支持修改 URL/Header/Body 后重发，Diff 对比响应差异。</p></div>
-      <div class="feature"><h3>API 自动分组</h3><p>按 host + 路径前缀自动聚合，一眼看清目标 App 的 API 结构。</p></div>
-      <div class="feature"><h3>流量对比</h3><p>选两个请求并排 Diff：URL、Header、JSON Body 键级对比、延迟变化百分比。</p></div>
-      <div class="feature"><h3>序列回放</h3><p>录制操作流程（登录→取数据→提交），一键重放自动传递 Token/Cookie。</p></div>
-      <div class="feature"><h3>Protobuf 解码</h3><p>无 Schema 解码 — 自动检测并解析二进制 Protobuf 响应，无需 .proto 文件。</p></div>
-      <div class="feature"><h3>流量仪表盘</h3><p>聚合统计：按域名/状态码/方法、P95 延迟、错误率、最慢端点、分钟时间线。</p></div>
-      <div class="feature"><h3>插件系统</h3><p>内置代码编辑器 + 3 个示例插件，现写现测试、保存、开关控制。</p></div>
-      <div class="feature"><h3>HAR 导入</h3><p>导入 HAR 和 Charles XML 文件，零迁移成本。</p></div>
-    </div>
-  </div>
-</section>
-
-<section id="install-section-cn">
-  <div class="container">
-    <h2>安装</h2>
-    <div class="install-block">
-      <pre><code>git clone https://github.com/overkazaf/cap.git
+      <div class="code-pane" id="code-cli">
+<pre><code>git clone https://github.com/overkazaf/cap.git
 cd cap
-go build -o cap ./cmd/cap
-./cap --help</code></pre>
-      <p style="margin-top:16px; color: var(--muted);">环境要求：Go 1.21+，macOS 或 Linux。GUI 需要 Xcode 命令行工具（macOS）。</p>
+go build -o dist/cap ./cmd/cap
+
+# Start live MITM proxy inside the interactive TUI
+./dist/cap start --tui -a 0.0.0.0:8080</code></pre>
+      </div>
+
+      <div class="code-pane" id="code-quick">
+<pre><code># 1. Start MITM proxy inside full-screen TUI (or use ./dist/cap gui)
+./dist/cap start --tui -a 0.0.0.0:8080
+
+# 2. Query saved flows or export for LLM / coding agents
+./dist/cap flows --host api.example.com --method POST -n 20
+./dist/cap export --flow f1 -l python
+./dist/cap export -f agent | pbcopy
+
+# 3. Switch CLI/TUI language anytime
+./dist/cap tui --lang zh</code></pre>
+      </div>
+
+      <div class="code-pane" id="code-android">
+<pre><code># One-command Android setup: proxy + CA cert + Companion Guard Watchdog
+./dist/cap android connect
+
+# Inspect device identity, CA cert trust, and Companion Guard status
+./dist/cap android status
+
+# Verify or remove CA cert / clean disconnect (also auto-restores on USB unplug)
+./dist/cap android cert --check
+./dist/cap android disconnect</code></pre>
+      </div>
+
+      <div class="code-meta" data-i18n="inst.req">Requirements: Go 1.27+, Node.js 18+ (for GUI assets). macOS needs Xcode Command Line Tools; Linux GUI needs libgtk-3-dev &amp; libwebkit2gtk-4.0-dev.</div>
     </div>
   </div>
 </section>
 
-<section style="background: var(--code-bg);">
-  <div class="container">
-    <h2>快速开始</h2>
-    <pre><code># 启动代理
-cap start -a 0.0.0.0:8080
-
-# 连接手机
-cap android connect
-
-# 查看请求
-cap flows --host api.example.com
-
-# 导出代码
-cap export --flow f1 --lang python
-
-# 喂给 LLM
-cap export --format agent | pbcopy
-
-# 桌面 GUI
-cap gui</code></pre>
-  </div>
-</section>
-</div>
-
+<!-- Footer -->
 <footer>
-  <p>cap — MIT License — <a href="https://github.com/overkazaf/cap">GitHub</a></p>
+  <div class="container footer-inner">
+    <div><strong>cap</strong> · <span data-i18n="footer.copy">MIT License · Open-source HTTP(S) MITM Reverse-Engineering Workbench</span></div>
+    <div class="footer-links">
+      <a href="https://github.com/overkazaf/cap" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/overkazaf/cap/blob/main/README.md" target="_blank" rel="noopener">README (EN)</a>
+      <a href="https://github.com/overkazaf/cap/blob/main/README_CN.md" target="_blank" rel="noopener">中文文档</a>
+      <a href="https://github.com/overkazaf/cap/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
+      <a href="https://github.com/overkazaf/cap/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+    </div>
+  </div>
 </footer>
 
 <script>
-function showLang(lang) {
-  document.getElementById('en').style.display = lang === 'en' ? 'block' : 'none';
-  document.getElementById('cn').style.display = lang === 'cn' ? 'block' : 'none';
-}
+(function () {
+  var I18N = {
+    en: {
+      'nav.preview': 'Workbench',
+      'nav.features': 'Features',
+      'nav.android': 'Android Guard',
+      'nav.tui': 'TUI',
+      'nav.compare': 'Compare',
+      'nav.install': 'Install',
+      'hero.eyebrow': 'Native Desktop GUI · Full-Screen TUI · Android Companion Guard · EN / 中文',
+      'hero.title': 'HTTP(S) MITM Proxy Built for <span class="accent">Reverse Engineering</span>',
+      'hero.sub': 'Inspect, replay, diff, and infer mobile API signatures in one single Go binary — featuring a Wails v2 desktop workbench, a flicker-free terminal UI, and a rootless self-healing Android Companion Guard APK.',
+      'hero.ctaInstall': 'Install & Build',
+      'hero.ctaPreview': 'Explore Live Preview',
+      'hero.ctaGithub': 'View on GitHub',
+      'preview.tabFlows': 'Desktop GUI — Flows Inspector',
+      'preview.tabCapture': 'Desktop GUI — Capture & Android Guard',
+      'preview.tabTui': 'Full-Screen TUI (cap start --tui)',
+      'preview.chromeTitle': 'cap workbench',
+      'preview.signTag': 'Sign Tagged',
+      'preview.apiGroups': 'API Groups',
+      'preview.itabParams': 'Params',
+      'preview.itabHeaders': 'Headers',
+      'preview.itabBody': 'Body · JSON',
+      'preview.itabTiming': 'Timing',
+      'preview.itabExport': 'Export',
+      'rail.traffic': 'Traffic',
+      'rail.capture': 'Capture',
+      'rail.flows': 'Flows',
+      'rail.analysis': 'Analysis',
+      'rail.rules': 'Rules',
+      'rail.trace': 'DeepTrace',
+      'rail.plugins': 'Plugins',
+      'rail.system': 'System',
+      'rail.terminal': 'Terminal',
+      'rail.settings': 'Settings',
+      'capMock.kpiRate': 'Traffic Rate',
+      'capMock.kpiFlows': 'Captured Flows',
+      'capMock.kpiLat': 'Avg / P95 Latency',
+      'capMock.kpiErr': 'Error & TLS',
+      'capMock.s1Title': 'ADB Device',
+      'capMock.s2Title': 'CA Certificate',
+      'capMock.s3Title': 'Cap Companion Guard',
+      'capMock.s4Title': 'Proxy Route',
+      'capMock.logHead': 'ACTIVITY LOG · REAL-TIME DEVICE EVENTS',
+      'features.kicker': 'WORKBENCH CAPABILITIES',
+      'features.title': 'Everything needed from packet capture to signature reversal',
+      'features.sub': 'Engineered for mobile reverse engineers and AI coding agents — fast, native, scriptable, and bilingual out of the box.',
+      'f1.title': 'Native Wails Desktop GUI',
+      'f1.desc': '4 commercial themes (Obsidian Dark, Porcelain Light, Mocha, Nord), ⌘K Command Palette, collapsible nav rail, draggable SplitPane Flows inspector, and 7 integrated workspaces in a single binary.',
+      'f2.title': 'Flicker-Free Interactive TUI',
+      'f2.desc': 'Launch with cap tui or cap start --tui. Double-buffered ANSI rendering, 6 inspector tabs, live / query filtering, async replay, clipboard cURL copy, theme switch, and live EN/中文 toggle.',
+      'f3.title': 'Cap Companion Guard APK',
+      'f3.desc': '33 KB signed pure-SDK APK embedded inside cap. Grants WRITE_SECURE_SETTINGS over ADB so its 3s heartbeat watchdog auto-restores Android network on USB unplug, Wi-Fi drop, or crash — even without root.',
+      'f4.title': 'Full EN / 简体中文 Localization',
+      'f4.desc': 'Synchronized English and Simplified Chinese across GUI, TUI, CLI (--lang, CAP_LANG), and the Android Companion APK. Hot-switch instantaneously without restarting capture sessions.',
+      'f5.title': 'LLM-Ready JSONL & 5-Lang Codegen',
+      'f5.desc': 'Strip noise headers, auto-tag sign_params, inline JSON bodies, and pipe compact JSONL straight to your coding agent — or generate runnable cURL, Python, Go, Java, and JS snippets.',
+      'f6.title': 'Sign Inference & DeepTrace',
+      'f6.desc': 'Cross-request MD5/SHA/HMAC brute-force verification paired with jadx Retrofit/OkHttp source mapping, APK Manifest inspection, DEX string search, and Call Graph correlation.',
+      'f7.title': 'Intercept Rules & Breakpoints',
+      'f7.desc': 'Pause matching requests in a live Held Breakpoints queue to forward edited payloads, mock responses, or drop traffic — alongside Replay, Flow Diff, and token-propagating Sequence Replay.',
+      'f8.title': '4-Strategy SSL Unpinning',
+      'f8.desc': 'Bypass pinning via Frida (14+ hooks including OkHttp3, Conscrypt, Flutter BoringSSL), APK NetworkSecurityConfig patching, Magisk cert promotion, or automatic Frida CodeShare search.',
+      'guard.kicker': 'SELF-HEALING ANDROID CAPTURE',
+      'guard.title': 'Never leave your test phone stranded without internet',
+      'guard.sub': 'Cap embeds com.overkazaf.cap.companion directly inside the Go binary and deploys it automatically on connect.',
+      'g1.title': 'Auto-Installed via ADB',
+      'g1.desc': 'cap android connect pushes the embedded 33 KB signed APK, grants WRITE_SECURE_SETTINGS, and whitelists battery optimization automatically.',
+      'g2.title': 'CA Cert (Android 7–15)',
+      'g2.desc': 'Uses mount --bind, Magisk, or /system remount on rooted phones, and launches Android KeyChain directly via Companion MainActivity on non-rooted devices.',
+      'g3.title': '3s Heartbeat Probe',
+      'g3.desc': 'ProxyGuardService continuously probes proxy_host:proxy_port every 3 seconds with a persistent notification and one-tap Restore Network action.',
+      'g4.title': 'Autonomous Teardown',
+      'g4.desc': '3 missed probes, USB unplug, reboot (BootReceiver), or desktop StopProxy/Shutdown cleanly clears http_proxy and VPN iptables rules.',
+      'tui.kicker': 'KEYBOARD-FIRST TERMINAL UI',
+      'tui.title': 'Full-screen interactive TUI built for speed',
+      'tui.sub': 'Double-buffered DEC synchronized rendering with CJK double-width border precision. Zero flicker over SSH or local terminals.',
+      'k.nav': 'Navigate list / scroll detail',
+      'k.pane': 'Switch list ↔ inspector focus',
+      'k.tabs': 'Overview / Req / Resp / Headers / Timing / Code',
+      'k.filter': 'Live query filter (m:POST s:4xx !noise)',
+      'k.quick': 'Method cycle / Errors-only / Clear',
+      'k.replay': 'Async replay & copy cURL snippet',
+      'k.theme': 'Toggle Obsidian Dark ↔ Porcelain Light',
+      'k.lang': 'Live switch English ↔ 简体中文',
+      'k.follow': 'Auto-follow / Pause live stream / Zoom',
+      'k.help': 'Help overlay / Quit cleanly',
+      'cmp.kicker': 'HONEST COMPARISON',
+      'cmp.title': 'How cap compares to existing proxies',
+      'cmp.sub': 'Conservative maturity labels — experimental features are explicitly marked.',
+      'cmp.colCap': 'Capability',
+      'cmp.r1': 'Native Desktop GUI',
+      'cmp.r2': 'Interactive Full-Screen TUI',
+      'cmp.r3': 'EN / 简体中文 Multi-Language',
+      'cmp.r4': 'LLM / Agent-Ready Output',
+      'cmp.r5': 'Multi-Language Codegen',
+      'cmp.r6': 'Sign Inference & DeepTrace',
+      'cmp.r7': 'Android Setup & Guard Watchdog',
+      'cmp.r8': 'SSL Unpinning',
+      'cmp.r9': 'Intercept Rules & Breakpoints',
+      'cmp.r10': 'WebSocket / SSE / Protobuf / Plugins',
+      'cmp.r11': 'Distribution & License',
+      'cmp.note': '⧗ Experimental: implemented and tested, with deliberately conservative maturity labeling until validated across broader protocol and device matrices.',
+      'inst.kicker': 'GET STARTED IN SECONDS',
+      'inst.title': 'Build & run cap locally',
+      'inst.sub': 'Compiles a self-contained binary with embedded Svelte GUI assets and the signed Android Companion Guard APK.',
+      'inst.tabFull': 'Full Build (GUI + TUI + CLI)',
+      'inst.tabCli': 'CLI & TUI Only',
+      'inst.tabQuick': 'Quick Start',
+      'inst.tabAndroid': 'Android Guard',
+      'inst.copy': 'Copy',
+      'inst.copied': 'Copied',
+      'inst.req': 'Requirements: Go 1.27+, Node.js 18+ (for GUI assets). macOS needs Xcode Command Line Tools; Linux GUI needs libgtk-3-dev & libwebkit2gtk-4.0-dev.',
+      'footer.copy': 'MIT License · Open-source HTTP(S) MITM Reverse-Engineering Workbench'
+    },
+    zh: {
+      'nav.preview': '工作台预览',
+      'nav.features': '核心特性',
+      'nav.android': 'Android 守护',
+      'nav.tui': '交互 TUI',
+      'nav.compare': '能力对比',
+      'nav.install': '安装构建',
+      'hero.eyebrow': '原生桌面 GUI · 全屏交互 TUI · Android 代理守护 APK · 中英双语',
+      'hero.title': '为<span class="accent">移动逆向工程</span>打造的 HTTP(S) MITM 工作台',
+      'hero.sub': '单文件 Go 二进制集成 Wails v2 原生桌面端、无闪烁全屏交互式 TUI 与免 Root 断网自愈 Android 守护伴侣 APK — 一站完成抓包、改参重放、签名推理与 AI 导出。',
+      'hero.ctaInstall': '安装与构建',
+      'hero.ctaPreview': '体验交互预览',
+      'hero.ctaGithub': '访问 GitHub',
+      'preview.tabFlows': '桌面 GUI — Flows 流量分析',
+      'preview.tabCapture': '桌面 GUI — Capture 与 Android 守护',
+      'preview.tabTui': '全屏 TUI (cap start --tui)',
+      'preview.chromeTitle': 'cap 工作台',
+      'preview.signTag': '已标记签名',
+      'preview.apiGroups': 'API 分组',
+      'preview.itabParams': '参数',
+      'preview.itabHeaders': '请求头',
+      'preview.itabBody': '载荷 · JSON',
+      'preview.itabTiming': '耗时',
+      'preview.itabExport': '导出',
+      'rail.traffic': '流量',
+      'rail.capture': '抓包中心',
+      'rail.flows': '流量列表',
+      'rail.analysis': '逆向分析',
+      'rail.rules': '拦截规则',
+      'rail.trace': '深度追踪',
+      'rail.plugins': '插件工坊',
+      'rail.system': '系统',
+      'rail.terminal': '内嵌终端',
+      'rail.settings': '系统设置',
+      'capMock.kpiRate': '实时吞吐',
+      'capMock.kpiFlows': '已捕获流量',
+      'capMock.kpiLat': '平均 / P95 延迟',
+      'capMock.kpiErr': '错误率与 TLS',
+      'capMock.s1Title': 'ADB 设备连接',
+      'capMock.s2Title': 'CA 证书状态',
+      'capMock.s3Title': 'Cap 代理守护 APK',
+      'capMock.s4Title': '代理路由',
+      'capMock.logHead': '活动日志 · 实时设备事件流',
+      'features.kicker': '核心工作台能力',
+      'features.title': '覆盖从抓包到签名逆向的全流程',
+      'features.sub': '面向移动端逆向工程师与 AI 编程助手打造 —— 原生轻量、可脚本化、开箱即支持中英双语。',
+      'f1.title': 'Wails 原生桌面 GUI',
+      'f1.desc': '内置 4 套主题（Obsidian 曜石暗黑、Porcelain 陶瓷浅色、Mocha、Nord）、⌘K 命令面板、可折叠侧边栏、可拖拽 SplitPane 流量分析器与 7 大集成工作区。',
+      'f2.title': '无闪烁全屏交互式 TUI',
+      'f2.desc': '通过 cap tui 或 cap start --tui 启动。采用双缓冲 ANSI 渲染，支持 6 个详情标签、/ 实时过滤、异步重放、复制 cURL、主题切换与 L 键实时中英热切换。',
+      'f3.title': 'Cap 代理守护伴侣 APK',
+      'f3.desc': '33 KB 纯 Android SDK 签名 APK 直接内嵌于二进制中。ADB 自动授予 WRITE_SECURE_SETTINGS，3 秒心跳看门狗在拔线、切网或崩溃时免 Root 自动恢复手机网络。',
+      'f4.title': '全栈 EN / 简体中文国际化',
+      'f4.desc': '桌面 GUI、交互 TUI、CLI（--lang、CAP_LANG）与 Android 守护 APK 全套双语同步，无需重启抓包会话即可实时热切换。',
+      'f5.title': 'LLM 友好 JSONL 与 5 语言导出',
+      'f5.desc': '自动剥离噪声头、标记 sign_params 并内联 JSON 体，一键输出精简 JSONL 喂给 AI 助手，或生成可运行的 cURL、Python、Go、Java、JS 代码。',
+      'f6.title': '签名算法推理与 DeepTrace',
+      'f6.desc': '跨请求 MD5/SHA/HMAC 暴力校验，配合 jadx Retrofit/OkHttp 源码映射、APK Manifest 检查、DEX 字符串检索与调用图关联。',
+      'f7.title': '拦截规则与实时挂起断点',
+      'f7.desc': '在实时挂起断点队列中拦截并改写请求、Mock 响应或丢弃流量，配合改参重放、并排 Flow Diff 与自动传递 Token 的序列回放。',
+      'f8.title': '四策略 SSL Unpinning 脱钉',
+      'f8.desc': '支持 Frida 运行时 hook（14+ 主流实现含 OkHttp3/Conscrypt/Flutter BoringSSL）、APK 补丁、Magisk 模块及 CodeShare 自动指纹搜索。',
+      'guard.kicker': '断网自愈 ANDROID 抓包',
+      'guard.title': '告别拔线断网，测试机代理自动清理',
+      'guard.sub': 'cap 将 com.overkazaf.cap.companion 直接内嵌于 Go 二进制，连接设备时自动部署并启动看门狗。',
+      'g1.title': 'ADB 一键静默部署',
+      'g1.desc': 'cap android connect 自动推送 33 KB 签名守护 APK、授予 WRITE_SECURE_SETTINGS 权限并配置后台电池白名单。',
+      'g2.title': 'CA 证书注入（Android 7–15）',
+      'g2.desc': 'Root 设备支持 mount --bind / Magisk / /system 三策略注入；非 Root 设备通过伴侣 App 一键调起系统 KeyChain 安装。',
+      'g3.title': '3 秒心跳看门狗',
+      'g3.desc': 'ProxyGuardService 前台服务每 3 秒探测代理连通性，状态栏常驻实时状态并提供一键「恢复网络」按钮。',
+      'g4.title': '全场景自主恢复',
+      'g4.desc': '连续 3 次探测失败、拔掉 USB、设备重启（BootReceiver）或桌面端关闭代理，均会自动清除 http_proxy 与 VPN 规则。',
+      'tui.kicker': '键盘优先的终端工作台',
+      'tui.title': '为效率而生的全屏交互式 TUI',
+      'tui.sub': '双缓冲 DEC 同步输出，严格对齐双宽 CJK 表格边框，本地终端与 SSH 远程皆丝滑无闪烁。',
+      'k.nav': '上下选择流量 / 滚动详情',
+      'k.pane': '切换列表 ↔ 详情焦点',
+      'k.tabs': '概览 / 请求 / 响应 / 请求头 / 耗时 / 代码',
+      'k.filter': '实时过滤栏（m:POST s:4xx !noise）',
+      'k.quick': '切换方法 / 仅看错误 / 清空过滤',
+      'k.replay': '异步重放请求 / 复制 cURL',
+      'k.theme': '切换 Obsidian 暗黑 ↔ Porcelain 浅色',
+      'k.lang': '实时切换 English ↔ 简体中文',
+      'k.follow': '自动跟随 / 暂停实时流 / 面板缩放',
+      'k.help': '快捷键帮助弹窗 / 安全退出',
+      'cmp.kicker': '如实能力对比',
+      'cmp.title': 'cap 与主流抓包工具对比',
+      'cmp.sub': '保守标注成熟度，实验性功能均明确标记。',
+      'cmp.colCap': '核心能力',
+      'cmp.r1': '原生桌面 GUI',
+      'cmp.r2': '全屏交互式 TUI',
+      'cmp.r3': 'EN / 简体中文全栈双语',
+      'cmp.r4': 'LLM / Agent 友好输出',
+      'cmp.r5': '多语言代码生成',
+      'cmp.r6': '签名推理与 DeepTrace',
+      'cmp.r7': 'Android 接入与守护看门狗',
+      'cmp.r8': 'SSL Unpinning 脱钉',
+      'cmp.r9': '拦截规则与挂起断点',
+      'cmp.r10': 'WebSocket / SSE / Protobuf / 插件',
+      'cmp.r11': '分发形态与开源协议',
+      'cmp.note': '⧗ Experimental（实验性）：功能已实现并有基础测试，但在覆盖更多协议与机型组合前保持保守标识。',
+      'inst.kicker': '秒级上手',
+      'inst.title': '本地构建与运行 cap',
+      'inst.sub': '一条命令编译包含 Svelte 桌面端资源与已签名 Android 守护 APK 的单文件二进制。',
+      'inst.tabFull': '完整构建 (GUI + TUI + CLI)',
+      'inst.tabCli': '仅 CLI 与 TUI',
+      'inst.tabQuick': '快速开始',
+      'inst.tabAndroid': 'Android 守护',
+      'inst.copy': '复制',
+      'inst.copied': '已复制',
+      'inst.req': '环境要求：Go 1.27+、Node.js 18+（构建前端）。macOS 需 Xcode 命令行工具；Linux 构建 GUI 需 libgtk-3-dev 与 libwebkit2gtk-4.0-dev。',
+      'footer.copy': 'MIT 开源协议 · HTTP(S) MITM 逆向工程工作台'
+    }
+  };
+
+  var FLOW_SAMPLES = [
+    {
+      bannerEn: 'Sign Detected: MD5(sorted_params + secret) · 96% confidence',
+      bannerZh: '检测到签名参数：MD5(sorted_params + secret) · 置信度 96%',
+      json: '{\n  <span class="json-k">"uid"</span>: <span class="json-s">"u_902184"</span>,\n  <span class="json-k">"ts"</span>: <span class="json-n">1763821321</span>,\n  <span class="json-k">"nonce"</span>: <span class="json-s">"7f2c9a1e"</span>,\n  <span class="json-k">"sign"</span>: <span class="json-p">"e4d909c290d0fb1ca068ffaddf22cbd0"</span>,\n  <span class="json-k">"source_ref"</span>: <span class="json-s">"LoginApi.java:42"</span>\n}'
+    },
+    {
+      bannerEn: 'API Group: api.shopapp.io/v2/orders/* · 200 OK · 42 ms',
+      bannerZh: 'API 分组：api.shopapp.io/v2/orders/* · 200 OK · 42 ms',
+      json: '{\n  <span class="json-k">"page"</span>: <span class="json-n">1</span>,\n  <span class="json-k">"items"</span>: <span class="json-n">20</span>,\n  <span class="json-k">"cursor"</span>: <span class="json-s">"eyJwYWdlIjoyfQ=="</span>,\n  <span class="json-k">"cached"</span>: <span class="json-n">false</span>\n}'
+    },
+    {
+      bannerEn: '403 Signature Mismatch · Replay with modified headers/body',
+      bannerZh: '403 签名校验失败 · 支持改参重放与并排 Diff',
+      json: '{\n  <span class="json-k">"code"</span>: <span class="json-n">40301</span>,\n  <span class="json-k">"error"</span>: <span class="json-s">"invalid_x_sign_header"</span>,\n  <span class="json-k">"hint"</span>: <span class="json-p">"x-sign"</span>\n}'
+    },
+    {
+      bannerEn: 'Device Fingerprint Update · TLS 1.3 · Unpinned via Frida',
+      bannerZh: '设备指纹上报 · TLS 1.3 · 已通过 Frida 脱钉捕获',
+      json: '{\n  <span class="json-k">"model"</span>: <span class="json-s">"Pixel 8 Pro"</span>,\n  <span class="json-k">"api_level"</span>: <span class="json-n">35</span>,\n  <span class="json-k">"updated"</span>: <span class="json-n">true</span>\n}'
+    },
+    {
+      bannerEn: '204 No Content · Session Cleanup · 31 ms',
+      bannerZh: '204 No Content · 会话清理 · 31 ms',
+      json: '<span style="color:var(--text-muted)">// 204 No Content — response body is empty</span>'
+    }
+  ];
+
+  var TUI_TABS = {
+    overview: 'URL     https://api.shopapp.io/v2/auth/login\nMethod  POST   Status  200 OK   Latency  84 ms\nHost    api.shopapp.io          Size     1.4 KB\nSign    [sign, ts, nonce] -> MD5 (96% confidence)\nSource  com/shopapp/api/LoginApi.java:42 (login)',
+    request: 'POST /v2/auth/login HTTP/1.1\nHost: api.shopapp.io\nContent-Type: application/json\n\n{\n  "uid": "u_902184",\n  "ts": 1763821321,\n  "sign": "e4d909c290d0fb1ca068ffaddf22cbd0"\n}',
+    response: 'HTTP/1.1 200 OK\nContent-Type: application/json; charset=utf-8\n\n{\n  "token": "eyJhbGciOiJIUzI1NiJ9...",\n  "expires_in": 7200\n}',
+    curl: 'curl -X POST \\\n  "https://api.shopapp.io/v2/auth/login" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"uid":"u_902184","ts":1763821321,"sign":"e4d909..."}\'\n\n# Press [l] to cycle: curl -> python -> go -> java -> js'
+  };
+
+  var state = {
+    lang: 'en',
+    theme: 'dark',
+    flowIdx: 0,
+    tuiTab: 'overview'
+  };
+
+  function detectLang() {
+    if (location.hash === '#zh' || location.hash === '#cn') return 'zh';
+    if (location.hash === '#en') return 'en';
+    try {
+      var saved = localStorage.getItem('cap.docs.lang');
+      if (saved === 'en' || saved === 'zh') return saved;
+    } catch (_) {}
+    return (navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+  }
+
+  function detectTheme() {
+    try {
+      var saved = localStorage.getItem('cap.docs.theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch (_) {}
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      return 'light';
+    }
+    return 'dark';
+  }
+
+  function renderFlowInspector() {
+    var f = FLOW_SAMPLES[state.flowIdx] || FLOW_SAMPLES[0];
+    var banner = state.lang === 'zh' ? f.bannerZh : f.bannerEn;
+    var el = document.getElementById('guiInspectorBody');
+    if (el) {
+      el.innerHTML = '<div class="sign-banner"><span>' + banner + '</span></div><pre style="margin:0;white-space:pre-wrap;">' + f.json + '</pre>';
+    }
+  }
+
+  function applyLang(lang) {
+    state.lang = lang === 'zh' ? 'zh' : 'en';
+    document.documentElement.lang = state.lang === 'zh' ? 'zh-CN' : 'en';
+    var dict = I18N[state.lang];
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n');
+      if (dict[key]) el.textContent = dict[key];
+    });
+    document.querySelectorAll('[data-i18n-html]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n-html');
+      if (dict[key]) el.innerHTML = dict[key];
+    });
+    document.getElementById('langLabel').textContent = state.lang === 'zh' ? 'EN' : '中文';
+    var echo = document.getElementById('tuiLangEcho');
+    if (echo) echo.textContent = state.lang === 'zh' ? '简体中文' : 'EN';
+    try { localStorage.setItem('cap.docs.lang', state.lang); } catch (_) {}
+    renderFlowInspector();
+  }
+
+  function applyTheme(theme) {
+    state.theme = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', state.theme);
+    var sun = document.getElementById('themeIconSun');
+    var moon = document.getElementById('themeIconMoon');
+    var label = document.getElementById('themeLabel');
+    if (state.theme === 'dark') {
+      sun.style.display = 'inline';
+      moon.style.display = 'none';
+      label.textContent = 'Porcelain';
+    } else {
+      sun.style.display = 'none';
+      moon.style.display = 'inline';
+      label.textContent = 'Obsidian';
+    }
+    try { localStorage.setItem('cap.docs.theme', state.theme); } catch (_) {}
+  }
+
+  // Controls
+  document.getElementById('langToggle').addEventListener('click', function () {
+    applyLang(state.lang === 'en' ? 'zh' : 'en');
+  });
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    applyTheme(state.theme === 'dark' ? 'light' : 'dark');
+  });
+
+  // Showcase Tabs
+  document.querySelectorAll('.showcase-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var id = btn.getAttribute('data-panel');
+      document.querySelectorAll('.showcase-tab').forEach(function (b) { b.classList.remove('active'); });
+      document.querySelectorAll('.workbench-panel').forEach(function (p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      var target = document.getElementById('panel-' + id);
+      if (target) target.classList.add('active');
+    });
+  });
+
+  // Interactive Flows rows
+  document.querySelectorAll('.flow-row').forEach(function (row) {
+    row.addEventListener('click', function () {
+      document.querySelectorAll('.flow-row').forEach(function (r) { r.classList.remove('selected'); });
+      row.classList.add('selected');
+      state.flowIdx = parseInt(row.getAttribute('data-flow'), 10) || 0;
+      renderFlowInspector();
+    });
+  });
+
+  // Interactive TUI tabs
+  function renderTuiTab(tab) {
+    state.tuiTab = tab;
+    var el = document.getElementById('tuiTabBody');
+    if (el) el.textContent = TUI_TABS[tab] || TUI_TABS.overview;
+  }
+  document.querySelectorAll('.tui-tab-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.tui-tab-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      renderTuiTab(btn.getAttribute('data-tuitab'));
+    });
+  });
+
+  // Code Tabs & Copy
+  document.querySelectorAll('.code-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var key = btn.getAttribute('data-code');
+      document.querySelectorAll('.code-tab').forEach(function (b) { b.classList.remove('active'); });
+      document.querySelectorAll('.code-pane').forEach(function (p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      var pane = document.getElementById('code-' + key);
+      if (pane) pane.classList.add('active');
+    });
+  });
+
+  document.getElementById('copyCodeBtn').addEventListener('click', function () {
+    var active = document.querySelector('.code-pane.active code');
+    if (!active) return;
+    var text = active.textContent || '';
+    var btnSpan = this.querySelector('span');
+    var done = function () {
+      btnSpan.textContent = I18N[state.lang]['inst.copied'];
+      setTimeout(function () { btnSpan.textContent = I18N[state.lang]['inst.copy']; }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(done);
+    } else {
+      done();
+    }
+  });
+
+  // Initialize
+  applyTheme(detectTheme());
+  applyLang(detectLang());
+  renderTuiTab('overview');
+})();
 </script>
 </body>
 </html>

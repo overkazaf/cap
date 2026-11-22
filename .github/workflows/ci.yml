@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOCACHE: /tmp/cap-gocache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Vet and network-safe tests
+        run: make vet test
+      - name: Run local-network integration tests
+        run: |
+          go test -count=1 \
+            ./internal/proxy \
+            ./internal/replay \
+            ./internal/sequence \
+            ./internal/store \
+            ./internal/wailsgui
+      - name: Build CLI and verify embedded assets
+        run: make build
+
+  frontend:
+    name: Frontend and asset sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build and verify embedded assets
+        run: make asset-check
+
+  network-integration:
+    name: Integration extras
+    runs-on: ubuntu-latest
+    env:
+      GOCACHE: /tmp/cap-gocache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Run tool-dependent tests
+        run: CAP_SKIP_NETWORK=1 go test -count=1 ./internal/unpin
+
+  all:
+    name: CI required
+    needs: [go, frontend, network-integration]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Enforce job results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          success=$(printf '%s' "$RESULTS" | jq -e '[.[] | select(.result != "success")] | length == 0')
+          test "$success" = "true"

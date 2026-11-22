@@ -2,9 +2,11 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,8 +30,12 @@ type Engine struct {
 	mu      sync.RWMutex
 }
 
+var ErrEmptyName = errors.New("plugin: name is required")
+
 func NewEngine(dir string) (*Engine, error) {
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("plugin: create directory: %w", err)
+	}
 	e := &Engine{dir: dir, plugins: make(map[string]*Plugin)}
 	return e, e.loadAll()
 }
@@ -49,7 +55,12 @@ func (e *Engine) loadAll() error {
 		}
 		var p Plugin
 		if json.Unmarshal(data, &p) == nil && p.Name != "" {
-			e.plugins[p.Name] = &p
+			key := sanitizeName(p.Name)
+			if existing, exists := e.plugins[key]; exists && existing.Name != p.Name {
+				return fmt.Errorf("plugin: %q collides with %q on disk", p.Name, existing.Name)
+			}
+			stored := p
+			e.plugins[key] = &stored
 		}
 	}
 	return nil
@@ -59,43 +70,58 @@ func (e *Engine) List() []*Plugin {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	result := make([]*Plugin, 0, len(e.plugins))
-	for _, p := range e.plugins {
-		result = append(result, p)
+	for key, p := range e.plugins {
+		result = append(result, clonePlugin(p, key))
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
 }
 
 func (e *Engine) Get(name string) (*Plugin, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	p, ok := e.plugins[name]
+	key := sanitizeName(name)
+	p, ok := e.plugins[key]
 	if !ok {
 		return nil, fmt.Errorf("plugin %q not found", name)
 	}
-	return p, nil
+	return clonePlugin(p, key), nil
 }
 
 func (e *Engine) Save(p *Plugin) error {
+	if p == nil {
+		return errors.New("plugin: Save: plugin is nil")
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return ErrEmptyName
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	now := time.Now().Format(time.RFC3339)
-	if p.CreatedAt == "" {
-		p.CreatedAt = now
+	key := sanitizeName(p.Name)
+	if existing, exists := e.plugins[key]; exists && existing.Name != p.Name {
+		return fmt.Errorf("plugin: %q collides with %q on disk", p.Name, existing.Name)
 	}
-	p.UpdatedAt = now
 
-	data, err := json.MarshalIndent(p, "", "  ")
+	stored := clonePlugin(p, key)
+	now := time.Now().Format(time.RFC3339)
+	if stored.CreatedAt == "" {
+		stored.CreatedAt = now
+	}
+	stored.UpdatedAt = now
+
+	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	filename := sanitizeName(p.Name) + ".json"
+	filename := key + ".json"
 	if err := os.WriteFile(filepath.Join(e.dir, filename), data, 0644); err != nil {
 		return err
 	}
 
-	e.plugins[p.Name] = p
+	e.plugins[key] = stored
 	return nil
 }
 
@@ -103,26 +129,34 @@ func (e *Engine) Delete(name string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	filename := sanitizeName(name) + ".json"
+	key := sanitizeName(name)
+	filename := key + ".json"
 	os.Remove(filepath.Join(e.dir, filename))
-	delete(e.plugins, name)
+	delete(e.plugins, key)
 	return nil
 }
 
 func (e *Engine) Toggle(name string) error {
-	e.mu.RLock()
-	p, ok := e.plugins[name]
-	e.mu.RUnlock()
-
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	key := sanitizeName(name)
+	p, ok := e.plugins[key]
 	if !ok {
 		return fmt.Errorf("plugin %q not found", name)
 	}
 
-	e.mu.Lock()
-	p.Enabled = !p.Enabled
-	e.mu.Unlock()
-
-	return e.Save(p)
+	toggled := clonePlugin(p, key)
+	toggled.Enabled = !toggled.Enabled
+	toggled.UpdatedAt = time.Now().Format(time.RFC3339)
+	data, err := json.MarshalIndent(toggled, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, key+".json"), data, 0644); err != nil {
+		return err
+	}
+	e.plugins[key] = toggled
+	return nil
 }
 
 type ExecResult struct {
@@ -132,7 +166,8 @@ type ExecResult struct {
 
 func (e *Engine) RunAnalyzer(name string, flow *types.Flow) *ExecResult {
 	e.mu.RLock()
-	p, ok := e.plugins[name]
+	key := sanitizeName(name)
+	p, ok := e.plugins[key]
 	e.mu.RUnlock()
 
 	if !ok {
@@ -154,6 +189,14 @@ func (e *Engine) RunAnalyzer(name string, flow *types.Flow) *ExecResult {
 		flowJSON, _ := json.MarshalIndent(flow, "", "  ")
 		return &ExecResult{Output: fmt.Sprintf("Plugin: %s\n%s", p.Name, string(flowJSON))}
 	}
+}
+
+func clonePlugin(p *Plugin, name string) *Plugin {
+	clone := *p
+	if clone.Name == "" {
+		clone.Name = name
+	}
+	return &clone
 }
 
 func runRequestFilter(p *Plugin, flow *types.Flow) *ExecResult {

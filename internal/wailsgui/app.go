@@ -11,13 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/overkazaf/cap/internal/android"
+	"github.com/overkazaf/cap/internal/buildinfo"
 	"github.com/overkazaf/cap/internal/config"
 	"github.com/overkazaf/cap/internal/plugin"
 	"github.com/overkazaf/cap/internal/proxy"
 	"github.com/overkazaf/cap/internal/rules"
 	"github.com/overkazaf/cap/internal/store"
 	"github.com/overkazaf/cap/internal/types"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the Wails application binding, providing methods callable from
@@ -26,13 +27,14 @@ import (
 //   - flows_gui.go: flows, export, replay, analysis, sequences
 //   - device_gui.go: Android device, screen, RE tools, deep trace
 type App struct {
-	ctx      context.Context
-	store    store.Store
-	proxy    *proxy.Proxy
+	ctx         context.Context
+	store       store.Store
+	proxy       *proxy.Proxy
 	plugins     *plugin.Engine
 	rulesEngine *rules.Engine
+	events      *EventBus
 	mu          sync.Mutex
-	settings map[string]string
+	settings    map[string]string
 
 	flows      []*types.Flow
 	isRunning  bool
@@ -50,6 +52,12 @@ type App struct {
 	domainBlacklist []string
 	tlsErrors       map[string]int
 	tlsErrorsMu     sync.Mutex
+
+	deviceMu         sync.Mutex
+	connectedDevices map[string]*connectedDeviceSession
+	staleDevices     map[string]bool
+	monitorStop      chan struct{}
+	monitorRunning   bool
 }
 
 func NewApp(st store.Store) *App {
@@ -58,30 +66,42 @@ func NewApp(st store.Store) *App {
 	settingsFile := filepath.Join(capDir, "settings.json")
 	settings := loadSettings(settingsFile)
 	return &App{
-		store:       st,
-		certDir:     capDir,
-		plugins:     pluginEngine,
-		rulesEngine: rules.NewEngine(),
-		settings:    settings,
-		tlsErrors:   make(map[string]int),
+		store:            st,
+		certDir:          capDir,
+		plugins:          pluginEngine,
+		rulesEngine:      rules.NewEngine(),
+		events:           NewEventBus(),
+		settings:         settings,
+		tlsErrors:        make(map[string]int),
+		connectedDevices: make(map[string]*connectedDeviceSession),
+		staleDevices:     make(map[string]bool),
 	}
 }
 
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	a.events.SetEmitter(func(event string, data ...interface{}) {
+		runtime.EventsEmit(ctx, event, data...)
+	})
 	proxy.EnsureCA(a.certDir)
 }
 
 func (a *App) Shutdown(ctx context.Context) {
+	// Stop device monitor and clean up connected Android devices BEFORE
+	// stopping the proxy so Companion Guard receives a clean stop signal
+	// and phones are never left with stale proxy settings.
+	a.stopDeviceMonitor()
+	a.teardownAllDevices("app_shutdown")
+
 	a.mu.Lock()
-	if a.isRunning && a.proxy != nil {
-		a.proxy.Stop()
-	}
+	p := a.proxy
+	running := a.isRunning
+	a.isRunning = false
+	a.proxy = nil
 	a.mu.Unlock()
 
-	devices, _ := android.ListDevices()
-	for _, d := range devices {
-		android.Teardown(d.Serial)
+	if running && p != nil {
+		_ = p.Stop()
 	}
 }
 
@@ -238,5 +258,5 @@ func (a *App) GetHostIP() string {
 }
 
 func (a *App) GetVersion() string {
-	return "0.2.0"
+	return buildinfo.Version()
 }

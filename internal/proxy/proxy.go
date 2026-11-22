@@ -5,12 +5,10 @@
 package proxy
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -33,6 +31,11 @@ type Options struct {
 
 	// OnFlow is invoked once for every completed request/response pair.
 	OnFlow func(*types.Flow)
+
+	// OnStreamEvent is invoked while WebSocket or SSE traffic is relayed.
+	// Events are emitted as soon as a frame or a complete SSE event parses;
+	// callbacks must return promptly because they delay forwarding.
+	OnStreamEvent func(StreamEvent)
 
 	// RequestInterceptor is called before forwarding each request. It can
 	// modify the request or return a response to short-circuit (mock).
@@ -63,6 +66,16 @@ type Options struct {
 	// backends with self-signed or private-CA certificates, so this exists
 	// as an explicit opt-in for that case rather than a silent default.
 	InsecureSkipUpstreamVerify bool
+
+	// MaxBodyBytes bounds body data held in memory for each captured Flow.
+	// Larger bodies continue forwarding, but only this prefix is captured.
+	// It defaults to 1 MiB.
+	MaxBodyBytes int64
+
+	// MaxStreamPayloadBytes bounds a captured WebSocket frame or SSE event.
+	// Larger payloads forward intact and are reported with Truncated=true.
+	// It defaults to 256 KiB.
+	MaxStreamPayloadBytes int64
 }
 
 // Proxy is a MITM HTTP(S) proxy that captures every completed request/
@@ -98,6 +111,7 @@ func New(opts Options) (*Proxy, error) {
 	if opts.Addr == "" {
 		opts.Addr = "127.0.0.1:0"
 	}
+	normalizeLimits(&opts)
 
 	ln, err := net.Listen("tcp", opts.Addr)
 	if err != nil {
@@ -179,9 +193,9 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 	meta := &pendingFlow{start: time.Now()}
 
 	if req.Body != nil && req.Body != http.NoBody {
-		if body, err := io.ReadAll(req.Body); err == nil {
+		if body, replay, err := captureBody(req.Body, p.opts.MaxBodyBytes); err == nil {
 			meta.reqBody = body
-			req.Body = io.NopCloser(bytes.NewReader(body))
+			req.Body = replay
 		}
 	}
 
@@ -224,14 +238,6 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 		return resp
 	}
 
-	var respBody []byte
-	if resp.Body != nil {
-		if b, err := io.ReadAll(resp.Body); err == nil {
-			respBody = b
-			resp.Body = io.NopCloser(bytes.NewReader(b))
-		}
-	}
-
 	flow := &types.Flow{
 		ID:           fmt.Sprintf("f%d", p.idSeq.Add(1)),
 		Timestamp:    meta.start,
@@ -244,21 +250,45 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 		ReqBodyType:  req.Header.Get("Content-Type"),
 		Status:       resp.StatusCode,
 		RespHeaders:  flattenHeaders(resp.Header),
-		RespBody:     respBody,
+		RespBody:     nil,
 		RespBodyType: resp.Header.Get("Content-Type"),
 		LatencyMs:    time.Since(meta.start).Milliseconds(),
 	}
 
-	if p.opts.OnFlow != nil {
-		p.opts.OnFlow(flow)
-	}
-
-	// Apply response interceptor if set
+	// Apply the interceptor before wrapping the relay body so capture sees
+	// the response actually handed back to goproxy.
 	if p.opts.ResponseInterceptor != nil {
 		resp = p.opts.ResponseInterceptor(resp, ctx)
 	}
 
+	if isWebSocketUpgrade(resp) {
+		resp.Body = p.websocketBody(resp.Body, flow)
+		p.emitFlow(flow)
+		return resp
+	}
+
+	if isServerSentEvent(resp) && resp.Body != nil {
+		resp.Body = p.sseBody(resp.Body, flow)
+		p.emitFlow(flow)
+		return resp
+	}
+
+	if resp.Body != nil {
+		if body, replay, err := captureBody(resp.Body, p.opts.MaxBodyBytes); err == nil {
+			flow.RespBody = body
+			resp.Body = replay
+		}
+	}
+
+	p.emitFlow(flow)
+
 	return resp
+}
+
+func (p *Proxy) emitFlow(flow *types.Flow) {
+	if p.opts.OnFlow != nil {
+		p.opts.OnFlow(flow)
+	}
 }
 
 // flattenHeaders collapses an http.Header (map[string][]string) down to the

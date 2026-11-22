@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Cap Guard</string>
+    <string name="app_subtitle">MITM Proxy Watchdog &amp; Network Safety</string>
+
+    <string name="channel_active_name">Proxy Watchdog</string>
+    <string name="channel_active_desc">Shows when Cap Guard is actively protecting device proxy connectivity</string>
+    <string name="channel_events_name">Network Restore Alerts</string>
+    <string name="channel_events_desc">Notifies when device proxy settings are automatically cleared</string>
+
+    <string name="status_protected">PROTECTED</string>
+    <string name="status_idle">IDLE</string>
+    <string name="status_stale">PROXY SET (UNMANAGED)</string>
+
+    <string name="label_proxy_target">Active Proxy</string>
+    <string name="label_global_proxy">System Proxy</string>
+    <string name="label_mode">Capture Mode</string>
+    <string name="label_permission">Secure Settings Permission</string>
+    <string name="label_watchdog">Watchdog Heartbeat</string>
+    <string name="label_cert">CA Certificate</string>
+    <string name="label_last_cleanup">Last Auto-Restore</string>
+
+    <string name="mode_proxy">Wi-Fi Proxy</string>
+    <string name="mode_vpn">VPN / iptables</string>
+    <string name="value_none">None</string>
+    <string name="value_granted">Granted (ADB)</string>
+    <string name="value_missing_perm">Not granted — reconnect via Cap</string>
+    <string name="value_watchdog_running">Active (misses: %1$d/%2$d)</string>
+    <string name="value_watchdog_stopped">Stopped</string>
+    <string name="value_cert_ready">Ready at /sdcard/Download/cap-ca.crt</string>
+    <string name="value_cert_missing">Not pushed yet</string>
+
+    <string name="btn_restore_network">Disconnect &amp; Clean Proxy</string>
+    <string name="btn_install_cert">Install CA Certificate</string>
+    <string name="btn_refresh">Refresh Status</string>
+
+    <string name="notif_active_title">Cap Guard Active · %1$s</string>
+    <string name="notif_active_text">Monitoring %1$s · Auto-restores network on disconnect</string>
+    <string name="notif_action_restore">Restore Network</string>
+
+    <string name="notif_restored_title">Network Restored</string>
+    <string name="notif_restored_text">Proxy cleared automatically (%1$s). Normal internet access restored.</string>
+
+    <string name="reason_heartbeat">desktop host unreachable</string>
+    <string name="reason_usb">USB disconnected</string>
+    <string name="reason_manual">manual restore</string>
+    <string name="reason_stop">desktop session ended</string>
+    <string name="reason_boot">stale proxy cleared on boot</string>
+
+    <string name="toast_cleaned">Proxy cleared — network restored</string>
+    <string name="toast_clean_failed">Could not clear proxy (missing WRITE_SECURE_SETTINGS)</string>
+    <string name="toast_cert_not_found">CA cert file not found at /sdcard/Download/cap-ca.crt</string>
+    <string name="toast_cert_launched">Follow system prompt to install Cap MITM CA</string>
+    <string name="toast_cert_failed">Failed to launch certificate installer: %1$s</string>
+
+    <string name="footer_hint">Cap Guard monitors your desktop proxy and automatically clears Android proxy settings if USB unplugs, Wi-Fi drops, or Cap exits unexpectedly.</string>
+</resources>

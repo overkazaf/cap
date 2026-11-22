@@ -6,3 +6,5 @@
 .DS_Store
 .claude/worktrees/
 frontend/node_modules/
+android-companion/build/
+android-companion/*.keystore

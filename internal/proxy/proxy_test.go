@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/overkazaf/cap/internal/proxy"
 	"github.com/overkazaf/cap/internal/types"
 )
@@ -23,7 +25,7 @@ import (
 // OS-assigned port and a hermetic CertDir (so tests never touch the real
 // user's ~/.cap) when left unset. It returns the running proxy along with a
 // channel fed by OnFlow, and registers t.Cleanup to stop it.
-func startProxy(t *testing.T, opts proxy.Options) (*proxy.Proxy, <-chan *types.Flow) {
+func startProxy(t *testing.T, opts proxy.Options) (*proxy.Proxy, <-chan *types.Flow, <-chan proxy.StreamEvent) {
 	t.Helper()
 
 	if opts.Addr == "" {
@@ -34,12 +36,16 @@ func startProxy(t *testing.T, opts proxy.Options) (*proxy.Proxy, <-chan *types.F
 	}
 
 	flows := make(chan *types.Flow, 16)
+	streamEvents := make(chan proxy.StreamEvent, 64)
 	userOnFlow := opts.OnFlow
 	opts.OnFlow = func(f *types.Flow) {
 		flows <- f
 		if userOnFlow != nil {
 			userOnFlow(f)
 		}
+	}
+	opts.OnStreamEvent = func(event proxy.StreamEvent) {
+		streamEvents <- event
 	}
 
 	p, err := proxy.New(opts)
@@ -59,12 +65,12 @@ func startProxy(t *testing.T, opts proxy.Options) (*proxy.Proxy, <-chan *types.F
 		<-done
 	})
 
-	return p, flows
+	return p, flows, streamEvents
 }
 
 // startTestProxy is startProxy with default options — the common case of
 // plain HTTP capture tests that don't need any special proxy configuration.
-func startTestProxy(t *testing.T) (*proxy.Proxy, <-chan *types.Flow) {
+func startTestProxy(t *testing.T) (*proxy.Proxy, <-chan *types.Flow, <-chan proxy.StreamEvent) {
 	t.Helper()
 	return startProxy(t, proxy.Options{})
 }
@@ -96,6 +102,17 @@ func awaitFlow(t *testing.T, flows <-chan *types.Flow) *types.Flow {
 	}
 }
 
+func awaitStreamEvent(t *testing.T, events <-chan proxy.StreamEvent) proxy.StreamEvent {
+	t.Helper()
+	select {
+	case event := <-events:
+		return event
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for stream event")
+		return proxy.StreamEvent{}
+	}
+}
+
 func TestProxyCapturesGetRequest(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -104,7 +121,7 @@ func TestProxyCapturesGetRequest(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p, flows := startTestProxy(t)
+	p, flows, _ := startTestProxy(t)
 	client := proxyClient(t, p)
 
 	resp, err := client.Get(backend.URL + "/api/test")
@@ -156,7 +173,7 @@ func TestProxyCapturesRequestHeadersAndBody(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p, flows := startTestProxy(t)
+	p, flows, _ := startTestProxy(t)
 	client := proxyClient(t, p)
 
 	const reqBody = `{"username":"neo"}`
@@ -220,7 +237,7 @@ func TestProxyCapturesHTTPSRequest(t *testing.T) {
 	// backend uses httptest's self-signed cert; tell the proxy not to reject
 	// it when connecting upstream (see the Options.InsecureSkipUpstreamVerify
 	// doc).
-	p, flows := startProxy(t, proxy.Options{InsecureSkipUpstreamVerify: true})
+	p, flows, _ := startProxy(t, proxy.Options{InsecureSkipUpstreamVerify: true})
 
 	client := proxyClient(t, p)
 	// The MITM leaf certificate is signed by cap's own CA, which this test
@@ -266,7 +283,7 @@ func TestProxyAssignsSequentialFlowIDs(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	p, flows := startTestProxy(t)
+	p, flows, _ := startTestProxy(t)
 	client := proxyClient(t, p)
 
 	for i := 0; i < 2; i++ {
@@ -286,6 +303,155 @@ func TestProxyAssignsSequentialFlowIDs(t *testing.T) {
 	}
 	if f2.ID != "f2" {
 		t.Errorf("second flow ID = %q, want f2", f2.ID)
+	}
+}
+
+func TestProxyCapturesWebSocketUpgradeAndFrames(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		for {
+			messageType, payload, err := connection.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := connection.WriteMessage(messageType, append([]byte("echo: "), payload...)); err != nil {
+				return
+			}
+		}
+	}))
+	defer backend.Close()
+
+	p, flows, events := startTestProxy(t)
+	proxyURL, err := url.Parse("http://" + p.Addr())
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+
+	dialer := websocket.Dialer{
+		NetDial: func(network, address string) (net.Conn, error) {
+			return net.Dial(network, address)
+		},
+		Proxy: http.ProxyURL(proxyURL),
+	}
+	websocketURL := strings.Replace(backend.URL, "http://", "ws://", 1) + "/stream"
+	connection, _, err := dialer.Dial(websocketURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket through proxy: %v", err)
+	}
+	defer connection.Close()
+
+	if err := connection.WriteMessage(websocket.TextMessage, []byte("hello")); err != nil {
+		t.Fatalf("write websocket message: %v", err)
+	}
+	_, payload, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket response: %v", err)
+	}
+	if string(payload) != "echo: hello" {
+		t.Fatalf("websocket payload = %q, want echo: hello", payload)
+	}
+
+	flow := awaitFlow(t, flows)
+	if flow.Status != http.StatusSwitchingProtocols {
+		t.Errorf("flow status = %d, want 101", flow.Status)
+	}
+
+	first := awaitStreamEvent(t, events)
+	second := awaitStreamEvent(t, events)
+	if first.Direction != proxy.StreamDirectionClientServer || first.Opcode != "text" || string(first.Payload) != "hello" {
+		t.Errorf("client frame = %+v", first)
+	}
+	if second.Direction != proxy.StreamDirectionServerClient || second.Opcode != "text" || string(second.Payload) != "echo: hello" {
+		t.Errorf("server frame = %+v", second)
+	}
+	if first.FlowID != flow.ID || second.FlowID != flow.ID {
+		t.Errorf("stream flow IDs (%q, %q) do not match flow %q", first.FlowID, second.FlowID, flow.ID)
+	}
+}
+
+func TestProxyCapturesSSEEventsWhileRelaying(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher := w.(http.Flusher)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: first\ndata: alpha\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "id: 42\ndata: beta\n\n")
+		flusher.Flush()
+	}))
+	defer backend.Close()
+
+	p, flows, events := startTestProxy(t)
+	client := proxyClient(t, p)
+
+	request, err := http.NewRequest(http.MethodGet, backend.URL+"/events", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET SSE through proxy: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read SSE response: %v", err)
+	}
+	wantBody := "event: first\ndata: alpha\n\nid: 42\ndata: beta\n\n"
+	if string(body) != wantBody {
+		t.Fatalf("SSE body = %q, want %q", body, wantBody)
+	}
+
+	awaitFlow(t, flows)
+	first := awaitStreamEvent(t, events)
+	second := awaitStreamEvent(t, events)
+	if first.Event != "first" || string(first.Payload) != "alpha" {
+		t.Errorf("first event = %+v", first)
+	}
+	if second.LastEventID != "42" || string(second.Payload) != "beta" {
+		t.Errorf("second event = %+v", second)
+	}
+}
+
+func TestProxyBodyCaptureIsBounded(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Write(bytes.Repeat([]byte("z"), 64))
+	}))
+	defer backend.Close()
+
+	p, flows, _ := startProxy(t, proxy.Options{MaxBodyBytes: 8})
+	client := proxyClient(t, p)
+	request, err := http.NewRequest(http.MethodPost, backend.URL+"/upload", bytes.NewReader(bytes.Repeat([]byte("a"), 64)))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST through proxy: %v", err)
+	}
+	gotResponse, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if len(gotResponse) != 64 {
+		t.Fatalf("response length = %d, want 64", len(gotResponse))
+	}
+
+	flow := awaitFlow(t, flows)
+	if string(flow.ReqBody) != "aaaaaaaa" {
+		t.Errorf("captured request body = %q, want eight-byte prefix", flow.ReqBody)
+	}
+	if string(flow.RespBody) != "zzzzzzzz" {
+		t.Errorf("captured response body = %q, want eight-byte prefix", flow.RespBody)
 	}
 }
 

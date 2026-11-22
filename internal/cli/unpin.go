@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/overkazaf/cap/internal/android"
+	"github.com/overkazaf/cap/internal/i18n"
 	"github.com/overkazaf/cap/internal/unpin"
 )
 
@@ -45,10 +46,10 @@ Examples:
 
 func newUnpinFridaCmd() *cobra.Command {
 	var (
-		serial  string
-		pkg     string
-		spawn   bool
-		dryRun  bool
+		serial string
+		pkg    string
+		spawn  bool
+		dryRun bool
 	)
 
 	cmd := &cobra.Command{
@@ -68,26 +69,45 @@ implementations at runtime. Covers:
   - TrustKit, Appcelerator, Cordova
   - NetworkSecurityConfig / PinSet`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+			styled := isStyledWriter(out)
+			th := cliTheme(styled)
+
+			mode := "attach"
+			if spawn {
+				mode = "spawn"
+			}
+			if dryRun {
+				mode += " (dry-run)"
+			}
+			if styled {
+				printSectionHeader(out, th, i18n.T("cli.unpin.frida.title"), fmt.Sprintf("%s · %s", pkg, mode))
+			}
+
 			opts := unpin.FridaOptions{
 				Serial:  serial,
 				Package: pkg,
 				Spawn:   spawn,
 			}
 
+			var (
+				r   *unpin.Result
+				err error
+			)
 			if dryRun {
-				r, err := unpin.FridaUnpin(opts)
-				if err != nil {
-					return err
-				}
-				fmt.Println(r.Message)
-				return nil
+				r, err = unpin.FridaUnpin(opts)
+			} else {
+				r, err = unpin.FridaSpawn(opts)
 			}
-
-			r, err := unpin.FridaSpawn(opts)
 			if err != nil {
 				return err
 			}
-			fmt.Println(r.Message)
+
+			if styled {
+				printSuccessBadge(out, th, r.Message)
+			} else {
+				fmt.Fprintln(out, r.Message)
+			}
 			return nil
 		},
 	}
@@ -116,6 +136,14 @@ that trusts both system and user CA certificates, rebuild and sign.
 Requires: apktool, keytool (JDK), and optionally zipalign + apksigner.
 Does not require root on the device.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+			styled := isStyledWriter(out)
+			th := cliTheme(styled)
+
+			if styled {
+				printSectionHeader(out, th, i18n.T("cli.unpin.patch.title"), apkPath)
+			}
+
 			r, err := unpin.PatchAPK(unpin.PatchOptions{
 				APKPath:   apkPath,
 				OutputDir: outputDir,
@@ -123,7 +151,11 @@ Does not require root on the device.`,
 			if err != nil {
 				return err
 			}
-			fmt.Println(r.Message)
+			if styled {
+				printSuccessBadge(out, th, r.Message)
+			} else {
+				fmt.Fprintln(out, r.Message)
+			}
 			return nil
 		},
 	}
@@ -150,22 +182,38 @@ certificate without needing per-app patching.
 
 Requires: rooted device with Magisk. Reboot after install.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+			styled := isStyledWriter(out)
+			th := cliTheme(styled)
+
+			action := i18n.T("cli.unpin.magisk.deploy")
 			if remove {
-				r, err := unpin.MagiskUnpinRemove(serial)
-				if err != nil {
-					return err
-				}
-				fmt.Println(r.Message)
-				return nil
+				action = i18n.T("cli.unpin.magisk.remove")
+			}
+			if styled {
+				printSectionHeader(out, th, i18n.T("cli.unpin.magisk.title"), action)
 			}
 
-			r, err := unpin.MagiskUnpin(unpin.MagiskOptions{
-				Serial: serial,
-			})
+			var (
+				r   *unpin.Result
+				err error
+			)
+			if remove {
+				r, err = unpin.MagiskUnpinRemove(serial)
+			} else {
+				r, err = unpin.MagiskUnpin(unpin.MagiskOptions{
+					Serial: serial,
+				})
+			}
 			if err != nil {
 				return err
 			}
-			fmt.Println(r.Message)
+
+			if styled {
+				printSuccessBadge(out, th, r.Message)
+			} else {
+				fmt.Fprintln(out, r.Message)
+			}
 			return nil
 		},
 	}
@@ -198,19 +246,20 @@ the app's characteristics and search accordingly.
 
 Use --download to fetch a specific script by its slug.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
 			// Mode 1: Download a specific script
 			if download != "" {
-				return runCodeShareDownload(download)
+				return runCodeShareDownload(out, download)
 			}
 
 			// Mode 2: Direct keyword search
 			if query != "" {
-				return runCodeShareSearch(query)
+				return runCodeShareSearch(out, query)
 			}
 
 			// Mode 3: Auto-detect from device/APK
 			if pkg != "" {
-				return runCodeShareAuto(serial, pkg, apkPath)
+				return runCodeShareAuto(out, serial, pkg, apkPath)
 			}
 
 			return fmt.Errorf("provide --pkg, --query, or --download")
@@ -226,85 +275,152 @@ Use --download to fetch a specific script by its slug.`,
 	return cmd
 }
 
-func runCodeShareSearch(query string) error {
+func runCodeShareSearch(out io.Writer, query string) error {
+	styled := isStyledWriter(out)
+	th := cliTheme(styled)
+
 	client := unpin.NewCodeShareClient()
 	results, err := client.Search(query)
 	if err != nil {
 		return err
 	}
 	if len(results) == 0 {
-		fmt.Printf("No results for %q\n", query)
+		fmt.Fprintf(out, "No results for %q\n", query)
 		return nil
 	}
-	fmt.Printf("Found %d script(s) for %q:\n\n", len(results), query)
-	for i, e := range results {
-		fmt.Printf("  %d. %s\n", i+1, e.Title)
-		if e.Author != "" {
-			fmt.Printf("     Author: %s", e.Author)
-		}
-		if e.Likes != "" {
-			fmt.Printf("  Likes: %s", e.Likes)
-		}
-		if e.Views != "" {
-			fmt.Printf("  Views: %s", e.Views)
-		}
-		fmt.Println()
-		if e.Description != "" {
-			fmt.Printf("     %s\n", e.Description)
-		}
-		fmt.Printf("     Slug: %s\n", e.Slug)
-		fmt.Println()
+	if styled {
+		printSectionHeader(out, th, i18n.T("cli.unpin.cs.title"), i18n.T("cli.unpin.cs.found", len(results), query))
+		fmt.Fprintln(out)
+	} else {
+		fmt.Fprintf(out, "Found %d script(s) for %q:\n\n", len(results), query)
 	}
-	fmt.Println("Download a script: cap unpin codeshare --download <slug>")
+
+	for i, e := range results {
+		if styled {
+			fmt.Fprintf(out, "  %s %s\n", th.Bold(th.Accent, fmt.Sprintf("%2d.", i+1)), th.Bold(th.FgPrimary, e.Title))
+			var meta []string
+			if e.Author != "" {
+				meta = append(meta, "Author: "+e.Author)
+			}
+			if e.Likes != "" {
+				meta = append(meta, "Likes: "+e.Likes)
+			}
+			if e.Views != "" {
+				meta = append(meta, "Views: "+e.Views)
+			}
+			if len(meta) > 0 {
+				fmt.Fprintf(out, "      %s\n", th.Fg(th.FgMuted, strings.Join(meta, "  ·  ")))
+			}
+			if e.Description != "" {
+				fmt.Fprintf(out, "      %s\n", th.Fg(th.FgSecondary, e.Description))
+			}
+			fmt.Fprintf(out, "      %s %s\n\n", th.Fg(th.FgMuted, "Slug:"), th.Fg(th.Info, e.Slug))
+		} else {
+			fmt.Fprintf(out, "  %d. %s\n", i+1, e.Title)
+			if e.Author != "" {
+				fmt.Fprintf(out, "     Author: %s", e.Author)
+			}
+			if e.Likes != "" {
+				fmt.Fprintf(out, "  Likes: %s", e.Likes)
+			}
+			if e.Views != "" {
+				fmt.Fprintf(out, "  Views: %s", e.Views)
+			}
+			fmt.Fprintln(out)
+			if e.Description != "" {
+				fmt.Fprintf(out, "     %s\n", e.Description)
+			}
+			fmt.Fprintf(out, "     Slug: %s\n\n", e.Slug)
+		}
+	}
+
+	if styled {
+		printHint(out, th, i18n.T("cli.unpin.cs.dl_hint"))
+	} else {
+		fmt.Fprintln(out, "Download a script: cap unpin codeshare --download <slug>")
+	}
 	return nil
 }
 
-func runCodeShareDownload(slug string) error {
+func runCodeShareDownload(out io.Writer, slug string) error {
+	styled := isStyledWriter(out)
+	th := cliTheme(styled)
+
 	scriptPath, err := unpin.DownloadScript(slug, "")
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Script saved to %s\n", scriptPath)
-	fmt.Printf("Run: frida -l %s -f <package>\n", scriptPath)
+	if styled {
+		printSuccessBadge(out, th, i18n.T("cli.unpin.cs.saved", scriptPath))
+		printHint(out, th, i18n.T("cli.unpin.cs.run_hint", scriptPath))
+	} else {
+		fmt.Fprintf(out, "Script saved to %s\n", scriptPath)
+		fmt.Fprintf(out, "Run: frida -l %s -f <package>\n", scriptPath)
+	}
 	return nil
 }
 
-func runCodeShareAuto(serial, pkg, apkPath string) error {
-	fmt.Printf("[cap] Fingerprinting %s...\n", pkg)
+func runCodeShareAuto(out io.Writer, serial, pkg, apkPath string) error {
+	styled := isStyledWriter(out)
+	th := cliTheme(styled)
+
+	if styled {
+		printSectionHeader(out, th, i18n.T("cli.unpin.cs.auto_title"), pkg)
+		printInfoBadge(out, th, i18n.T("cli.unpin.cs.finger", pkg))
+	} else {
+		fmt.Fprintf(out, "[cap] Fingerprinting %s...\n", pkg)
+	}
 
 	var soFiles, classes []string
-
 	if apkPath != "" {
-		// Fingerprint from local APK using trace.APKInfo
 		soFiles, classes = fingerprintLocalAPK(apkPath)
 	} else {
-		// Fingerprint from device
 		soFiles, classes = fingerprintFromDevice(serial, pkg)
 	}
 
 	fp := unpin.BuildFingerprint(pkg, soFiles, classes)
 
-	// Print detected characteristics
-	if len(fp.Frameworks) > 0 {
-		fmt.Printf("[cap] Frameworks:  %s\n", join(fp.Frameworks))
-	}
-	if len(fp.Pinning) > 0 {
-		fmt.Printf("[cap] Pinning:     %s\n", join(fp.Pinning))
-	}
-	if len(fp.Security) > 0 {
-		fmt.Printf("[cap] Security:    %s\n", join(fp.Security))
+	if styled {
+		if len(fp.Frameworks) > 0 {
+			fmt.Fprintf(out, "  %s %s\n", th.Fg(th.FgMuted, "Frameworks:"), th.Fg(th.Info, join(fp.Frameworks)))
+		}
+		if len(fp.Pinning) > 0 {
+			fmt.Fprintf(out, "  %s %s\n", th.Fg(th.FgMuted, "Pinning:   "), th.Fg(th.Warn, join(fp.Pinning)))
+		}
+		if len(fp.Security) > 0 {
+			fmt.Fprintf(out, "  %s %s\n", th.Fg(th.FgMuted, "Security:  "), th.Fg(th.Danger, join(fp.Security)))
+		}
+	} else {
+		if len(fp.Frameworks) > 0 {
+			fmt.Fprintf(out, "[cap] Frameworks:  %s\n", join(fp.Frameworks))
+		}
+		if len(fp.Pinning) > 0 {
+			fmt.Fprintf(out, "[cap] Pinning:     %s\n", join(fp.Pinning))
+		}
+		if len(fp.Security) > 0 {
+			fmt.Fprintf(out, "[cap] Security:    %s\n", join(fp.Security))
+		}
 	}
 
 	queries := fp.TopSearchQueries(5)
-	fmt.Printf("[cap] Searching CodeShare with %d queries...\n", len(queries))
+	if styled {
+		printInfoBadge(out, th, i18n.T("cli.unpin.cs.searching", len(queries)))
+	} else {
+		fmt.Fprintf(out, "[cap] Searching CodeShare with %d queries...\n", len(queries))
+	}
 
 	results, err := unpin.SearchForApp(fp)
 	if err != nil {
 		return err
 	}
 	if len(results) == 0 {
-		fmt.Println("[cap] No matching scripts found on CodeShare")
-		fmt.Println("[cap] Try cap's built-in unpinning: cap unpin frida --pkg " + pkg)
+		if styled {
+			fmt.Fprintln(out, "  "+th.Fg(th.FgMuted, i18n.T("cli.unpin.cs.no_match")))
+			printHint(out, th, i18n.T("cli.unpin.cs.fallback", pkg))
+		} else {
+			fmt.Fprintln(out, "[cap] No matching scripts found on CodeShare")
+			fmt.Fprintln(out, "[cap] Try cap's built-in unpinning: cap unpin frida --pkg "+pkg)
+		}
 		return nil
 	}
 
@@ -312,21 +428,32 @@ func runCodeShareAuto(serial, pkg, apkPath string) error {
 	if len(results) < limit {
 		limit = len(results)
 	}
-	fmt.Printf("\nTop %d matching script(s):\n\n", limit)
+	fmt.Fprintf(out, "\n%s\n\n", i18n.T("cli.unpin.cs.top_matches", limit))
 	for i := 0; i < limit; i++ {
 		e := results[i]
-		fmt.Printf("  %d. %s\n", i+1, e.Title)
-		if e.Description != "" {
-			fmt.Printf("     %s\n", e.Description)
+		if styled {
+			fmt.Fprintf(out, "  %s %s\n", th.Bold(th.Accent, fmt.Sprintf("%2d.", i+1)), th.Bold(th.FgPrimary, e.Title))
+			if e.Description != "" {
+				fmt.Fprintf(out, "      %s\n", th.Fg(th.FgSecondary, e.Description))
+			}
+			fmt.Fprintf(out, "      %s %s\n\n", th.Fg(th.FgMuted, "Slug:"), th.Fg(th.Info, e.Slug))
+		} else {
+			fmt.Fprintf(out, "  %d. %s\n", i+1, e.Title)
+			if e.Description != "" {
+				fmt.Fprintf(out, "     %s\n", e.Description)
+			}
+			fmt.Fprintf(out, "     Slug: %s\n\n", e.Slug)
 		}
-		fmt.Printf("     Slug: %s\n\n", e.Slug)
 	}
-	fmt.Println("Download: cap unpin codeshare --download <slug>")
+	if styled {
+		printHint(out, th, "Download: cap unpin codeshare --download <slug>")
+	} else {
+		fmt.Fprintln(out, "Download: cap unpin codeshare --download <slug>")
+	}
 	return nil
 }
 
 func fingerprintLocalAPK(apkPath string) (soFiles, classes []string) {
-	// Use archive/zip to list SO files and scan DEX for class names
 	r, err := openZip(apkPath)
 	if err != nil {
 		return
@@ -338,7 +465,6 @@ func fingerprintLocalAPK(apkPath string) (soFiles, classes []string) {
 			soFiles = append(soFiles, f.Name)
 		}
 		if hasSuffix(f.Name, ".dex") {
-			// Scan DEX for known class name patterns
 			rc, err := f.Open()
 			if err != nil {
 				continue
@@ -348,7 +474,6 @@ func fingerprintLocalAPK(apkPath string) (soFiles, classes []string) {
 			if err != nil {
 				continue
 			}
-			// Look for class signatures in DEX bytes
 			for _, pattern := range []string{
 				"okhttp3/CertificatePinner",
 				"trustkit",
@@ -372,7 +497,6 @@ func fingerprintLocalAPK(apkPath string) (soFiles, classes []string) {
 }
 
 func fingerprintFromDevice(serial, pkg string) (soFiles, classes []string) {
-	// Get native libs from device
 	out, err := androidShell(serial, fmt.Sprintf("pm path %s", pkg))
 	if err != nil {
 		return
@@ -394,13 +518,11 @@ func fingerprintFromDevice(serial, pkg string) (soFiles, classes []string) {
 		}
 	}
 
-	// Scan running app's loaded classes via grep on dex data
 	dexOut, _ := androidShell(serial, fmt.Sprintf("cat /proc/$(pidof %s)/maps 2>/dev/null | grep dex | head -5", pkg))
 	if dexOut != "" {
 		classes = append(classes, "runtime-loaded")
 	}
 
-	// Check for common framework indicators
 	checks := map[string]string{
 		"flutter":      fmt.Sprintf("ls %s/lib/*/libflutter.so 2>/dev/null", apkPath),
 		"react-native": fmt.Sprintf("ls %s/lib/*/libreactnativejni.so 2>/dev/null || ls %s/lib/*/libhermes.so 2>/dev/null", apkPath, apkPath),
@@ -432,12 +554,12 @@ func containsBytes(data, pattern []byte) bool {
 	return bytes.Contains(data, pattern)
 }
 
-func splitLines(s string) []string     { return strings.Split(s, "\n") }
-func hasPrefix(s, p string) bool       { return strings.HasPrefix(strings.TrimSpace(s), p) }
-func hasSuffix(s, p string) bool       { return strings.HasSuffix(strings.TrimSpace(s), p) }
-func trimPrefix(s, p string) string    { return strings.TrimPrefix(strings.TrimSpace(s), p) }
-func trimSpace(s string) string        { return strings.TrimSpace(s) }
-func join(ss []string) string          { return strings.Join(ss, ", ") }
+func splitLines(s string) []string  { return strings.Split(s, "\n") }
+func hasPrefix(s, p string) bool    { return strings.HasPrefix(strings.TrimSpace(s), p) }
+func hasSuffix(s, p string) bool    { return strings.HasSuffix(strings.TrimSpace(s), p) }
+func trimPrefix(s, p string) string { return strings.TrimPrefix(strings.TrimSpace(s), p) }
+func trimSpace(s string) string     { return strings.TrimSpace(s) }
+func join(ss []string) string       { return strings.Join(ss, ", ") }
 
 func newUnpinScriptCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -445,7 +567,7 @@ func newUnpinScriptCmd() *cobra.Command {
 		Short: "Print the raw Frida unpinning script to stdout",
 		Long:  "Output the JavaScript source of cap's built-in SSL unpinning script, for use with frida -l or custom tooling.",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Print(unpin.GetFridaScript())
+			fmt.Fprint(cmd.OutOrStdout(), unpin.GetFridaScript())
 		},
 	}
 	return cmd

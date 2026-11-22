@@ -1,0 +1,292 @@
+/* ==========================================================================
+   cap Design System — Base Tokens, Reset, Typography & Utility Classes
+   ========================================================================== */
+
+:root {
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", "Cascadia Code", ui-monospace, Menlo, Monaco, Consolas, monospace;
+
+  /* Type scale */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --font-size: 13px;
+
+  /* Line heights */
+  --leading-tight: 1.25;
+  --leading-normal: 1.45;
+  --leading-relaxed: 1.6;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Layout metrics */
+  --topbar-height: 42px;
+  --statusbar-height: 26px;
+  --sidebar-width-compact: 58px;
+  --sidebar-width-expanded: 196px;
+
+  /* Transitions */
+  --transition-fast: 120ms cubic-bezier(0.2, 0, 0, 1);
+  --transition-base: 180ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* Z-index layers */
+  --z-base: 1;
+  --z-sticky: 20;
+  --z-dropdown: 60;
+  --z-modal: 100;
+  --z-palette: 140;
+  --z-toast: 180;
+
+  /* Default Obsidian Dark fallback tokens (overridden dynamically by theme.js) */
+  --bg-app: #0b0c10;
+  --bg-sidebar: #0e1015;
+  --bg-header: #101218;
+  --bg-surface: #13151c;
+  --bg-elevated: #191c25;
+  --bg-input: #0d0f14;
+  --bg-hover: #1b1e28;
+  --bg-active: #1e2536;
+  --bg-subtle: rgba(255, 255, 255, 0.04);
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  --text-primary: #eceef4;
+  --text-secondary: #a8b0c0;
+  --text-muted: #767f92;
+  --text-faint: #4d5566;
+  --text-inverse: #0b0c10;
+
+  --accent: #38bdf8;
+  --accent-hover: #5ccbfa;
+  --accent-soft: rgba(56, 189, 248, 0.14);
+  --accent-border: rgba(56, 189, 248, 0.36);
+  --focus-ring: 0 0 0 2px rgba(56, 189, 248, 0.35);
+
+  --status-success: #34d399;
+  --status-success-bg: rgba(52, 211, 153, 0.13);
+  --status-success-border: rgba(52, 211, 153, 0.32);
+
+  --status-info: #60a5fa;
+  --status-info-bg: rgba(96, 165, 250, 0.13);
+  --status-info-border: rgba(96, 165, 250, 0.32);
+
+  --status-warning: #fbbf24;
+  --status-warning-bg: rgba(251, 191, 36, 0.13);
+  --status-warning-border: rgba(251, 191, 36, 0.32);
+
+  --status-danger: #f87171;
+  --status-danger-bg: rgba(248, 113, 113, 0.13);
+  --status-danger-border: rgba(248, 113, 113, 0.32);
+
+  --status-purple: #c084fc;
+  --status-purple-bg: rgba(192, 132, 252, 0.13);
+  --status-purple-border: rgba(192, 132, 252, 0.32);
+
+  /* HTTP Method semantics */
+  --method-get: #34d399;
+  --method-post: #38bdf8;
+  --method-put: #fb923c;
+  --method-patch: #c084fc;
+  --method-delete: #f87171;
+  --method-options: #94a3b8;
+  --method-ws: #2dd4bf;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.65);
+
+  /* Backward-compatible aliases */
+  --bg: var(--bg-app);
+  --bg-panel: var(--bg-surface);
+  --bg-selected: var(--bg-active);
+  --bg-btn: var(--bg-elevated);
+  --border: var(--border-default);
+  --fg: var(--text-primary);
+  --fg-muted: var(--text-secondary);
+  --fg-dim: var(--text-muted);
+  --fg-faint: var(--text-faint);
+  --fg-ghost: var(--text-faint);
+  --accent-bg: var(--accent-soft);
+  --green: var(--status-success);
+  --red: var(--status-danger);
+  --orange: var(--method-put);
+  --yellow: var(--status-warning);
+  --purple: var(--status-purple);
+  --success-bg: var(--status-success-bg);
+  --success-border: var(--status-success-border);
+  --danger-bg: var(--status-danger-bg);
+  --danger-border: var(--status-danger-border);
+  --sidebar-bg: var(--bg-sidebar);
+  --scrollbar: rgba(255, 255, 255, 0.14);
+  --scrollbar-hover: rgba(255, 255, 255, 0.26);
+  --selection: rgba(56, 189, 248, 0.28);
+  --terminal-fg: #34d399;
+  --terminal-bg: #090a0e;
+}
+
+/* Global Reset & Base */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--font-size);
+  line-height: var(--leading-normal);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+pre,
+kbd,
+.mono,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+/* Refined Scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Accessible Focus Rings */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+/* Shared Commercial Input / Card Utility Primitives */
+.cap-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.cap-input {
+  height: 30px;
+  padding: 0 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.cap-input::placeholder {
+  color: var(--text-faint);
+}
+
+.cap-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.cap-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.cap-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes cap-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
+@keyframes cap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

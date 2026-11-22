@@ -2,13 +2,14 @@ package cli
 
 import (
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/overkazaf/cap/internal/export/agent"
 	"github.com/overkazaf/cap/internal/export/codegen"
+	"github.com/overkazaf/cap/internal/i18n"
 	"github.com/overkazaf/cap/internal/store"
 	"github.com/overkazaf/cap/internal/types"
 )
@@ -31,11 +32,12 @@ func newExportCmd() *cobra.Command {
 			}
 			defer st.Close()
 
+			out := cmd.OutOrStdout()
 			switch format {
 			case "agent":
-				return runExportAgent(st, flowID)
+				return runExportAgent(out, st, flowID)
 			case "code", "":
-				return runExportCode(st, flowID, lang)
+				return runExportCode(out, st, flowID, lang)
 			default:
 				return fmt.Errorf("unknown --format %q (want code or agent)", format)
 			}
@@ -52,8 +54,8 @@ func newExportCmd() *cobra.Command {
 
 // runExportAgent implements `cap export --format agent`: the named flow (if
 // --flow is set) or every stored flow is rendered as compact JSONL via
-// agent.Format and written to stdout.
-func runExportAgent(st store.Store, flowID string) error {
+// agent.Format and written cleanly to out (always uncolored for piping).
+func runExportAgent(out io.Writer, st store.Store, flowID string) error {
 	var flows []*types.Flow
 
 	if flowID != "" {
@@ -70,20 +72,20 @@ func runExportAgent(st store.Store, flowID string) error {
 		}
 	}
 
-	out, err := agent.Format(flows, agent.FormatOptions{})
+	data, err := agent.Format(flows, agent.FormatOptions{})
 	if err != nil {
 		return fmt.Errorf("format flows: %w", err)
 	}
 
-	_, err = os.Stdout.Write(out)
+	_, err = out.Write(data)
 	return err
 }
 
 // runExportCode implements `cap export --format code` (the default):
 // --flow is required, and the referenced flow is rendered via
-// codegen.Generate. lang "all" prints every supported language, each under
-// a "--- LANG ---" header.
-func runExportCode(st store.Store, flowID, lang string) error {
+// codegen.Generate. Single-language output stays 100% raw runnable code so
+// piping (e.g. `| sh` or `| pbcopy`) works seamlessly.
+func runExportCode(out io.Writer, st store.Store, flowID, lang string) error {
 	if flowID == "" {
 		return fmt.Errorf("--flow is required for code export")
 	}
@@ -94,20 +96,35 @@ func runExportCode(st store.Store, flowID, lang string) error {
 	}
 
 	if lang == "all" {
+		styled := isStyledWriter(out)
+		th := cliTheme(styled)
+		if styled {
+			printSectionHeader(out, th, i18n.T("cli.export.title"), fmt.Sprintf("%s %s (%s)", flow.Method, flow.Path, flow.ID))
+			fmt.Fprintln(out)
+		}
 		for _, l := range codegen.Languages() {
-			out, err := codegen.Generate(flow, l)
+			code, err := codegen.Generate(flow, l)
 			if err != nil {
 				return fmt.Errorf("generate %s: %w", l, err)
 			}
-			fmt.Printf("--- %s ---\n%s\n\n", strings.ToUpper(l), out)
+			if styled {
+				fmt.Fprintf(out, "%s %s %s\n%s\n\n",
+					th.Fg(th.BorderMuted, "───"),
+					th.Bold(th.Accent, strings.ToUpper(l)),
+					th.Fg(th.BorderMuted, strings.Repeat("─", 48)),
+					strings.TrimRight(code, "\n"),
+				)
+			} else {
+				fmt.Fprintf(out, "--- %s ---\n%s\n\n", strings.ToUpper(l), code)
+			}
 		}
 		return nil
 	}
 
-	out, err := codegen.Generate(flow, lang)
+	code, err := codegen.Generate(flow, lang)
 	if err != nil {
 		return fmt.Errorf("generate %s: %w", lang, err)
 	}
-	fmt.Print(out)
+	fmt.Fprint(out, code)
 	return nil
 }

@@ -1,0 +1,61 @@
+LOCAL_TEST_PACKAGES := \
+	github.com/overkazaf/cap/internal/buildinfo \
+	github.com/overkazaf/cap/internal/android \
+	github.com/overkazaf/cap/internal/cli \
+	github.com/overkazaf/cap/internal/capture \
+	github.com/overkazaf/cap/internal/compare \
+	github.com/overkazaf/cap/internal/config \
+	github.com/overkazaf/cap/internal/context \
+	github.com/overkazaf/cap/internal/export/agent \
+	github.com/overkazaf/cap/internal/export/codegen \
+	github.com/overkazaf/cap/internal/grouping \
+	github.com/overkazaf/cap/internal/importer \
+	github.com/overkazaf/cap/internal/plugin \
+	github.com/overkazaf/cap/internal/proto \
+	github.com/overkazaf/cap/internal/rules \
+	github.com/overkazaf/cap/internal/sign \
+	github.com/overkazaf/cap/internal/stats \
+	github.com/overkazaf/cap/internal/store/sqlite \
+	github.com/overkazaf/cap/internal/trace \
+	github.com/overkazaf/cap/internal/types
+
+DIST_PLATFORMS := \
+	darwin/amd64 \
+	darwin/arm64 \
+	linux/amd64 \
+	linux/arm64 \
+	windows/amd64
+
+dist: asset-check
+	@set -eu; \
+	mkdir -p $(DIST_DIR)/release; \
+	for platform in $(DIST_PLATFORMS); do \
+		os=$${platform%/*}; arch=$${platform#*/}; \
+		echo "==> building $(VERSION) for $$os/$$arch"; \
+		bin=cap; exe=cap; \
+		if [ "$$os" = "windows" ]; then exe=cap.exe; fi; \
+		out=$(DIST_DIR)/release/$$exe; \
+		case "$$os/$$arch" in \
+			darwin/*) cgo=1; build_tags='$(WAILS_TAGS)'; cgo_ldflags="$${CGO_LDFLAGS:+$${CGO_LDFLAGS} }-framework UniformTypeIdentifiers" ;; \
+			*) cgo=0; build_tags=''; cgo_ldflags="$${CGO_LDFLAGS:-}" ;; \
+		esac; \
+		if [ -n "$$build_tags" ]; then \
+			CGO_ENABLED=$$cgo CGO_LDFLAGS="$$cgo_ldflags" GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -tags "$$build_tags" -ldflags '$(LD_FLAGS)' -o $$out ./cmd/cap; \
+		else \
+			CGO_ENABLED=$$cgo GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags '$(LD_FLAGS)' -o $$out ./cmd/cap; \
+		fi; \
+		if [ "$$os" = "linux" ] && [ "$$arch" = "arm64" ]; then \
+			$(GO) build -trimpath -ldflags '$(LD_FLAGS)' -o $(DIST_DIR)/release/cap-redir ./cmd/cap-redir; \
+		fi; \
+		if [ "$$os" = "windows" ]; then \
+			zip -j $(DIST_DIR)/release/cap-$(VERSION)-$$os-$$arch.zip $$out; \
+		else \
+			tar -czf $(DIST_DIR)/release/cap-$(VERSION)-$$os-$$arch.tar.gz -C $(DIST_DIR)/release $$exe; \
+		fi; \
+		rm -f $$out; \
+	done; \
+	if [ -f $(DIST_DIR)/release/cap-redir ]; then \
+		tar -czf $(DIST_DIR)/release/cap-redir-$(VERSION)-linux-arm64.tar.gz -C $(DIST_DIR)/release cap-redir; \
+		rm -f $(DIST_DIR)/release/cap-redir; \
+	fi; \
+	cd $(DIST_DIR)/release && shasum -a 256 * > SHA256SUMS

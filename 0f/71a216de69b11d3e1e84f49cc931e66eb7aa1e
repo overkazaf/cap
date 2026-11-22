@@ -1,0 +1,49 @@
+LICENSE
+  a31f4f10ea3bf2b5 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8-ntes.10",
+  "base_commit_sha": "0f71a216de69b11d3e1e84f49cc931e66eb7aa1e",
+  "prompts": {
+    "a31f4f10ea3bf2b5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1feb8-8fda-7420-8d0a-b79bdcf6b73e",
+        "model": "group/gpt-dynamic-router"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 24,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "LICENSE": {
+          "accepted_lines": 21
+        },
+        "README.md": {
+          "accepted_lines": 3
+        }
+      }
+    },
+    "e4bf929c396eb614": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "255d2a81-4cb4-4f07-b0ad-b5e4053f281b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "nongjiawu",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 10,
+      "overriden_lines": 0,
+      "per_file_stats": {
+        "README.md": {
+          "accepted_lines": 10
+        }
+      }
+    }
+  }
+}

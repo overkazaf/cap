@@ -96,6 +96,7 @@ type StepCallback func(step string, detail string)
 // empty) and tool defaults found on PATH.
 type Options struct {
 	Serial     string // adb device serial; empty uses the default/only device
+	ADBPath    string // adb binary path/name; empty tries "adb" on PATH
 	APKPath    string // pre-pulled APK path; empty pulls from device via Serial+Package
 	JadxPath   string // jadx binary path/name; empty tries "jadx" on PATH
 	R2Path     string // radare2 binary path/name; empty tries "r2" on PATH
@@ -107,6 +108,7 @@ type Options struct {
 	R2Timeout     time.Duration // max time allowed per radare2 invocation; <=0 defaults to 45 seconds
 	MaxDexMatches int           // cap on how many DexMatch results are returned; <=0 defaults to 50
 	SearchTerms   []string      // extra terms to search for, alongside those derived from the flow
+	ForceRefresh  bool          // bypass cached pulled APK and cached jadx output
 }
 
 // StepResult is one entry in TraceResult.Steps: a record of one pipeline
@@ -337,6 +339,18 @@ func searchDexStrings(apkPath string, searchTerms []string) ([]DexMatch, error) 
 // A cap matters because a short, generic search term can otherwise match
 // an unbounded number of unrelated strings in a large multi-DEX app.
 func searchDexStringsLimit(apkPath string, searchTerms []string, maxMatches int) ([]DexMatch, error) {
+	return searchDexStringsContext(context.Background(), apkPath, searchTerms, maxMatches, nil)
+}
+
+type dexProgressFunc func(dexName string, idx, total, matches int)
+
+func searchDexStringsContext(ctx context.Context, apkPath string, searchTerms []string, maxMatches int, onDex dexProgressFunc) ([]DexMatch, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	terms := significantTerms(searchTerms)
 	if len(terms) == 0 {
 		return nil, nil
@@ -352,16 +366,21 @@ func searchDexStringsLimit(apkPath string, searchTerms []string, maxMatches int)
 	defer zr.Close()
 
 	dexFiles := filterAndSortDexFiles(zr.File)
+	total := len(dexFiles)
 
 	var matches []DexMatch
-	for _, f := range dexFiles {
+	for idx, f := range dexFiles {
+		if err := ctx.Err(); err != nil {
+			return matches, err
+		}
 		if len(matches) >= maxMatches {
 			break
 		}
+		if onDex != nil {
+			onDex(f.Name, idx+1, total, len(matches))
+		}
 		data, err := readZipFile(f)
 		if err != nil {
-			// One unreadable DEX entry shouldn't sink the whole search --
-			// keep whatever other DEX files yield.
 			continue
 		}
 
@@ -379,6 +398,9 @@ func searchDexStringsLimit(apkPath string, searchTerms []string, maxMatches int)
 				Context: neighborStrings(runs, i, dexContextWindow),
 				DexFile: f.Name,
 			})
+		}
+		if onDex != nil {
+			onDex(f.Name, idx+1, total, len(matches))
 		}
 	}
 	return matches, nil
@@ -1104,22 +1126,45 @@ const maxEnclosingMethodLookback = 60
 // that also declares a native method or calls System.loadLibrary is
 // flagged CallsNative with those names collected into NativeMethods.
 func searchJavaSource(jadxDir string, searchTerms []string) []JavaRef {
+	refs, _ := searchJavaSourceContext(context.Background(), jadxDir, searchTerms, nil)
+	return refs
+}
+
+type javaProgressFunc func(scanned, hits int)
+
+func searchJavaSourceContext(ctx context.Context, jadxDir string, searchTerms []string, onProgress javaProgressFunc) ([]JavaRef, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	terms := significantTerms(searchTerms)
 	if len(terms) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var refs []JavaRef
-	_ = filepath.Walk(jadxDir, func(path string, fi os.FileInfo, err error) error {
+	scanned := 0
+	lastEmit := time.Now()
+	walkErr := filepath.Walk(jadxDir, func(path string, fi os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil || fi == nil || fi.IsDir() || !strings.HasSuffix(path, ".java") {
 			return nil
 		}
+		scanned++
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil // one unreadable file shouldn't sink the whole walk
 		}
 		content := string(data)
 		if !containsAnyTerm(content, terms) {
+			if onProgress != nil && (scanned%200 == 0 || time.Since(lastEmit) >= 400*time.Millisecond) {
+				lastEmit = time.Now()
+				onProgress(scanned, len(refs))
+			}
 			return nil
 		}
 
@@ -1170,9 +1215,16 @@ func searchJavaSource(jadxDir string, searchTerms []string) []JavaRef {
 
 			refs = append(refs, ref)
 		}
+		if onProgress != nil && (scanned%200 == 0 || time.Since(lastEmit) >= 400*time.Millisecond) {
+			lastEmit = time.Now()
+			onProgress(scanned, len(refs))
+		}
 		return nil
 	})
-	return refs
+	if walkErr != nil && ctx.Err() != nil {
+		return refs, ctx.Err()
+	}
+	return refs, nil
 }
 
 // firstMatchingTerm returns the first of terms found in line, or "" if
@@ -1361,7 +1413,8 @@ type r2DisasmResult struct {
 // by a functions array, with no separator between them (aa itself is
 // silent) -- read as a sequential JSON stream rather than one document.
 func decodeR2Analysis(output []byte) ([]r2StringEntry, []r2FunctionEntry, error) {
-	dec := json.NewDecoder(bytes.NewReader(output))
+	trimmed := skipNonJSONPrefix(output)
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
 
 	var strs []r2StringEntry
 	if err := dec.Decode(&strs); err != nil {
@@ -1369,9 +1422,39 @@ func decodeR2Analysis(output []byte) ([]r2StringEntry, []r2FunctionEntry, error)
 	}
 	var funcs []r2FunctionEntry
 	if err := dec.Decode(&funcs); err != nil {
+		// Some r2 builds emit warning text between izzj and aflj; try
+		// recovering if another JSON array follows in the remainder.
+		rem, _ := io.ReadAll(dec.Buffered())
+		if rest := skipNonJSONPrefix(rem); len(rest) > 0 && rest[0] == '[' {
+			if err2 := json.NewDecoder(bytes.NewReader(rest)).Decode(&funcs); err2 == nil {
+				return strs, funcs, nil
+			}
+		}
 		return nil, nil, fmt.Errorf("decode aflj output: %w", err)
 	}
 	return strs, funcs, nil
+}
+
+// skipNonJSONPrefix advances past any leading non-JSON banner lines (such as
+// radare2 warnings) to the first plausible JSON array start ("[]" or "[{").
+func skipNonJSONPrefix(b []byte) []byte {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 {
+		return b
+	}
+	for i := 0; i < len(b); i++ {
+		if b[i] != '[' {
+			continue
+		}
+		j := i + 1
+		for j < len(b) && (b[j] == ' ' || b[j] == '\t' || b[j] == '\r' || b[j] == '\n') {
+			j++
+		}
+		if j < len(b) && (b[j] == '{' || b[j] == ']') {
+			return b[i:]
+		}
+	}
+	return b
 }
 
 // nativeInterestingKeyword matches crypto- and signature-related
@@ -1584,17 +1667,30 @@ func collectImportNames(funcs []r2FunctionEntry) []string {
 // be run or its output can't be decoded -- "nothing interesting found" is
 // a normal, non-error empty result.
 func analyzeNative(r2Path, soFile string, knownMethods, searchTerms []string, timeout time.Duration) ([]NativeRef, error) {
+	return analyzeNativeContext(context.Background(), r2Path, soFile, knownMethods, searchTerms, timeout)
+}
+
+func analyzeNativeContext(parent context.Context, r2Path, soFile string, knownMethods, searchTerms []string, timeout time.Duration) ([]NativeRef, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	if timeout <= 0 {
 		timeout = defaultR2Timeout
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, r2Path, "-q", "-c", "izzj; aa; aflj", soFile)
-	boundCommandWait(cmd, timeout)
+	configureCancellableCmd(cmd)
 	out, err := cmd.Output()
 	if err != nil {
+		if parent.Err() != nil {
+			return nil, parent.Err()
+		}
 		return nil, fmt.Errorf("r2 %s: %w", filepath.Base(soFile), err)
 	}
 
@@ -1604,25 +1700,31 @@ func analyzeNative(r2Path, soFile string, knownMethods, searchTerms []string, ti
 	}
 
 	disasm := func(funcName string) []string {
-		return disassembleCalls(r2Path, soFile, funcName, timeout)
+		return disassembleCallsContext(parent, r2Path, soFile, funcName, timeout)
 	}
 	return buildNativeRefs(filepath.Base(soFile), strs, funcs, knownMethods, searchTerms, disasm), nil
 }
 
-// disassembleCalls runs `r2 -q -c "aa; pdfj @ funcName" soFile` and
-// extracts the symbols it calls. Any failure (bad funcName, r2 error,
-// timeout) simply yields no calls rather than an error -- this only ever
-// enriches a NativeRef that's already valid without it.
 func disassembleCalls(r2Path, soFile, funcName string, timeout time.Duration) []string {
+	return disassembleCallsContext(context.Background(), r2Path, soFile, funcName, timeout)
+}
+
+func disassembleCallsContext(parent context.Context, r2Path, soFile, funcName string, timeout time.Duration) []string {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if parent.Err() != nil {
+		return nil
+	}
 	if timeout <= 0 {
 		timeout = defaultR2Timeout
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, r2Path, "-q", "-c", fmt.Sprintf("aa; pdfj @ %s", funcName), soFile)
-	boundCommandWait(cmd, timeout)
+	configureCancellableCmd(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -1860,6 +1962,25 @@ func generateMermaid(edges []CallEdge) string {
 // TraceResult.Steps, in order -- the first call is always step "start",
 // the last is always "done".
 func Trace(flow *types.Flow, opts Options, onStep StepCallback) (*TraceResult, error) {
+	var progressCb ProgressCallback
+	if onStep != nil {
+		progressCb = func(ev ProgressEvent) {
+			if ev.Step != nil {
+				onStep(ev.Step.Name, ev.Step.Detail)
+			}
+		}
+	}
+	return TraceContext(context.Background(), flow, opts, progressCb)
+}
+
+// TraceContext runs DeepTrace with real-time structured progress across all 8
+// pipeline stages, full context.Context cancellation (terminating external adb,
+// jadx, and r2 subprocesses promptly), split-APK native library support, and
+// APK-fingerprinted caching (bypassable via Options.ForceRefresh).
+func TraceContext(ctx context.Context, flow *types.Flow, opts Options, onProgress ProgressCallback) (*TraceResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if flow == nil {
 		flow = &types.Flow{}
 	}
@@ -1874,30 +1995,76 @@ func Trace(flow *types.Flow, opts Options, onStep StepCallback) (*TraceResult, e
 		Package: opts.Package,
 	}
 
-	report := func(name, status, detail string, dur time.Duration) {
-		if onStep != nil {
-			onStep(name, detail)
-		}
-		result.Steps = append(result.Steps, StepResult{Name: name, Status: status, Detail: detail, Duration: dur.Milliseconds()})
+	tracker := newProgressTracker(onProgress)
+
+	syncCounts := func() {
+		tracker.setCounts(len(result.DexStrings), len(result.JavaTrace), len(result.NativeTrace), len(result.CallGraph))
 	}
 
-	report("start", "ok", fmt.Sprintf("tracing %s %s", flow.Method, flow.URL), 0)
+	// recordStep appends to result.Steps AND emits a ProgressEvent carrying Step.
+	recordStep := func(stage string, stageIdx, pct int, stepName, status, detail string, dur time.Duration) {
+		syncCounts()
+		sr := StepResult{
+			Name:     stepName,
+			Status:   status,
+			Detail:   detail,
+			Duration: dur.Milliseconds(),
+		}
+		result.Steps = append(result.Steps, sr)
+		stepCopy := sr
+		tracker.emit(stage, stageIdx, pct, status, detail, sr.Duration, &stepCopy)
+	}
 
+	// emitLive sends an intermediate running progress update without adding a duplicate StepResult.
+	emitLive := func(stage string, stageIdx, pct int, detail string) {
+		syncCounts()
+		tracker.emit(stage, stageIdx, pct, "running", detail, 0, nil)
+	}
+
+	cancelFinish := func(stage string, stageIdx int) (*TraceResult, error) {
+		result.CallGraph = buildCallGraph(flow, result.JavaTrace, result.NativeTrace)
+		result.Mermaid = generateMermaid(result.CallGraph)
+		result.Summary = generateSummary(result)
+		recordStep(StageDone, stageIdx, tracker.lastPct, "done", "cancelled", "trace cancelled", 0)
+		return result, ctx.Err()
+	}
+
+	// Stage 1: Preflight (0% -> 5%)
+	tStart := time.Now()
+	recordStep(StagePreflight, 1, 2, "start", "ok", fmt.Sprintf("tracing %s %s", flow.Method, flow.URL), 0)
+
+	if err := ctx.Err(); err != nil {
+		return cancelFinish(StagePreflight, 1)
+	}
 	if err := os.MkdirAll(opts.OutputDir, 0o755); err != nil {
-		report("done", "error", err.Error(), 0)
+		recordStep(StageDone, 1, 5, "done", "error", err.Error(), time.Since(tStart))
 		result.Summary = generateSummary(result)
 		return result, fmt.Errorf("create output dir %s: %w", opts.OutputDir, err)
 	}
 
+	// Stage 2: APK Pull / Resolve (5% -> 15%)
+	emitLive(StageAPKPull, 2, 6, "resolving APK source...")
 	t0 := time.Now()
-	apkPath, apkErr := resolveAPKPath(opts)
+	apkPath, splitPaths, apkCached, apkErr := resolveAPKPathsContext(ctx, opts, func(msg string) {
+		emitLive(StageAPKPull, 2, 10, msg)
+	})
+	if ctx.Err() != nil {
+		return cancelFinish(StageAPKPull, 2)
+	}
 	switch {
 	case apkPath != "":
-		report("resolve_apk", "ok", apkPath, time.Since(t0))
+		detail := apkPath
+		if apkCached {
+			detail += " (cached)"
+		}
+		if len(splitPaths) > 0 {
+			detail += fmt.Sprintf(" +%d ABI split(s)", len(splitPaths))
+		}
+		recordStep(StageAPKPull, 2, 15, "resolve_apk", "ok", detail, time.Since(t0))
 	case apkErr != nil:
-		report("resolve_apk", "error", apkErr.Error(), time.Since(t0))
+		recordStep(StageAPKPull, 2, 15, "resolve_apk", "error", apkErr.Error(), time.Since(t0))
 	default:
-		report("resolve_apk", "skip", "no APK path or package provided", time.Since(t0))
+		recordStep(StageAPKPull, 2, 15, "resolve_apk", "skip", "no APK path or package provided", time.Since(t0))
 	}
 	result.APKPath = apkPath
 
@@ -1908,154 +2075,410 @@ func Trace(flow *types.Flow, opts Options, onStep StepCallback) (*TraceResult, e
 		}
 		result.CallGraph = buildCallGraph(flow, nil, nil)
 		result.Mermaid = generateMermaid(result.CallGraph)
-		report("done", "error", err.Error(), 0)
+		recordStep(StageDone, 2, 100, "done", "error", err.Error(), 0)
 		result.Summary = generateSummary(result)
 		return result, err
 	}
 
-	searchTerms := collectSearchTerms(flow, opts.SearchTerms)
-
-	// Strategy 2: APK / manifest inspection.
-	t0 = time.Now()
-	if info, err := extractAPKInfo(apkPath); err != nil {
-		report("apk_info", "error", err.Error(), time.Since(t0))
-	} else {
-		result.APKInfo = info
-		result.ToolsUsed = append(result.ToolsUsed, "apk_info")
-		report("apk_info", "ok", summarizeAPKInfo(info), time.Since(t0))
+	// Optional unpack hook (cancellable).
+	if opts.UnpackPath != "" {
+		emitLive(StageAPKPull, 2, 15, "running unpack tool...")
+		if unpacked, err := runUnpackContext(ctx, opts.UnpackPath, apkPath, opts.OutputDir); err == nil && unpacked != "" {
+			apkPath = unpacked
+			result.APKPath = apkPath
+		}
+		if ctx.Err() != nil {
+			return cancelFinish(StageAPKPull, 2)
+		}
 	}
 
-	// Strategy 1: DEX string search.
+	searchTerms := collectSearchTerms(flow, opts.SearchTerms)
+
+	// Stage 3: APK / Manifest Inspection (15% -> 22%)
+	emitLive(StageAPKInspect, 3, 17, "inspecting APK manifest, DEX, and native libraries...")
 	t0 = time.Now()
-	if matches, err := searchDexStringsLimit(apkPath, searchTerms, opts.MaxDexMatches); err != nil {
-		report("dex_search", "error", err.Error(), time.Since(t0))
+	if info, err := extractAPKInfoWithSplits(apkPath, splitPaths); err != nil {
+		recordStep(StageAPKInspect, 3, 22, "apk_info", "error", err.Error(), time.Since(t0))
+	} else {
+		result.APKInfo = info
+		if result.Package == "" && info.Package != "" {
+			result.Package = info.Package
+		}
+		result.ToolsUsed = append(result.ToolsUsed, "apk_info")
+		recordStep(StageAPKInspect, 3, 22, "apk_info", "ok", summarizeAPKInfo(info), time.Since(t0))
+	}
+
+	if ctx.Err() != nil {
+		return cancelFinish(StageAPKInspect, 3)
+	}
+
+	// Stage 4: DEX String Search (22% -> 38%)
+	emitLive(StageDEXSearch, 4, 23, "scanning DEX files for flow signatures...")
+	t0 = time.Now()
+	matches, dexErr := searchDexStringsContext(ctx, apkPath, searchTerms, opts.MaxDexMatches, func(dexName string, idx, total, hitCount int) {
+		pct := 23
+		if total > 0 {
+			pct = 23 + (idx*14)/total
+		}
+		tracker.setCounts(hitCount, 0, 0, 0)
+		tracker.emit(StageDEXSearch, 4, pct, "running", fmt.Sprintf("Scanning %s (%d/%d) — %d hit(s)", dexName, idx, total, hitCount), 0, nil)
+	})
+	if ctx.Err() != nil {
+		result.DexStrings = matches
+		return cancelFinish(StageDEXSearch, 4)
+	}
+	if dexErr != nil {
+		recordStep(StageDEXSearch, 4, 38, "dex_search", "error", dexErr.Error(), time.Since(t0))
 	} else {
 		result.DexStrings = matches
 		if len(matches) > 0 {
 			result.ToolsUsed = append(result.ToolsUsed, "dex_search")
 		}
-		report("dex_search", "ok", fmt.Sprintf("%d match(es)", len(matches)), time.Since(t0))
+		recordStep(StageDEXSearch, 4, 38, "dex_search", "ok", fmt.Sprintf("%d match(es)", len(matches)), time.Since(t0))
 	}
 
-	// Strategy 3: jadx decompilation (skipped gracefully if unavailable).
+	// Stage 5 & 6: jadx Decompile (38% -> 78%) & Java Search (78% -> 88%)
 	jadxPath := opts.JadxPath
 	if jadxPath == "" {
 		jadxPath = "jadx"
 	}
+	emitLive(StageJadxDecompile, 5, 39, "checking jadx availability...")
 	t0 = time.Now()
-	if version, ok := toolVersion(jadxPath, defaultToolCheckTimeout, "--version"); ok {
-		report("jadx_check", "ok", version, time.Since(t0))
+	if version, ok := toolVersionContext(ctx, jadxPath, defaultToolCheckTimeout, "--version"); ok {
+		recordStep(StageJadxDecompile, 5, 40, "jadx_check", "ok", version, time.Since(t0))
 
-		jadxDir := filepath.Join(opts.OutputDir, "jadx-output")
+		jadxDir := resolveJadxOutDir(opts.OutputDir, apkPath)
+		emitLive(StageJadxDecompile, 5, 41, "starting jadx decompilation...")
 		t0 = time.Now()
-		if err := decompileJadx(jadxPath, apkPath, jadxDir, opts.JadxTimeout); err != nil {
-			report("jadx_decompile", "error", err.Error(), time.Since(t0))
-		} else {
-			report("jadx_decompile", "ok", jadxDir, time.Since(t0))
-
-			t0 = time.Now()
-			refs := searchJavaSource(jadxDir, searchTerms)
-			result.JavaTrace = refs
-			if len(refs) > 0 {
-				result.ToolsUsed = append(result.ToolsUsed, "jadx")
+		jadxRes, jadxErr := decompileJadxContext(ctx, jadxPath, apkPath, jadxDir, opts.JadxTimeout, opts.ForceRefresh, func(jpct int, detail string) {
+			pct := tracker.lastPct
+			if jpct >= 0 {
+				pct = 41 + (jpct*36)/100
 			}
-			report("java_search", "ok", fmt.Sprintf("%d source location(s)", len(refs)), time.Since(t0))
+			emitLive(StageJadxDecompile, 5, pct, detail)
+		})
+		if ctx.Err() != nil {
+			return cancelFinish(StageJadxDecompile, 5)
+		}
+		if jadxErr != nil {
+			recordStep(StageJadxDecompile, 5, 78, "jadx_decompile", "error", jadxErr.Error(), time.Since(t0))
+			emitLive(StageJavaSearch, 6, 88, "skipped java search (jadx failed)")
+		} else {
+			detail := jadxRes.OutDir
+			switch {
+			case jadxRes.Cached:
+				detail = fmt.Sprintf("reused cache (%d .java files)", jadxRes.JavaFiles)
+			case jadxRes.Partial:
+				detail = fmt.Sprintf("decompiled with warnings (%d .java files)", jadxRes.JavaFiles)
+			case jadxRes.JavaFiles > 0:
+				detail = fmt.Sprintf("decompiled %d .java files", jadxRes.JavaFiles)
+			}
+			recordStep(StageJadxDecompile, 5, 78, "jadx_decompile", "ok", detail, time.Since(t0))
+
+			// Stage 6: Java source search
+			emitLive(StageJavaSearch, 6, 79, "searching decompiled Java source...")
+			t0 = time.Now()
+			refs, javaErr := searchJavaSourceContext(ctx, jadxDir, searchTerms, func(scanned, hits int) {
+				tracker.setCounts(len(result.DexStrings), hits, 0, 0)
+				pct := 79 + min(8, scanned/150)
+				tracker.emit(StageJavaSearch, 6, pct, "running", fmt.Sprintf("Scanned %d Java files (%d hit(s))", scanned, hits), 0, nil)
+			})
+			if ctx.Err() != nil {
+				result.JavaTrace = refs
+				return cancelFinish(StageJavaSearch, 6)
+			}
+			if javaErr != nil {
+				recordStep(StageJavaSearch, 6, 88, "java_search", "error", javaErr.Error(), time.Since(t0))
+			} else {
+				result.JavaTrace = refs
+				if len(refs) > 0 {
+					result.ToolsUsed = append(result.ToolsUsed, "jadx")
+				}
+				recordStep(StageJavaSearch, 6, 88, "java_search", "ok", fmt.Sprintf("%d source location(s)", len(refs)), time.Since(t0))
+			}
 		}
 	} else {
-		report("jadx_check", "skip", "jadx not found (set Options.JadxPath, or install it on PATH)", time.Since(t0))
+		if ctx.Err() != nil {
+			return cancelFinish(StageJadxDecompile, 5)
+		}
+		recordStep(StageJadxDecompile, 5, 78, "jadx_check", "skip", "jadx not found (set Options.JadxPath, or install it on PATH)", time.Since(t0))
+		tracker.emit(StageJavaSearch, 6, 88, "skip", "skipped (jadx unavailable)", 0, nil)
 	}
 
-	// Strategy 4: radare2 native analysis (skipped gracefully if unavailable).
+	// Stage 7: Native .so Analysis via radare2 (88% -> 96%)
 	r2Path := opts.R2Path
 	if r2Path == "" {
 		r2Path = "r2"
 	}
+	emitLive(StageNative, 7, 89, "checking radare2 availability...")
 	t0 = time.Now()
-	if version, ok := toolVersion(r2Path, defaultToolCheckTimeout, "-v"); ok {
-		report("r2_check", "ok", version, time.Since(t0))
+	if version, ok := toolVersionContext(ctx, r2Path, defaultToolCheckTimeout, "-v"); ok {
+		recordStep(StageNative, 7, 90, "r2_check", "ok", version, time.Since(t0))
 
 		t0 = time.Now()
-		soFiles, err := extractSOFilesTo(apkPath, filepath.Join(opts.OutputDir, "lib"))
+		libDir := filepath.Join(opts.OutputDir, "lib")
+		soFiles, err := extractSOFilesWithSplits(apkPath, splitPaths, libDir)
 		switch {
 		case err != nil:
-			report("native_analysis", "error", err.Error(), time.Since(t0))
+			recordStep(StageNative, 7, 96, "native_analysis", "error", err.Error(), time.Since(t0))
 		case len(soFiles) == 0:
-			report("native_analysis", "skip", "no .so files found in APK", time.Since(t0))
+			recordStep(StageNative, 7, 96, "native_analysis", "skip", "no .so files found in APK", time.Since(t0))
 		default:
 			knownMethods := collectNativeMethodNames(result.JavaTrace)
-			for _, so := range soFiles {
-				t1 := time.Now()
-				refs, err := analyzeNative(r2Path, so, knownMethods, searchTerms, opts.R2Timeout)
+			for i, so := range soFiles {
+				if ctx.Err() != nil {
+					return cancelFinish(StageNative, 7)
+				}
 				base := filepath.Base(so)
+				pct := 90 + ((i + 1) * 5 / max(1, len(soFiles)))
+				emitLive(StageNative, 7, pct, fmt.Sprintf("Analyzing %s (%d/%d)...", base, i+1, len(soFiles)))
+
+				t1 := time.Now()
+				refs, err := analyzeNativeContext(ctx, r2Path, so, knownMethods, searchTerms, opts.R2Timeout)
+				if ctx.Err() != nil {
+					return cancelFinish(StageNative, 7)
+				}
 				if err != nil {
-					report("native_analysis", "error", base+": "+err.Error(), time.Since(t1))
+					recordStep(StageNative, 7, pct, "native_analysis", "error", base+": "+err.Error(), time.Since(t1))
 					continue
 				}
 				result.NativeTrace = append(result.NativeTrace, refs...)
-				report("native_analysis", "ok", fmt.Sprintf("%s: %d finding(s)", base, len(refs)), time.Since(t1))
+				recordStep(StageNative, 7, pct, "native_analysis", "ok", fmt.Sprintf("%s: %d finding(s)", base, len(refs)), time.Since(t1))
 			}
 			if len(result.NativeTrace) > 0 {
 				result.ToolsUsed = append(result.ToolsUsed, "radare2")
 			}
 		}
 	} else {
-		report("r2_check", "skip", "r2 not found (set Options.R2Path, or install it on PATH)", time.Since(t0))
+		if ctx.Err() != nil {
+			return cancelFinish(StageNative, 7)
+		}
+		recordStep(StageNative, 7, 96, "r2_check", "skip", "r2 not found (set Options.R2Path, or install it on PATH)", time.Since(t0))
 	}
 
+	// Stage 8: Call Graph & Mermaid Synthesis (96% -> 100%)
+	emitLive(StageGraphBuild, 8, 97, "building call graph and Mermaid diagram...")
 	result.CallGraph = buildCallGraph(flow, result.JavaTrace, result.NativeTrace)
 	result.Mermaid = generateMermaid(result.CallGraph)
 	result.Summary = generateSummary(result)
-	report("done", "ok", "trace complete", 0)
+	syncCounts()
+	tracker.emit(StageGraphBuild, 8, 99, "ok", fmt.Sprintf("%d edge(s)", len(result.CallGraph)), 0, nil)
+	recordStep(StageDone, 8, 100, "done", "ok", "trace complete", 0)
 
 	return result, nil
+}
+
+// resolveJadxOutDir returns an APK-fingerprinted decompilation cache directory
+// under outputDir so tracing different apps never silently reuses another app's
+// stale jadx output.
+func resolveJadxOutDir(outputDir, apkPath string) string {
+	fp, err := computeAPKFingerprint(apkPath)
+	if err != nil || fp.Key == "" {
+		return filepath.Join(outputDir, "jadx-output")
+	}
+	return filepath.Join(outputDir, "jadx-"+fp.Key)
+}
+
+// resolveAPKPathsContext resolves the local base APK (plus optional ABI split
+// APKs when pulling from an Android App Bundle device installation).
+func resolveAPKPathsContext(ctx context.Context, opts Options, onStatus func(string)) (basePath string, splitPaths []string, cached bool, err error) {
+	if opts.APKPath != "" {
+		if _, statErr := os.Stat(opts.APKPath); statErr != nil {
+			return "", nil, false, fmt.Errorf("local APK %s: %w", opts.APKPath, statErr)
+		}
+		return opts.APKPath, nil, false, nil
+	}
+	if opts.Package == "" {
+		return "", nil, false, nil
+	}
+	adbBin := opts.ADBPath
+	if adbBin == "" {
+		adbBin = "adb"
+	}
+	return pullAPKContext(ctx, adbBin, opts.Serial, opts.Package, opts.OutputDir, opts.ForceRefresh, onStatus)
+}
+
+func pullAPKContext(ctx context.Context, adbBin, serial, pkg, outDir string, forceRefresh bool, onStatus func(string)) (basePath string, splitPaths []string, cached bool, err error) {
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("querying APK paths for %s...", pkg))
+	}
+	pmCmd := exec.CommandContext(ctx, adbBin, adbArgs(serial, "shell", "pm", "path", pkg)...)
+	configureCancellableCmd(pmCmd)
+	out, err := pmCmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", nil, false, ctx.Err()
+		}
+		return "", nil, false, fmt.Errorf("adb shell pm path %s: %w", pkg, err)
+	}
+
+	remoteBase, remoteSplits := parsePMPathOutput(string(out))
+	if remoteBase == "" {
+		return "", nil, false, fmt.Errorf("package %s not found on device", pkg)
+	}
+
+	pkgDir := filepath.Join(outDir, "apks", sanitizeCacheSegment(pkg))
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		return "", nil, false, fmt.Errorf("mkdir %s: %w", pkgDir, err)
+	}
+
+	// Probe remote base APK stamp (size + mtime) for cache validation.
+	remoteStamp := queryRemoteAPKStamp(ctx, adbBin, serial, remoteBase)
+	localBase := filepath.Join(pkgDir, filepath.Base(remoteBase))
+
+	if !forceRefresh && remoteStamp != "" {
+		if meta, ok := readAPKPullCache(pkgDir); ok &&
+			meta.RemoteBasePath == remoteBase &&
+			meta.RemoteStamp == remoteStamp &&
+			fileExistsNonEmpty(meta.LocalBasePath) {
+			allSplitsPresent := true
+			for _, sp := range meta.SplitPaths {
+				if !fileExistsNonEmpty(sp) {
+					allSplitsPresent = false
+					break
+				}
+			}
+			if allSplitsPresent {
+				return meta.LocalBasePath, meta.SplitPaths, true, nil
+			}
+		}
+	}
+
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("pulling %s from device...", filepath.Base(remoteBase)))
+	}
+	pullCmd := exec.CommandContext(ctx, adbBin, adbArgs(serial, "pull", remoteBase, localBase)...)
+	configureCancellableCmd(pullCmd)
+	pullOut, err := pullCmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", nil, false, ctx.Err()
+		}
+		return "", nil, false, fmt.Errorf("adb pull %s: %w: %s", remoteBase, err, lastLines(string(pullOut), 10))
+	}
+
+	// Pull the primary ABI split APK (e.g. split_config.arm64_v8a.apk) when present
+	// so native .so inspection works on modern Android App Bundle installs.
+	var localSplits []string
+	if len(remoteSplits) > 0 {
+		abiRemote := remoteSplits[0]
+		abiLocal := filepath.Join(pkgDir, filepath.Base(abiRemote))
+		if onStatus != nil {
+			onStatus(fmt.Sprintf("pulling native split %s...", filepath.Base(abiRemote)))
+		}
+		spCmd := exec.CommandContext(ctx, adbBin, adbArgs(serial, "pull", abiRemote, abiLocal)...)
+		boundCommandWait(spCmd, 2*time.Minute)
+		if _, spErr := spCmd.CombinedOutput(); spErr == nil && fileExistsNonEmpty(abiLocal) {
+			localSplits = append(localSplits, abiLocal)
+		}
+	}
+
+	if remoteStamp != "" {
+		writeAPKPullCache(pkgDir, apkPullCacheMeta{
+			Package:        pkg,
+			RemoteBasePath: remoteBase,
+			RemoteStamp:    remoteStamp,
+			LocalBasePath:  localBase,
+			SplitPaths:     localSplits,
+		})
+	}
+
+	return localBase, localSplits, false, nil
+}
+
+func queryRemoteAPKStamp(ctx context.Context, adbBin, serial, remotePath string) string {
+	cmd := exec.CommandContext(ctx, adbBin, adbArgs(serial, "shell", fmt.Sprintf("stat -c '%%s:%%Y' '%s' 2>/dev/null || ls -l '%s' 2>/dev/null", remotePath, remotePath))...)
+	boundCommandWait(cmd, 8*time.Second)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func fileExistsNonEmpty(path string) bool {
+	if path == "" {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir() && fi.Size() > 0
+}
+
+func runUnpackContext(ctx context.Context, unpackPath, apkPath, outDir string) (string, error) {
+	unpackOut := filepath.Join(outDir, "unpacked.apk")
+	cmd := exec.CommandContext(ctx, unpackPath, apkPath, unpackOut)
+	boundCommandWait(cmd, 2*time.Minute)
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	if fileExistsNonEmpty(unpackOut) {
+		return unpackOut, nil
+	}
+	return "", nil
+}
+
+// extractAPKInfoWithSplits merges .so entries from any pulled ABI split APKs
+// into the base APK's APKInfo so App Bundle native libraries are surfaced.
+func extractAPKInfoWithSplits(baseAPK string, splitAPKs []string) (*APKInfo, error) {
+	info, err := extractAPKInfo(baseAPK)
+	if err != nil {
+		return nil, err
+	}
+	if len(splitAPKs) == 0 {
+		return info, nil
+	}
+	seenSO := make(map[string]bool, len(info.SOFiles))
+	for _, s := range info.SOFiles {
+		seenSO[s] = true
+	}
+	for _, sp := range splitAPKs {
+		spInfo, spErr := extractAPKInfo(sp)
+		if spErr != nil {
+			continue
+		}
+		for _, so := range spInfo.SOFiles {
+			if !seenSO[so] {
+				seenSO[so] = true
+				info.SOFiles = append(info.SOFiles, so)
+			}
+		}
+	}
+	sort.Strings(info.SOFiles)
+	return info, nil
+}
+
+func extractSOFilesWithSplits(baseAPK string, splitAPKs []string, destDir string) ([]string, error) {
+	paths, err := extractSOFilesTo(baseAPK, destDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(splitAPKs) == 0 {
+		return paths, nil
+	}
+	seen := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		seen[p] = true
+	}
+	for _, sp := range splitAPKs {
+		more, spErr := extractSOFilesTo(sp, destDir)
+		if spErr != nil {
+			continue
+		}
+		for _, p := range more {
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // defaultOutputDir is Options.OutputDir's default: ~/.cap/trace.
 func defaultOutputDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cap", "trace")
-}
-
-// resolveAPKPath returns the APK path Trace should analyze: opts.APKPath
-// verbatim if set, otherwise an APK pulled from opts.Serial via
-// opts.Package. Both empty is reported as ("", nil) -- a configuration gap,
-// not a failure -- and reserved for Trace to turn into its own message.
-func resolveAPKPath(opts Options) (string, error) {
-	if opts.APKPath != "" {
-		return opts.APKPath, nil
-	}
-	if opts.Package == "" {
-		return "", nil
-	}
-	return pullAPK(opts.Serial, opts.Package, opts.OutputDir)
-}
-
-// pullAPK pulls package pkg's APK off the device identified by serial (the
-// default/only device if empty) into outDir via adb, returning the local
-// path.
-func pullAPK(serial, pkg, outDir string) (string, error) {
-	out, err := exec.Command("adb", adbArgs(serial, "shell", "pm", "path", pkg)...).Output()
-	if err != nil {
-		return "", fmt.Errorf("adb shell pm path %s: %w", pkg, err)
-	}
-
-	var remotePath string
-	for _, line := range strings.Split(string(out), "\n") {
-		if p, ok := strings.CutPrefix(strings.TrimSpace(line), "package:"); ok {
-			remotePath = p
-			break
-		}
-	}
-	if remotePath == "" {
-		return "", fmt.Errorf("package %s not found on device", pkg)
-	}
-
-	localPath := filepath.Join(outDir, filepath.Base(remotePath))
-	out, err = exec.Command("adb", adbArgs(serial, "pull", remotePath, localPath)...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("adb pull %s: %w: %s", remotePath, err, lastLines(string(out), 10))
-	}
-	return localPath, nil
 }
 
 // adbArgs prepends "-s serial" to rest if serial is set.
@@ -2066,25 +2489,73 @@ func adbArgs(serial string, rest ...string) []string {
 	return append([]string{"-s", serial}, rest...)
 }
 
-// collectSearchTerms combines buildSearchTerms(flow) with any
-// caller-supplied extra terms (Options.SearchTerms), preserving
-// buildSearchTerms' most-to-least-specific ordering and dropping anything
-// too short or already present.
+var interestingSignParamRe = regexp.MustCompile(`(?i)(sign|sig|token|nonce|digest|hmac|secret|app[_-]?key|auth|checksum|salt)`)
+
+// collectSearchTerms combines buildSearchTerms(flow) with flow sign params,
+// interesting query/header parameter names, multi-segment path suffixes, and
+// caller-supplied extra terms (Options.SearchTerms), preserving most-to-least
+// specific ordering.
 func collectSearchTerms(flow *types.Flow, extra []string) []string {
 	terms := buildSearchTerms(flow)
-	if len(extra) == 0 {
-		return terms
-	}
-
-	seen := make(map[string]bool, len(terms)+len(extra))
+	seen := make(map[string]bool, len(terms)+len(extra)+8)
 	for _, t := range terms {
 		seen[t] = true
 	}
-	for _, t := range extra {
+	add := func(t string) {
+		t = strings.TrimSpace(t)
 		if len(t) >= minSearchTermLen && !seen[t] {
 			seen[t] = true
 			terms = append(terms, t)
 		}
+	}
+
+	if flow != nil {
+		// Last 2 path segments help match split baseURL + endpoint constants (e.g. "order/create").
+		path := cleanPath(flow.Path)
+		if path == "" {
+			path = cleanPath(pathFromURL(flow.URL))
+		}
+		segs := strings.Split(strings.Trim(path, "/"), "/")
+		if len(segs) >= 3 {
+			add(strings.Join(segs[len(segs)-2:], "/"))
+		}
+
+		// Flow's detected signature parameters.
+		for _, sp := range flow.SignParams {
+			add(sp)
+		}
+
+		// Interesting query parameter keys.
+		if u, err := url.Parse(flow.URL); err == nil {
+			qKeys := make([]string, 0, len(u.Query()))
+			for k := range u.Query() {
+				if interestingSignParamRe.MatchString(k) {
+					qKeys = append(qKeys, k)
+				}
+			}
+			sort.Strings(qKeys)
+			for _, k := range qKeys {
+				add(k)
+			}
+		}
+
+		// Interesting custom request header names (e.g. X-Sign, X-Nonce).
+		if len(flow.ReqHeaders) > 0 {
+			hKeys := make([]string, 0, 4)
+			for k := range flow.ReqHeaders {
+				if strings.HasPrefix(strings.ToLower(k), "x-") && interestingSignParamRe.MatchString(k) {
+					hKeys = append(hKeys, k)
+				}
+			}
+			sort.Strings(hKeys)
+			for _, k := range hKeys {
+				add(k)
+			}
+		}
+	}
+
+	for _, t := range extra {
+		add(t)
 	}
 	return terms
 }

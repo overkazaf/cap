@@ -64,7 +64,7 @@ func newGUICmd() *cobra.Command {
 					WindowIsTranslucent:  false,
 					About: &mac.AboutInfo{
 						Title:   "cap",
-						Message: "HTTP(S) MITM Traffic Capture & Reverse-Engineering Workbench",
+						Message: "HTTP(S) MITM Reverse-Engineering Workbench\n\n© 2026 0xaf (@overkazaf) · MIT License\nhttps://github.com/overkazaf/cap",
 					},
 				},
 			})

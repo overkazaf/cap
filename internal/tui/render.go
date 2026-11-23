@@ -1050,8 +1050,8 @@ func overlayHelpModal(s *State, screen []string, w, h int, th Theme) []string {
 	if modalW < 36 {
 		modalW = w - 2
 	}
-	modalH := min(h-2, len(entries)+4)
-	if modalH < 8 {
+	modalH := min(h-2, len(entries)+5)
+	if modalH < 9 {
 		return screen
 	}
 
@@ -1063,7 +1063,7 @@ func overlayHelpModal(s *State, screen []string, w, h int, th Theme) []string {
 	modalLines := make([]string, 0, modalH)
 	modalLines = append(modalLines, renderBoxTop(modalW, s.tr("tui.help.title"), "", true, th.BorderFocus, th))
 
-	maxEntries := modalH - 3
+	maxEntries := modalH - 4
 	for i := 0; i < maxEntries && i < len(entries); i++ {
 		e := entries[i]
 		var content string
@@ -1076,8 +1076,10 @@ func overlayHelpModal(s *State, screen []string, w, h int, th Theme) []string {
 		modalLines = append(modalLines, th.Fg(th.BorderFocus, "│")+FillLine(content, innerW, bg)+th.Fg(th.BorderFocus, "│"))
 	}
 
-	footer := FillLine(" "+th.Fg(th.FgMuted, s.tr("tui.help.footer")), innerW, bg)
+	footer := FillLine(" "+th.Fg(th.FgMuted, Truncate(s.tr("tui.help.footer"), max(4, innerW-2))), innerW, bg)
 	modalLines = append(modalLines, th.Fg(th.BorderFocus, "│")+footer+th.Fg(th.BorderFocus, "│"))
+	copyLine := FillLine(" "+th.Dim(th.FgMuted, Truncate(s.tr("tui.help.copyright"), max(4, innerW-2))), innerW, bg)
+	modalLines = append(modalLines, th.Fg(th.BorderFocus, "│")+copyLine+th.Fg(th.BorderFocus, "│"))
 	modalLines = append(modalLines, renderBoxBottom(modalW, th.BorderFocus, th))
 
 	out := make([]string, len(screen))

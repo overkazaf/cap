@@ -16,6 +16,7 @@ import (
 	"github.com/overkazaf/cap/internal/plugin"
 	"github.com/overkazaf/cap/internal/proxy"
 	"github.com/overkazaf/cap/internal/rules"
+	"github.com/overkazaf/cap/internal/screen"
 	"github.com/overkazaf/cap/internal/store"
 	"github.com/overkazaf/cap/internal/types"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -58,13 +59,27 @@ type App struct {
 	staleDevices     map[string]bool
 	monitorStop      chan struct{}
 	monitorRunning   bool
+
+	screenMu     sync.Mutex
+	screenStream *screen.MJPEGServer
+
+	traceMu     sync.Mutex
+	traceCancel context.CancelFunc
+	traceState  *DeepTraceState
+
+	pluginSem    chan struct{}
+	pluginCtx    context.Context
+	pluginCancel context.CancelFunc
 }
+
+const maxConcurrentAutoPlugins = 4
 
 func NewApp(st store.Store) *App {
 	capDir := config.DefaultDir()
 	pluginEngine, _ := plugin.NewEngine(filepath.Join(capDir, "plugins"))
 	settingsFile := filepath.Join(capDir, "settings.json")
 	settings := loadSettings(settingsFile)
+	pCtx, pCancel := context.WithCancel(context.Background())
 	return &App{
 		store:            st,
 		certDir:          capDir,
@@ -75,6 +90,9 @@ func NewApp(st store.Store) *App {
 		tlsErrors:        make(map[string]int),
 		connectedDevices: make(map[string]*connectedDeviceSession),
 		staleDevices:     make(map[string]bool),
+		pluginSem:        make(chan struct{}, maxConcurrentAutoPlugins),
+		pluginCtx:        pCtx,
+		pluginCancel:     pCancel,
 	}
 }
 
@@ -87,6 +105,16 @@ func (a *App) Startup(ctx context.Context) {
 }
 
 func (a *App) Shutdown(ctx context.Context) {
+	// Cancel any active DeepTrace run and auto-run plugin scripts cleanly.
+	_ = a.CancelDeepTrace()
+	if a.pluginCancel != nil {
+		a.pluginCancel()
+	}
+
+	// Stop any active screen mirror stream immediately so ffmpeg/scrcpy/adb
+	// subprocesses and loopback listeners never leak on exit.
+	_ = a.StopScreenStream()
+
 	// Stop device monitor and clean up connected Android devices BEFORE
 	// stopping the proxy so Companion Guard receives a clean stop signal
 	// and phones are never left with stale proxy settings.
@@ -136,7 +164,144 @@ func (a *App) RunPlugin(name, flowID string) (*plugin.ExecResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.plugins.RunAnalyzer(name, f), nil
+	res := a.plugins.RunAnalyzer(name, f)
+	if logs := a.plugins.Logs(1); len(logs) > 0 && logs[0].ID != "" && logs[0].PluginName == name && logs[0].FlowID == flowID {
+		a.events.Emit(EventPluginExecuted, logs[0])
+	} else {
+		runtimeName := plugin.RuntimeBuiltin
+		if p, getErr := a.plugins.Get(name); getErr == nil && p != nil && p.Runtime != "" {
+			runtimeName = p.Runtime
+		}
+		rec := plugin.ExecutionRecord{
+			ID:         fmt.Sprintf("manual-%d", time.Now().UnixNano()),
+			PluginName: name,
+			Runtime:    runtimeName,
+			FlowID:     f.ID,
+			Method:     f.Method,
+			URL:        f.URL,
+			Status:     f.Status,
+			Output:     res.Output,
+			Error:      res.Error,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+			Trigger:    "manual",
+		}
+		a.plugins.RecordExecution(rec)
+		if logs := a.plugins.Logs(1); len(logs) > 0 && logs[0].ID != "" {
+			rec = logs[0]
+		}
+		a.events.Emit(EventPluginExecuted, rec)
+	}
+	return res, nil
+}
+
+func (a *App) TestPluginMatch(p plugin.Plugin, flowID string) (bool, error) {
+	if a.store == nil {
+		return false, fmt.Errorf("flow store unavailable")
+	}
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return false, err
+	}
+	return plugin.MatchesFlow(&p, f), nil
+}
+
+// RunPluginDraft executes an unsaved/in-memory plugin draft against flowID
+// (even when p.Enabled is false), records a manual ExecutionRecord, emits
+// EventPluginExecuted, and returns the execution output.
+func (a *App) RunPluginDraft(p plugin.Plugin, flowID string) (*plugin.ExecResult, error) {
+	if a.store == nil {
+		return nil, fmt.Errorf("flow store unavailable")
+	}
+	if a.plugins == nil {
+		return nil, fmt.Errorf("plugin engine unavailable")
+	}
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return nil, err
+	}
+	ctx := a.pluginCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	res, rec := a.plugins.RunDraftContext(ctx, &p, f)
+	if rec.ID == "" {
+		rec.ID = fmt.Sprintf("draft-%d", time.Now().UnixNano())
+	}
+	a.events.Emit(EventPluginExecuted, rec)
+	return res, nil
+}
+
+// GetPluginFlowPayload returns the exact indented JSON payload passed to
+// plugin scripts on stdin for flowID (including query and query_params).
+func (a *App) GetPluginFlowPayload(flowID string) (string, error) {
+	if a.store == nil {
+		return "", fmt.Errorf("flow store unavailable")
+	}
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return "", err
+	}
+	data, err := plugin.BuildFlowPayloadJSON(f)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (a *App) GetPluginDir() string {
+	if a.plugins == nil {
+		return ""
+	}
+	return a.plugins.Dir()
+}
+
+func (a *App) ReloadPlugins() ([]*plugin.Plugin, error) {
+	if a.plugins == nil {
+		return []*plugin.Plugin{}, nil
+	}
+	if err := a.plugins.Reload(); err != nil {
+		return nil, err
+	}
+	return a.plugins.List(), nil
+}
+
+func (a *App) GetPluginLogs(limit int) []plugin.ExecutionRecord {
+	if a.plugins == nil {
+		return []plugin.ExecutionRecord{}
+	}
+	return a.plugins.Logs(limit)
+}
+
+func (a *App) ClearPluginLogs() {
+	if a.plugins == nil {
+		return
+	}
+	a.plugins.ClearLogs()
+}
+
+func (a *App) runAutoPlugins(f *types.Flow) {
+	if a.plugins == nil || f == nil {
+		return
+	}
+	ctx := a.pluginCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	sem := a.pluginSem
+	if sem != nil {
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-ctx.Done():
+			return
+		}
+	}
+
+	records := a.plugins.RunMatching(ctx, f)
+	for _, rec := range records {
+		a.events.Emit(EventPluginExecuted, rec)
+	}
 }
 
 // ==================== Intercept Rules ====================

@@ -56,7 +56,7 @@ export const flowsState = {
   liveFollow: true,
   activeTab: 'params',
   exportLang: 'curl',
-  rightPanel: 'detail', // 'detail' | 'device'
+  rightPanel: 'detail', // 'detail' | 'device' | 'plugins'
   wordWrap: true,
   compareBaseId: '',
   compareBaseLabel: '',

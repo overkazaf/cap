@@ -146,12 +146,12 @@ func New(opts Options) (*Proxy, error) {
 	}
 
 	// Perform MITM on every CONNECT (i.e. every HTTPS request), signing
-	// dynamic leaf certs with our own CA rather than goproxy's baked-in
-	// default — this is what makes the generated CA from EnsureCA the one
-	// that actually needs to be trusted by clients.
+	// cached modern X.509v3 leaf certs with our own CA rather than goproxy's
+	// baked-in default — this ensures Android 12–15 Conscrypt / Chrome / Apple
+	// trust compliance (<=366d validity, DNS/IP SANs, EKU ServerAuth, AKI, full chain).
 	mitm := &goproxy.ConnectAction{
 		Action:    goproxy.ConnectMitm,
-		TLSConfig: goproxy.TLSConfigFromCA(&caCert),
+		TLSConfig: NewTLSConfigFromCA(caCert),
 	}
 	gp.OnRequest().HandleConnectFunc(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 		return mitm, host

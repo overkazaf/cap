@@ -176,9 +176,27 @@
     }
   }
 
+  const GITHUB_PROFILE_URL = 'https://github.com/overkazaf'
+  const GITHUB_REPO_URL = 'https://github.com/overkazaf/cap'
+  const DOCS_URL = 'https://overkazaf.github.io/cap/'
+
+  function openExternal(url) {
+    if (!url) return
+    try {
+      if (window?.runtime?.BrowserOpenURL) {
+        window.runtime.BrowserOpenURL(url)
+        return
+      }
+    } catch (_) {}
+    window.open(url, '_blank', 'noopener')
+  }
+
   function copyDiagnostics() {
     const diag = [
       `cap ${version}`,
+      'Copyright: © 2026 0xaf (@overkazaf) · MIT License',
+      `Repository: ${GITHUB_REPO_URL}`,
+      `Docs: ${DOCS_URL}`,
       `Locale: ${$locale}`,
       `Theme: ${settings.theme}`,
       `Font size: ${settings.font_size}px`,
@@ -578,8 +596,12 @@
             <div class="about-mark">
               <Icon name="radar" size={22} />
             </div>
-            <div>
-              <div class="about-name">cap <Badge variant="accent" size="xs" mono>{version}</Badge></div>
+            <div class="about-hero-text">
+              <div class="about-name">
+                <span>cap</span>
+                <Badge variant="accent" size="xs" mono>{version}</Badge>
+                <Badge variant="neutral" size="xs" mono>MIT</Badge>
+              </div>
               <div class="about-tagline">{$t('tools.settings.about.tagline')}</div>
             </div>
           </div>
@@ -588,8 +610,44 @@
 
           <div class="about-meta-grid">
             <div class="meta-kv">
+              <span class="stat-k">{$t('tools.settings.about.author')}</span>
+              <button
+                type="button"
+                class="about-link mono"
+                title={$t('tools.settings.about.openLinkTitle', { url: GITHUB_PROFILE_URL })}
+                on:click={() => openExternal(GITHUB_PROFILE_URL)}
+              >
+                <span>0xaf (@overkazaf)</span>
+                <Icon name="external-link" size={11} />
+              </button>
+            </div>
+            <div class="meta-kv">
               <span class="stat-k">{$t('tools.settings.about.repository')}</span>
-              <span class="stat-v mono">github.com/overkazaf/cap</span>
+              <button
+                type="button"
+                class="about-link mono"
+                title={$t('tools.settings.about.openLinkTitle', { url: GITHUB_REPO_URL })}
+                on:click={() => openExternal(GITHUB_REPO_URL)}
+              >
+                <span>github.com/overkazaf/cap</span>
+                <Icon name="external-link" size={11} />
+              </button>
+            </div>
+            <div class="meta-kv">
+              <span class="stat-k">{$t('tools.settings.about.documentation')}</span>
+              <button
+                type="button"
+                class="about-link mono"
+                title={$t('tools.settings.about.openLinkTitle', { url: DOCS_URL })}
+                on:click={() => openExternal(DOCS_URL)}
+              >
+                <span>overkazaf.github.io/cap</span>
+                <Icon name="external-link" size={11} />
+              </button>
+            </div>
+            <div class="meta-kv">
+              <span class="stat-k">{$t('tools.settings.about.license')}</span>
+              <span class="stat-v">{$t('tools.settings.about.copyrightNotice')}</span>
             </div>
             <div class="meta-kv">
               <span class="stat-k">{$t('tools.settings.about.runtime')}</span>
@@ -601,7 +659,12 @@
             </div>
           </div>
 
+          <div class="pref-divider"></div>
+
           <div class="about-footer">
+            <Button variant="secondary" size="sm" icon="external-link" on:click={() => openExternal(GITHUB_REPO_URL)}>
+              {$t('tools.settings.about.openGithub')}
+            </Button>
             <Button variant="secondary" size="sm" icon="copy" on:click={copyDiagnostics}>
               {$t('tools.settings.about.copyDiagnostics')}
             </Button>
@@ -1226,20 +1289,43 @@
 
   .about-meta-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
   }
 
   .meta-kv {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .about-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: color var(--transition-fast);
+  }
+
+  .about-link:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
   }
 
   .about-footer {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
-    padding-top: 4px;
+    padding-top: 2px;
   }
 </style>

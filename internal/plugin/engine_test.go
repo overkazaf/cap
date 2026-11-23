@@ -1,12 +1,17 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/overkazaf/cap/internal/types"
 )
@@ -493,5 +498,429 @@ func TestExamplePlugins(t *testing.T) {
 		if p.Code == "" {
 			t.Error("example plugin has empty code")
 		}
+	}
+}
+
+// ── MatchesFlow ──────────────────────────────────────────────────────
+
+func TestMatchesFlow(t *testing.T) {
+	f := testFlow() // POST https://api.example.com/login?key=abc123
+
+	cases := []struct {
+		name   string
+		plugin *Plugin
+		flow   *types.Flow
+		want   bool
+	}{
+		{"nil plugin", nil, f, false},
+		{"nil flow", &Plugin{Name: "p"}, nil, false},
+		{"empty filters match all", &Plugin{Name: "p"}, f, true},
+		{"method exact case-insensitive", &Plugin{Method: "post"}, f, true},
+		{"method ANY matches", &Plugin{Method: "ANY"}, f, true},
+		{"method mismatch", &Plugin{Method: "GET"}, f, false},
+		{"host substring", &Plugin{HostPattern: "EXAMPLE.COM"}, f, true},
+		{"host glob match", &Plugin{HostPattern: "*.example.com"}, f, true},
+		{"host glob mismatch", &Plugin{HostPattern: "*.other.org"}, f, false},
+		{"host regex match", &Plugin{HostPattern: `/^api\.example\.(com|net)$/`}, f, true},
+		{"host invalid regex does not panic", &Plugin{HostPattern: `/[unclosed/`}, f, false},
+		{"path glob match", &Plugin{PathPattern: "/log*"}, f, true},
+		{"path regex match", &Plugin{PathPattern: `/^\/login$/`}, f, true},
+		{"path mismatch", &Plugin{PathPattern: "/v2/orders"}, f, false},
+		{"url fallback when host/path empty", &Plugin{HostPattern: "shop.local", PathPattern: "/v1/*"}, &types.Flow{Method: "GET", URL: "https://shop.local/v1/items"}, true},
+		// Query-string path matching, optional leading '/', literal '?'
+		{"path query glob without leading slash", &Plugin{PathPattern: "v1/url?album*"}, &types.Flow{Method: "GET", URL: "https://api.example.com:443/v1/url?album=123&fmt=json", Host: "api.example.com:443", Path: "/v1/url"}, true},
+		{"path query glob with leading slash", &Plugin{PathPattern: "/v1/url?album*"}, &types.Flow{Method: "GET", URL: "https://api.example.com:443/v1/url?album=123", Host: "api.example.com:443", Path: "/v1/url"}, true},
+		{"path query substring", &Plugin{PathPattern: "v1/url?album"}, &types.Flow{Method: "GET", URL: "https://api.example.com/v1/url?album=123", Host: "api.example.com", Path: "/v1/url"}, true},
+		{"path query regex", &Plugin{PathPattern: `/\/v\d+\/url\?album/`}, &types.Flow{Method: "GET", URL: "https://api.example.com/v1/url?album=123", Host: "api.example.com", Path: "/v1/url"}, true},
+		{"literal question mark does not act as single-char wildcard", &Plugin{PathPattern: "/v1/url?album*"}, &types.Flow{Method: "GET", URL: "https://api.example.com/v1/urlXalbum123", Host: "api.example.com", Path: "/v1/urlXalbum123"}, false},
+		// Host with :port stripped cleanly
+		{"host exact matches host:443", &Plugin{HostPattern: "api.example.com"}, &types.Flow{Method: "GET", URL: "https://api.example.com:443/ping", Host: "api.example.com:443", Path: "/ping"}, true},
+		{"host glob matches host:443", &Plugin{HostPattern: "*.example.com"}, &types.Flow{Method: "GET", URL: "https://api.example.com:443/ping", Host: "api.example.com:443", Path: "/ping"}, true},
+		{"host glob matches explicit host:443", &Plugin{HostPattern: "api.example.com:443"}, &types.Flow{Method: "GET", URL: "https://api.example.com:443/ping", Host: "api.example.com:443", Path: "/ping"}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchesFlow(tc.plugin, tc.flow); got != tc.want {
+				t.Errorf("MatchesFlow = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// ── Dir & Hot Reload ─────────────────────────────────────────────────
+
+func TestDirAndReload(t *testing.T) {
+	dir := t.TempDir()
+	e, err := NewEngine(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Dir() != dir {
+		t.Fatalf("Dir() = %q, want %q", e.Dir(), dir)
+	}
+
+	// Drop a new plugin JSON directly on disk and call Reload.
+	dropped := &Plugin{
+		Name:        "local-hook",
+		Type:        "analyzer",
+		Runtime:     RuntimeShell,
+		AutoRun:     true,
+		HostPattern: "*.example.com",
+		Enabled:     true,
+		Code:        "cat",
+	}
+	raw, _ := json.MarshalIndent(dropped, "", "  ")
+	diskPath := filepath.Join(dir, "local-hook.json")
+	if err := os.WriteFile(diskPath, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	got, err := e.Get("local-hook")
+	if err != nil {
+		t.Fatalf("Get after Reload: %v", err)
+	}
+	if !got.AutoRun || got.Runtime != RuntimeShell || got.HostPattern != "*.example.com" {
+		t.Fatalf("reloaded plugin fields mismatch: %+v", got)
+	}
+
+	// Removing from disk + Reload removes from memory.
+	_ = os.Remove(diskPath)
+	if err := e.Reload(); err != nil {
+		t.Fatalf("Reload after delete: %v", err)
+	}
+	if len(e.List()) != 0 {
+		t.Fatalf("expected 0 plugins after delete+Reload, got %d", len(e.List()))
+	}
+}
+
+// ── Script Execution (sh, python3, timeout, truncation) ──────────────
+
+func TestRunScript_ShellAndPython3(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell test")
+	}
+	e, _ := NewEngine(t.TempDir())
+	f := testFlow()
+
+	// Shell script echoing stdin JSON
+	if err := e.Save(&Plugin{
+		Name:       "sh-echo",
+		Type:       "analyzer",
+		Runtime:    RuntimeShell,
+		Enabled:    true,
+		TimeoutSec: 5,
+		Code:       `payload=$(cat); echo "GOT:$payload"`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := e.RunAnalyzer("sh-echo", f)
+	if res.Error != "" {
+		t.Fatalf("sh-echo error: %s", res.Error)
+	}
+	if !strings.Contains(res.Output, `"id":"f1"`) || !strings.Contains(res.Output, `"scheme":"https"`) {
+		t.Fatalf("sh-echo missing flow JSON fields: %s", res.Output)
+	}
+
+	// Verify manual run was recorded in Logs().
+	logs := e.Logs(10)
+	if len(logs) != 1 || logs[0].Trigger != "manual" || logs[0].PluginName != "sh-echo" || logs[0].Runtime != RuntimeShell {
+		t.Fatalf("unexpected manual log record: %+v", logs)
+	}
+
+	// Python 3 script if available on host.
+	if _, err := exec.LookPath("python3"); err == nil {
+		if err := e.Save(&Plugin{
+			Name:       "py-inspect",
+			Type:       "analyzer",
+			Runtime:    RuntimePython3,
+			Enabled:    true,
+			TimeoutSec: 5,
+			Code:       "import json, sys\nd = json.load(sys.stdin)\nprint(f\"{d['method']}:{d['host']}{d['path']}:{d['status']}\")\n",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		pyRes := e.RunAnalyzer("py-inspect", f)
+		if pyRes.Error != "" {
+			t.Fatalf("py-inspect error: %s", pyRes.Error)
+		}
+		if pyRes.Output != "POST:api.example.com/login:200" {
+			t.Fatalf("py-inspect output = %q, want POST:api.example.com/login:200", pyRes.Output)
+		}
+	}
+}
+
+func TestRunScript_TimeoutAndCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell test")
+	}
+	e, _ := NewEngine(t.TempDir())
+	_ = e.Save(&Plugin{
+		Name:       "slow-sh",
+		Type:       "analyzer",
+		Runtime:    RuntimeShell,
+		Enabled:    true,
+		TimeoutSec: 1,
+		Code:       "sleep 5",
+	})
+
+	// 1. Context cancellation terminates promptly (< 1s).
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	res := e.RunAnalyzerContext(ctx, "slow-sh", testFlow())
+	elapsed := time.Since(start)
+	if res.Error == "" {
+		t.Fatal("expected timeout/cancel error")
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("cancellation took %v, expected prompt process-group kill", elapsed)
+	}
+
+	// 2. Plugin TimeoutSec=1 triggers deadline cleanly.
+	start = time.Now()
+	res2 := e.RunAnalyzer("slow-sh", testFlow())
+	if !strings.Contains(res2.Error, "timed out") {
+		t.Fatalf("expected timed out error, got %q", res2.Error)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("1s timeout took too long: %v", time.Since(start))
+	}
+}
+
+func TestRunScript_OutputTruncation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell test")
+	}
+	e, _ := NewEngine(t.TempDir())
+	// Emit ~100 KiB of 'A's to verify 64 KiB cap.
+	_ = e.Save(&Plugin{
+		Name:       "noisy-sh",
+		Type:       "analyzer",
+		Runtime:    RuntimeShell,
+		Enabled:    true,
+		TimeoutSec: 5,
+		Code:       `dd if=/dev/zero bs=1024 count=100 2>/dev/null | tr '\0' 'A'`,
+	})
+	res := e.RunAnalyzer("noisy-sh", testFlow())
+	if res.Error != "" {
+		t.Fatalf("noisy-sh error: %s", res.Error)
+	}
+	if !strings.Contains(res.Output, "output truncated at 64 KiB") {
+		t.Fatalf("expected truncation marker, got len=%d", len(res.Output))
+	}
+	if len(res.Output) > maxScriptOutputBytes+128 {
+		t.Fatalf("output exceeded cap: %d bytes", len(res.Output))
+	}
+}
+
+// ── RunMatching, Ring Buffer & Concurrency ───────────────────────────
+
+func TestRunMatchingAndLogsRingBuffer(t *testing.T) {
+	e, _ := NewEngine(t.TempDir())
+
+	_ = e.Save(&Plugin{Name: "auto-hit", Type: "analyzer", Runtime: RuntimeBuiltin, Enabled: true, AutoRun: true, HostPattern: "*.example.com"})
+	_ = e.Save(&Plugin{Name: "auto-miss", Type: "analyzer", Runtime: RuntimeBuiltin, Enabled: true, AutoRun: true, HostPattern: "other.dev"})
+	_ = e.Save(&Plugin{Name: "auto-disabled", Type: "analyzer", Runtime: RuntimeBuiltin, Enabled: false, AutoRun: true})
+	_ = e.Save(&Plugin{Name: "manual-only", Type: "analyzer", Runtime: RuntimeBuiltin, Enabled: true, AutoRun: false})
+
+	recs := e.RunMatching(context.Background(), testFlow())
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 matching auto-run record, got %d: %+v", len(recs), recs)
+	}
+	if recs[0].PluginName != "auto-hit" || recs[0].Trigger != "auto" || recs[0].FlowID != "f1" {
+		t.Fatalf("unexpected auto record: %+v", recs[0])
+	}
+
+	// Ring buffer caps at maxExecutionLogs (200) and returns newest-first.
+	e.ClearLogs()
+	if len(e.Logs(0)) != 0 {
+		t.Fatal("expected empty logs after ClearLogs")
+	}
+	for i := 1; i <= maxExecutionLogs+35; i++ {
+		e.RecordExecution(ExecutionRecord{
+			PluginName: fmt.Sprintf("p-%d", i),
+			FlowID:     fmt.Sprintf("f-%d", i),
+			Trigger:    "auto",
+		})
+	}
+	all := e.Logs(0)
+	if len(all) != maxExecutionLogs {
+		t.Fatalf("Logs(0) len = %d, want %d", len(all), maxExecutionLogs)
+	}
+	wantNewest := fmt.Sprintf("p-%d", maxExecutionLogs+35)
+	if all[0].PluginName != wantNewest {
+		t.Fatalf("newest log = %q, want %q", all[0].PluginName, wantNewest)
+	}
+	top5 := e.Logs(5)
+	if len(top5) != 5 || top5[0].PluginName != wantNewest {
+		t.Fatalf("Logs(5) mismatch: %+v", top5)
+	}
+
+	// Concurrent RunMatching + Logs + Reload under -race.
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			e.RunMatching(context.Background(), testFlow())
+		}()
+		go func() {
+			defer wg.Done()
+			_ = e.Logs(20)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = e.Reload()
+		}()
+	}
+	wg.Wait()
+}
+
+func TestRunAnalyzerContext_RecordsDisabledAndMissingErrors(t *testing.T) {
+	e, _ := NewEngine(t.TempDir())
+	_ = e.Save(&Plugin{Name: "off-plug", Type: "analyzer", Runtime: RuntimePython3, Enabled: false})
+
+	res1 := e.RunAnalyzerContext(context.Background(), "off-plug", testFlow())
+	if !strings.Contains(res1.Error, "disabled") {
+		t.Fatalf("expected disabled error, got %q", res1.Error)
+	}
+	res2 := e.RunAnalyzerContext(context.Background(), "missing-plug", testFlow())
+	if !strings.Contains(res2.Error, "not found") {
+		t.Fatalf("expected not found error, got %q", res2.Error)
+	}
+
+	logs := e.Logs(10)
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 logged error invocations, got %d: %+v", len(logs), logs)
+	}
+	for _, rec := range logs {
+		if rec.ID == "" || rec.Error == "" || rec.Trigger != "manual" {
+			t.Errorf("expected non-empty ID, Error, and manual trigger: %+v", rec)
+		}
+	}
+}
+
+func TestRunMatching_AutoReloadsDiskEdits(t *testing.T) {
+	dir := t.TempDir()
+	e, err := NewEngine(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drop a plugin JSON directly onto disk WITHOUT calling Reload().
+	p := &Plugin{
+		Name:        "disk-auto",
+		Type:        "analyzer",
+		Runtime:     RuntimeBuiltin,
+		Enabled:     true,
+		AutoRun:     true,
+		HostPattern: "*.example.com",
+		PathPattern: "v1/items?type=*",
+	}
+	raw, _ := json.MarshalIndent(p, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, "disk-auto.json"), raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	flow := &types.Flow{
+		ID:     "f-disk",
+		Method: "GET",
+		URL:    "https://api.example.com:443/v1/items?type=music&page=1",
+		Host:   "api.example.com:443",
+		Path:   "/v1/items",
+		Status: 200,
+	}
+	recs := e.RunMatching(context.Background(), flow)
+	if len(recs) != 1 || recs[0].PluginName != "disk-auto" || recs[0].ID == "" {
+		t.Fatalf("expected disk-auto to auto-reload and trigger, got %+v", recs)
+	}
+}
+
+func TestBuildFlowPayloadJSON_QueryAndQueryParams(t *testing.T) {
+	f := &types.Flow{
+		ID:        "f-qp",
+		Method:    "GET",
+		URL:       "https://api.example.com/v1/url?album=42&fmt=flac&tag=a&tag=b",
+		Host:      "api.example.com",
+		Path:      "/v1/url",
+		Status:    200,
+		LatencyMs: 18,
+	}
+	raw, err := BuildFlowPayloadJSON(f)
+	if err != nil {
+		t.Fatalf("BuildFlowPayloadJSON: %v", err)
+	}
+	var decoded struct {
+		Query       string            `json:"query"`
+		QueryParams map[string]string `json:"query_params"`
+		Scheme      string            `json:"scheme"`
+		Path        string            `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if decoded.Query != "album=42&fmt=flac&tag=a&tag=b" {
+		t.Errorf("query = %q", decoded.Query)
+	}
+	if decoded.QueryParams["album"] != "42" || decoded.QueryParams["fmt"] != "flac" || decoded.QueryParams["tag"] != "a" {
+		t.Errorf("query_params = %+v", decoded.QueryParams)
+	}
+
+	// Flow without query string produces non-nil empty query_params map ({} in JSON).
+	rawEmpty, err := BuildFlowPayloadJSON(&types.Flow{ID: "f-noq", URL: "https://example.com/ping"})
+	if err != nil {
+		t.Fatalf("BuildFlowPayloadJSON(no query): %v", err)
+	}
+	if !strings.Contains(string(rawEmpty), `"query_params": {}`) {
+		t.Errorf("expected empty JSON object for query_params, got:\n%s", string(rawEmpty))
+	}
+}
+
+func TestRunDraftContext_BuiltinAndScript(t *testing.T) {
+	e, _ := NewEngine(t.TempDir())
+	f := testFlow()
+
+	// Unsaved AND disabled built-in draft runs cleanly and logs a non-empty ID record.
+	res, rec := e.RunDraftContext(context.Background(), &Plugin{
+		Name:    "unsaved-builtin",
+		Type:    "analyzer",
+		Runtime: RuntimeBuiltin,
+		Enabled: false,
+	}, f)
+	if res.Error != "" {
+		t.Fatalf("builtin draft error: %s", res.Error)
+	}
+	if rec.ID == "" || rec.PluginName != "unsaved-builtin" || rec.Trigger != "manual" {
+		t.Fatalf("unexpected draft record: %+v", rec)
+	}
+
+	// Unsaved AND disabled shell draft receives query & query_params on stdin.
+	if runtime.GOOS != "windows" {
+		shRes, shRec := e.RunDraftContext(context.Background(), &Plugin{
+			Name:       "unsaved-sh",
+			Type:       "analyzer",
+			Runtime:    RuntimeShell,
+			Enabled:    false,
+			TimeoutSec: 5,
+			Code:       `cat`,
+		}, f)
+		if shRes.Error != "" {
+			t.Fatalf("sh draft error: %s", shRes.Error)
+		}
+		if !strings.Contains(shRes.Output, `"query":"key=abc123"`) || !strings.Contains(shRes.Output, `"query_params":{"key":"abc123"}`) {
+			t.Fatalf("sh draft stdin missing query/query_params: %s", shRes.Output)
+		}
+		if shRec.ID == "" || shRec.Runtime != RuntimeShell {
+			t.Fatalf("unexpected sh draft record: %+v", shRec)
+		}
+	}
+
+	logs := e.Logs(10)
+	if len(logs) == 0 || logs[0].ID == "" {
+		t.Fatalf("expected draft runs recorded in Logs(), got %+v", logs)
 	}
 }

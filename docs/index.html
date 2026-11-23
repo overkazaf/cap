@@ -1011,6 +1011,162 @@ footer {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* ==========================================================================
+   Commercial Screenshot Gallery & Lightbox Modal
+   ========================================================================== */
+.gallery-tabs {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.gallery-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.gallery-tab:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.gallery-tab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.gallery-stage {
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.gallery-img-wrap {
+  position: relative;
+  background: #0b0c10;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+.gallery-img-wrap img {
+  display: block;
+  width: 100%;
+  height: auto;
+  transition: transform 280ms cubic-bezier(0.2, 0, 0, 1);
+}
+.gallery-img-wrap:hover img { transform: scale(1.008); }
+.gallery-zoom-hint {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: var(--radius-full);
+  background: rgba(11, 12, 16, 0.78);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #eceef4;
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.gallery-caption-bar {
+  padding: 14px 18px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.gallery-caption-title { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.gallery-caption-desc { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+.gallery-thumbs {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+}
+.gallery-thumb {
+  padding: 0;
+  border-radius: var(--radius-md);
+  border: 2px solid var(--border-subtle);
+  background: var(--bg-surface);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
+  opacity: 0.72;
+}
+.gallery-thumb:hover { opacity: 0.95; transform: translateY(-1px); }
+.gallery-thumb.active { border-color: var(--accent); opacity: 1; }
+.gallery-thumb img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; }
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(6, 8, 12, 0.90);
+  backdrop-filter: blur(10px);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.lightbox.open { display: flex; }
+.lightbox-inner {
+  max-width: min(1440px, 94vw);
+  max-height: 86vh;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.lightbox-inner img {
+  max-width: 100%;
+  max-height: 78vh;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.75);
+}
+.lightbox-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #eceef4;
+  font-size: 13px;
+}
+.lightbox-controls { display: flex; gap: 8px; }
+.lb-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eceef4;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lb-btn:hover { background: rgba(255, 255, 255, 0.16); }
+
+@media (max-width: 768px) {
+  .gallery-thumbs { grid-template-columns: repeat(3, 1fr); }
+}
 .footer-inner {
   display: flex;
   align-items: center;
@@ -1057,6 +1213,7 @@ footer {
 
     <nav class="nav-links" aria-label="Primary">
       <a href="#preview" data-i18n="nav.preview">Workbench</a>
+      <a href="#gallery" data-i18n="nav.gallery">Screenshots</a>
       <a href="#features" data-i18n="nav.features">Features</a>
       <a href="#android-guard" data-i18n="nav.android">Android Guard</a>
       <a href="#tui-keys" data-i18n="nav.tui">TUI</a>
@@ -1389,8 +1546,66 @@ footer {
   </div>
 </section>
 
+<!-- Commercial Screenshot Gallery -->
+<section class="band band-alt" id="gallery">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-kicker" data-i18n="gal.kicker">REAL DESKTOP UI CAPTURES</div>
+      <h2 data-i18n="gal.title">Commercial-grade native workbench, pixel by pixel</h2>
+      <p data-i18n="gal.sub">Captured directly from the Wails v2 + Svelte 4 desktop application — click any view to inspect full-resolution Retina screenshots.</p>
+    </div>
+
+    <div class="gallery-tabs" id="galleryTabs" role="tablist">
+      <button type="button" class="gallery-tab active" data-shot="0" data-i18n="gal.t0">Flows + Plugins Debugger</button>
+      <button type="button" class="gallery-tab" data-shot="1" data-i18n="gal.t1">Capture Control</button>
+      <button type="button" class="gallery-tab" data-shot="2" data-i18n="gal.t2">Flows Inspector</button>
+      <button type="button" class="gallery-tab" data-shot="3" data-i18n="gal.t3">DeepTrace Pipeline</button>
+      <button type="button" class="gallery-tab" data-shot="4" data-i18n="gal.t4">Multi-Tab Terminal</button>
+      <button type="button" class="gallery-tab" data-shot="5" data-i18n="gal.t5">Porcelain Light · 中文</button>
+    </div>
+
+    <div class="gallery-stage">
+      <div class="gallery-img-wrap" id="galleryStageTrigger" role="button" tabindex="0" aria-label="Open fullscreen screenshot">
+        <img id="galleryMainImg" src="screenshots/flows-detail.png" alt="cap Desktop GUI screenshot" loading="eager">
+        <span class="gallery-zoom-hint" data-i18n="gal.zoom">Click to expand</span>
+      </div>
+      <div class="gallery-caption-bar">
+        <div>
+          <div class="gallery-caption-title" id="galleryCaptionTitle">Unified Flows + Plugins Single-Page Debugger</div>
+          <div class="gallery-caption-desc" id="galleryCaptionDesc">Inspect live flows on the left while testing Python 3 / Node / Shell scripts with parsed query_params variables and instant ⌘Enter draft execution on the right.</div>
+        </div>
+        <button type="button" class="ctrl-btn" id="galleryExpandBtn" data-i18n="gal.fullscreen">Fullscreen</button>
+      </div>
+    </div>
+
+    <div class="gallery-thumbs" id="galleryThumbs">
+      <button type="button" class="gallery-thumb active" data-shot="0" aria-label="Unified Flows + Plugins Debugger"><img src="screenshots/flows-detail.png" alt="Unified Flows + Plugins Debugger" loading="lazy"></button>
+      <button type="button" class="gallery-thumb" data-shot="1" aria-label="Capture Control Center"><img src="screenshots/capture-tab.png" alt="Capture Control Center" loading="lazy"></button>
+      <button type="button" class="gallery-thumb" data-shot="2" aria-label="Flows Traffic Inspector"><img src="screenshots/flows-tab.png" alt="Flows Traffic Inspector" loading="lazy"></button>
+      <button type="button" class="gallery-thumb" data-shot="3" aria-label="DeepTrace 8-Stage Pipeline"><img src="screenshots/deeptrace-tab.png" alt="DeepTrace 8-Stage Pipeline" loading="lazy"></button>
+      <button type="button" class="gallery-thumb" data-shot="4" aria-label="Workbench Multi-Tab Terminal"><img src="screenshots/terminal-tab.png" alt="Workbench Multi-Tab Terminal" loading="lazy"></button>
+      <button type="button" class="gallery-thumb" data-shot="5" aria-label="Porcelain Light Theme + Chinese"><img src="screenshots/light-zh-preview.png" alt="Porcelain Light Theme + Chinese" loading="lazy"></button>
+    </div>
+  </div>
+</section>
+
+<!-- Fullscreen Lightbox Modal -->
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Screenshot viewer">
+  <div class="lightbox-inner">
+    <img id="lightboxImg" src="screenshots/flows-detail.png" alt="Fullscreen screenshot">
+    <div class="lightbox-bar">
+      <span id="lightboxCaption"></span>
+      <div class="lightbox-controls">
+        <button type="button" class="lb-btn" id="lbPrev" aria-label="Previous">←</button>
+        <button type="button" class="lb-btn" id="lbNext" aria-label="Next">→</button>
+        <button type="button" class="lb-btn" id="lbClose" data-i18n="gal.close">Close (Esc)</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Core Features -->
-<section class="band band-alt" id="features">
+<section class="band" id="features">
   <div class="container">
     <div class="section-head">
       <div class="section-kicker" data-i18n="features.kicker">WORKBENCH CAPABILITIES</div>
@@ -1402,7 +1617,7 @@ footer {
       <article class="feature-card">
         <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg></div>
         <h3 data-i18n="f1.title">Native Wails Desktop GUI</h3>
-        <p data-i18n="f1.desc">4 commercial themes (Obsidian Dark, Porcelain Light, Mocha, Nord), ⌘K Command Palette, collapsible nav rail, draggable SplitPane Flows inspector, and 7 integrated workspaces in a single binary.</p>
+        <p data-i18n="f1.desc">4 commercial themes (Obsidian Dark, Porcelain Light, Mocha, Nord), ⌘K Command Palette, draggable SplitPane Flows inspector, native loopback MJPEG Device Monitor (drag-swipe &amp; live FPS), and 7 integrated workspaces.</p>
       </article>
       <article class="feature-card">
         <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></div>
@@ -1426,13 +1641,13 @@ footer {
       </article>
       <article class="feature-card">
         <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
-        <h3 data-i18n="f6.title">Sign Inference &amp; DeepTrace</h3>
-        <p data-i18n="f6.desc">Cross-request MD5/SHA/HMAC brute-force verification paired with jadx Retrofit/OkHttp source mapping, APK Manifest inspection, DEX string search, and Call Graph correlation.</p>
+        <h3 data-i18n="f6.title">Sign Inference &amp; Live DeepTrace</h3>
+        <p data-i18n="f6.desc">Cross-request MD5/SHA/HMAC brute-force verification paired with a live 8-stage cancellable DeepTrace pipeline (APK/JADX caching), Manifest inspector, DEX search, and Call Graph correlation.</p>
       </article>
       <article class="feature-card">
         <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg></div>
-        <h3 data-i18n="f7.title">Intercept Rules &amp; Breakpoints</h3>
-        <p data-i18n="f7.desc">Pause matching requests in a live Held Breakpoints queue to forward edited payloads, mock responses, or drop traffic — alongside Replay, Flow Diff, and token-propagating Sequence Replay.</p>
+        <h3 data-i18n="f7.title">Unified Flows + Plugins Debugger &amp; Rules</h3>
+        <p data-i18n="f7.desc">Debug Python 3 / Node / Shell scripts directly inside Flows with live query_params chips, click-to-insert snippets, ⌘Enter draft run, and live execution logs — alongside Held Breakpoints &amp; Flow Diff.</p>
       </article>
       <article class="feature-card">
         <div class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
@@ -1461,7 +1676,7 @@ footer {
       <div class="guard-card">
         <span class="guard-step">02 · CERT</span>
         <h3 data-i18n="g2.title">CA Cert (Android 7–15)</h3>
-        <p data-i18n="g2.desc">Uses mount --bind, Magisk, or /system remount on rooted phones, and launches Android KeyChain directly via Companion MainActivity on non-rooted devices.</p>
+        <p data-i18n="g2.desc">Supports HTTP Toolkit-style Android 14+ APEX Conscrypt CA injection + TRUST_STORE_CHANGED live reload, mount --bind/Magisk on rooted devices, and KeyChain via Companion MainActivity on non-rooted phones.</p>
       </div>
       <div class="guard-card">
         <span class="guard-step">03 · WATCHDOG</span>
@@ -1530,8 +1745,8 @@ footer {
           <tr><td data-i18n="cmp.r6">Sign Inference &amp; DeepTrace</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-yes">✓ MD5/SHA/HMAC + jadx</td></tr>
           <tr><td data-i18n="cmp.r7">Android Setup &amp; Guard Watchdog</td><td class="c-no">Manual</td><td class="c-no">Manual</td><td class="c-mid">△ App</td><td class="c-yes">✓ ADB + Rootless Guard APK</td></tr>
           <tr><td data-i18n="cmp.r8">SSL Unpinning</td><td class="c-mid">△ Manual</td><td class="c-no">✗</td><td class="c-no">✗</td><td class="c-yes">✓ Frida / Patch / Magisk / CodeShare</td></tr>
-          <tr><td data-i18n="cmp.r9">Intercept Rules &amp; Breakpoints</td><td class="c-yes">✓</td><td class="c-mid">△ Addon</td><td class="c-yes">✓ Pro</td><td class="c-yes">✓ Rules + Held Queue</td></tr>
-          <tr><td data-i18n="cmp.r10">WebSocket / SSE / Protobuf / Plugins</td><td class="c-yes">WS / BApp</td><td class="c-yes">WS / Addon</td><td class="c-yes">WS</td><td class="c-exp">⧗ Experimental</td></tr>
+          <tr><td data-i18n="cmp.r9">Intercept Rules &amp; Plugin Workbench</td><td class="c-yes">✓ / BApp</td><td class="c-mid">△ Addon</td><td class="c-yes">✓ Pro</td><td class="c-yes">✓ Breakpoints + Single-Page Python/Node/Sh</td></tr>
+          <tr><td data-i18n="cmp.r10">WebSocket / SSE / Protobuf</td><td class="c-yes">WS</td><td class="c-yes">WS / Proto</td><td class="c-yes">WS</td><td class="c-exp">⧗ Experimental</td></tr>
           <tr><td data-i18n="cmp.r11">Distribution &amp; License</td><td class="c-no">JVM · $449/yr</td><td class="c-yes">Python · MIT</td><td class="c-mid">Electron · Partial</td><td class="c-yes">✓ Go Single Binary · MIT</td></tr>
         </tbody>
       </table>
@@ -1616,13 +1831,13 @@ go build -o dist/cap ./cmd/cap
 <!-- Footer -->
 <footer>
   <div class="container footer-inner">
-    <div><strong>cap</strong> · <span data-i18n="footer.copy">MIT License · Open-source HTTP(S) MITM Reverse-Engineering Workbench</span></div>
+    <div><strong>cap</strong> · <span data-i18n-html="footer.copy">© 2026 <a href="https://github.com/overkazaf" target="_blank" rel="noopener">0xaf (@overkazaf)</a> · MIT License · Open-source HTTP(S) MITM Reverse-Engineering Workbench</span></div>
     <div class="footer-links">
       <a href="https://github.com/overkazaf/cap" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://github.com/overkazaf/cap/blob/main/README.md" target="_blank" rel="noopener">README (EN)</a>
-      <a href="https://github.com/overkazaf/cap/blob/main/README_CN.md" target="_blank" rel="noopener">中文文档</a>
-      <a href="https://github.com/overkazaf/cap/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
-      <a href="https://github.com/overkazaf/cap/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+      <a href="https://github.com/overkazaf/cap/blob/master/README.md" target="_blank" rel="noopener">README (EN)</a>
+      <a href="https://github.com/overkazaf/cap/blob/master/README_CN.md" target="_blank" rel="noopener">中文文档</a>
+      <a href="https://github.com/overkazaf/cap/blob/master/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
+      <a href="https://github.com/overkazaf/cap/blob/master/LICENSE" target="_blank" rel="noopener">MIT License</a>
     </div>
   </div>
 </footer>
@@ -1632,6 +1847,7 @@ go build -o dist/cap ./cmd/cap
   var I18N = {
     en: {
       'nav.preview': 'Workbench',
+      'nav.gallery': 'Screenshots',
       'nav.features': 'Features',
       'nav.android': 'Android Guard',
       'nav.tui': 'TUI',
@@ -1673,11 +1889,23 @@ go build -o dist/cap ./cmd/cap
       'capMock.s3Title': 'Cap Companion Guard',
       'capMock.s4Title': 'Proxy Route',
       'capMock.logHead': 'ACTIVITY LOG · REAL-TIME DEVICE EVENTS',
+      'gal.kicker': 'REAL DESKTOP UI CAPTURES',
+      'gal.title': 'Commercial-grade native workbench, pixel by pixel',
+      'gal.sub': 'Captured directly from the Wails v2 + Svelte 4 desktop application — click any view to inspect full-resolution Retina screenshots.',
+      'gal.t0': 'Flows + Plugins Debugger',
+      'gal.t1': 'Capture Control',
+      'gal.t2': 'Flows Inspector',
+      'gal.t3': 'DeepTrace Pipeline',
+      'gal.t4': 'Multi-Tab Terminal',
+      'gal.t5': 'Porcelain Light · 中文',
+      'gal.zoom': 'Click to expand',
+      'gal.fullscreen': 'Fullscreen',
+      'gal.close': 'Close (Esc)',
       'features.kicker': 'WORKBENCH CAPABILITIES',
       'features.title': 'Everything needed from packet capture to signature reversal',
       'features.sub': 'Engineered for mobile reverse engineers and AI coding agents — fast, native, scriptable, and bilingual out of the box.',
       'f1.title': 'Native Wails Desktop GUI',
-      'f1.desc': '4 commercial themes (Obsidian Dark, Porcelain Light, Mocha, Nord), ⌘K Command Palette, collapsible nav rail, draggable SplitPane Flows inspector, and 7 integrated workspaces in a single binary.',
+      'f1.desc': '4 commercial themes (Obsidian Dark, Porcelain Light, Mocha, Nord), ⌘K Command Palette, draggable SplitPane Flows inspector, native loopback MJPEG Device Monitor (drag-swipe & live FPS), and 7 integrated workspaces.',
       'f2.title': 'Flicker-Free Interactive TUI',
       'f2.desc': 'Launch with cap tui or cap start --tui. Double-buffered ANSI rendering, 6 inspector tabs, live / query filtering, async replay, clipboard cURL copy, theme switch, and live EN/中文 toggle.',
       'f3.title': 'Cap Companion Guard APK',
@@ -1686,10 +1914,10 @@ go build -o dist/cap ./cmd/cap
       'f4.desc': 'Synchronized English and Simplified Chinese across GUI, TUI, CLI (--lang, CAP_LANG), and the Android Companion APK. Hot-switch instantaneously without restarting capture sessions.',
       'f5.title': 'LLM-Ready JSONL & 5-Lang Codegen',
       'f5.desc': 'Strip noise headers, auto-tag sign_params, inline JSON bodies, and pipe compact JSONL straight to your coding agent — or generate runnable cURL, Python, Go, Java, and JS snippets.',
-      'f6.title': 'Sign Inference & DeepTrace',
-      'f6.desc': 'Cross-request MD5/SHA/HMAC brute-force verification paired with jadx Retrofit/OkHttp source mapping, APK Manifest inspection, DEX string search, and Call Graph correlation.',
-      'f7.title': 'Intercept Rules & Breakpoints',
-      'f7.desc': 'Pause matching requests in a live Held Breakpoints queue to forward edited payloads, mock responses, or drop traffic — alongside Replay, Flow Diff, and token-propagating Sequence Replay.',
+      'f6.title': 'Sign Inference & Live DeepTrace',
+      'f6.desc': 'Cross-request MD5/SHA/HMAC brute-force verification paired with a live 8-stage cancellable DeepTrace pipeline (APK/JADX caching), Manifest inspector, DEX search, and Call Graph correlation.',
+      'f7.title': 'Unified Flows + Plugins Debugger & Rules',
+      'f7.desc': 'Debug Python 3 / Node / Shell scripts directly inside Flows with live query_params chips, click-to-insert snippets, ⌘Enter draft run, and live execution logs — alongside Held Breakpoints & Flow Diff.',
       'f8.title': '4-Strategy SSL Unpinning',
       'f8.desc': 'Bypass pinning via Frida (14+ hooks including OkHttp3, Conscrypt, Flutter BoringSSL), APK NetworkSecurityConfig patching, Magisk cert promotion, or automatic Frida CodeShare search.',
       'guard.kicker': 'SELF-HEALING ANDROID CAPTURE',
@@ -1698,7 +1926,7 @@ go build -o dist/cap ./cmd/cap
       'g1.title': 'Auto-Installed via ADB',
       'g1.desc': 'cap android connect pushes the embedded 33 KB signed APK, grants WRITE_SECURE_SETTINGS, and whitelists battery optimization automatically.',
       'g2.title': 'CA Cert (Android 7–15)',
-      'g2.desc': 'Uses mount --bind, Magisk, or /system remount on rooted phones, and launches Android KeyChain directly via Companion MainActivity on non-rooted devices.',
+      'g2.desc': 'Supports HTTP Toolkit-style Android 14+ APEX Conscrypt CA injection + TRUST_STORE_CHANGED live reload, mount --bind/Magisk on rooted devices, and KeyChain via Companion MainActivity on non-rooted phones.',
       'g3.title': '3s Heartbeat Probe',
       'g3.desc': 'ProxyGuardService continuously probes proxy_host:proxy_port every 3 seconds with a persistent notification and one-tap Restore Network action.',
       'g4.title': 'Autonomous Teardown',
@@ -1728,8 +1956,8 @@ go build -o dist/cap ./cmd/cap
       'cmp.r6': 'Sign Inference & DeepTrace',
       'cmp.r7': 'Android Setup & Guard Watchdog',
       'cmp.r8': 'SSL Unpinning',
-      'cmp.r9': 'Intercept Rules & Breakpoints',
-      'cmp.r10': 'WebSocket / SSE / Protobuf / Plugins',
+      'cmp.r9': 'Intercept Rules & Plugin Workbench',
+      'cmp.r10': 'WebSocket / SSE / Protobuf',
       'cmp.r11': 'Distribution & License',
       'cmp.note': '⧗ Experimental: implemented and tested, with deliberately conservative maturity labeling until validated across broader protocol and device matrices.',
       'inst.kicker': 'GET STARTED IN SECONDS',
@@ -1742,10 +1970,11 @@ go build -o dist/cap ./cmd/cap
       'inst.copy': 'Copy',
       'inst.copied': 'Copied',
       'inst.req': 'Requirements: Go 1.27+, Node.js 18+ (for GUI assets). macOS needs Xcode Command Line Tools; Linux GUI needs libgtk-3-dev & libwebkit2gtk-4.0-dev.',
-      'footer.copy': 'MIT License · Open-source HTTP(S) MITM Reverse-Engineering Workbench'
+      'footer.copy': '© 2026 <a href="https://github.com/overkazaf" target="_blank" rel="noopener">0xaf (@overkazaf)</a> · MIT License · Open-source HTTP(S) MITM Reverse-Engineering Workbench'
     },
     zh: {
       'nav.preview': '工作台预览',
+      'nav.gallery': '实机截图',
       'nav.features': '核心特性',
       'nav.android': 'Android 守护',
       'nav.tui': '交互 TUI',
@@ -1787,11 +2016,23 @@ go build -o dist/cap ./cmd/cap
       'capMock.s3Title': 'Cap 代理守护 APK',
       'capMock.s4Title': '代理路由',
       'capMock.logHead': '活动日志 · 实时设备事件流',
+      'gal.kicker': '真实桌面端实机截图',
+      'gal.title': '商业级原生桌面工作台，逐像素呈现',
+      'gal.sub': '直接截取自 Wails v2 + Svelte 4 原生桌面应用 —— 点击任意画面即可全屏查看大图。',
+      'gal.t0': '请求流 + 插件联调',
+      'gal.t1': '抓包控制中心',
+      'gal.t2': 'Flows 流量检查器',
+      'gal.t3': 'DeepTrace 流水线',
+      'gal.t4': '多标签终端',
+      'gal.t5': '瓷白浅色 · 中文',
+      'gal.zoom': '点击全屏查看',
+      'gal.fullscreen': '全屏大图',
+      'gal.close': '关闭 (Esc)',
       'features.kicker': '核心工作台能力',
       'features.title': '覆盖从抓包到签名逆向的全流程',
       'features.sub': '面向移动端逆向工程师与 AI 编程助手打造 —— 原生轻量、可脚本化、开箱即支持中英双语。',
       'f1.title': 'Wails 原生桌面 GUI',
-      'f1.desc': '内置 4 套主题（Obsidian 曜石暗黑、Porcelain 陶瓷浅色、Mocha、Nord）、⌘K 命令面板、可折叠侧边栏、可拖拽 SplitPane 流量分析器与 7 大集成工作区。',
+      'f1.desc': '内置 4 套主题（Obsidian 曜石暗黑、Porcelain 陶瓷浅色、Mocha、Nord）、⌘K 命令面板、可拖拽 SplitPane 流量分析器、原生回环 MJPEG 手机投屏（拖拽滑动与实时 FPS）与 7 大工作区。',
       'f2.title': '无闪烁全屏交互式 TUI',
       'f2.desc': '通过 cap tui 或 cap start --tui 启动。采用双缓冲 ANSI 渲染，支持 6 个详情标签、/ 实时过滤、异步重放、复制 cURL、主题切换与 L 键实时中英热切换。',
       'f3.title': 'Cap 代理守护伴侣 APK',
@@ -1800,10 +2041,10 @@ go build -o dist/cap ./cmd/cap
       'f4.desc': '桌面 GUI、交互 TUI、CLI（--lang、CAP_LANG）与 Android 守护 APK 全套双语同步，无需重启抓包会话即可实时热切换。',
       'f5.title': 'LLM 友好 JSONL 与 5 语言导出',
       'f5.desc': '自动剥离噪声头、标记 sign_params 并内联 JSON 体，一键输出精简 JSONL 喂给 AI 助手，或生成可运行的 cURL、Python、Go、Java、JS 代码。',
-      'f6.title': '签名算法推理与 DeepTrace',
-      'f6.desc': '跨请求 MD5/SHA/HMAC 暴力校验，配合 jadx Retrofit/OkHttp 源码映射、APK Manifest 检查、DEX 字符串检索与调用图关联。',
-      'f7.title': '拦截规则与实时挂起断点',
-      'f7.desc': '在实时挂起断点队列中拦截并改写请求、Mock 响应或丢弃流量，配合改参重放、并排 Flow Diff 与自动传递 Token 的序列回放。',
+      'f6.title': '签名推理与实时 DeepTrace',
+      'f6.desc': '跨请求 MD5/SHA/HMAC 暴力校验，配合 8 阶段实时可取消 DeepTrace 流水线（APK/JADX 缓存秒级复用）、Manifest 检查器、DEX 检索与调用图关联。',
+      'f7.title': '请求流 + 插件单页联调与拦截规则',
+      'f7.desc': '在 Flows 界面直接编写并调试 Python 3 / Node / Shell 脚本，内置 query_params 实时变量标签、点击插入片段、⌘Enter 免保存运行草稿与实时日志，并支持挂起断点与 Flow Diff。',
       'f8.title': '四策略 SSL Unpinning 脱钉',
       'f8.desc': '支持 Frida 运行时 hook（14+ 主流实现含 OkHttp3/Conscrypt/Flutter BoringSSL）、APK 补丁、Magisk 模块及 CodeShare 自动指纹搜索。',
       'guard.kicker': '断网自愈 ANDROID 抓包',
@@ -1812,7 +2053,7 @@ go build -o dist/cap ./cmd/cap
       'g1.title': 'ADB 一键静默部署',
       'g1.desc': 'cap android connect 自动推送 33 KB 签名守护 APK、授予 WRITE_SECURE_SETTINGS 权限并配置后台电池白名单。',
       'g2.title': 'CA 证书注入（Android 7–15）',
-      'g2.desc': 'Root 设备支持 mount --bind / Magisk / /system 三策略注入；非 Root 设备通过伴侣 App 一键调起系统 KeyChain 安装。',
+      'g2.desc': 'Root 设备支持 HTTP Toolkit 方案的 Android 14+ APEX Conscrypt 注入与 TRUST_STORE_CHANGED 实时重载，以及 mount --bind / Magisk；非 Root 通过伴侣 App 一键调起 KeyChain。',
       'g3.title': '3 秒心跳看门狗',
       'g3.desc': 'ProxyGuardService 前台服务每 3 秒探测代理连通性，状态栏常驻实时状态并提供一键「恢复网络」按钮。',
       'g4.title': '全场景自主恢复',
@@ -1842,8 +2083,8 @@ go build -o dist/cap ./cmd/cap
       'cmp.r6': '签名推理与 DeepTrace',
       'cmp.r7': 'Android 接入与守护看门狗',
       'cmp.r8': 'SSL Unpinning 脱钉',
-      'cmp.r9': '拦截规则与挂起断点',
-      'cmp.r10': 'WebSocket / SSE / Protobuf / 插件',
+      'cmp.r9': '拦截规则与插件单页联调',
+      'cmp.r10': 'WebSocket / SSE / Protobuf',
       'cmp.r11': '分发形态与开源协议',
       'cmp.note': '⧗ Experimental（实验性）：功能已实现并有基础测试，但在覆盖更多协议与机型组合前保持保守标识。',
       'inst.kicker': '秒级上手',
@@ -1856,7 +2097,7 @@ go build -o dist/cap ./cmd/cap
       'inst.copy': '复制',
       'inst.copied': '已复制',
       'inst.req': '环境要求：Go 1.27+、Node.js 18+（构建前端）。macOS 需 Xcode 命令行工具；Linux 构建 GUI 需 libgtk-3-dev 与 libwebkit2gtk-4.0-dev。',
-      'footer.copy': 'MIT 开源协议 · HTTP(S) MITM 逆向工程工作台'
+      'footer.copy': '© 2026 <a href="https://github.com/overkazaf" target="_blank" rel="noopener">0xaf (@overkazaf)</a> · MIT 开源协议 · HTTP(S) MITM 逆向工程工作台'
     }
   };
 
@@ -1895,11 +2136,57 @@ go build -o dist/cap ./cmd/cap
     curl: 'curl -X POST \\\n  "https://api.shopapp.io/v2/auth/login" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"uid":"u_902184","ts":1763821321,"sign":"e4d909..."}\'\n\n# Press [l] to cycle: curl -> python -> go -> java -> js'
   };
 
+  var GALLERY_SHOTS = [
+    {
+      src: 'screenshots/flows-detail.png',
+      titleEn: 'Unified Flows + Plugins Single-Page Debugger',
+      descEn: 'Browse live traffic on the left while authoring Python 3 / Node / Shell plugins on the right with parsed query_params chips, Match badge, ⌘Enter draft run & live logs.',
+      titleZh: '请求流 + 插件单页联调工作台',
+      descZh: '左侧浏览实时捕获流量，右侧内嵌 PluginWorkbench 即时查看 query_params 解析变量、匹配状态，按 ⌘Enter 运行 Python 3 / Node / Shell 脚本草稿并查看实时日志。'
+    },
+    {
+      src: 'screenshots/capture-tab.png',
+      titleEn: 'Capture Control Center & Android Companion Guard',
+      descEn: 'Real-time req/s & P95 latency KPIs, 4-step Android APEX Conscrypt CA + Cap Companion Guard watchdog status, and live Active Hosts breakdown.',
+      titleZh: '抓包控制中心与 Android 代理守护',
+      descZh: '实时 req/s 与 P95 延迟看板、4 步 Android APEX Conscrypt 证书与 Cap Companion Guard 看门狗状态及活跃主机分布。'
+    },
+    {
+      src: 'screenshots/flows-tab.png',
+      titleEn: 'Flows Traffic Inspector (Obsidian Dark)',
+      descEn: 'Multi-facet filtering, draggable SplitPane, syntax-highlighted JSON/XML/Protobuf/Hex body inspector, automatic sign parameter detection, and 5-language code export.',
+      titleZh: 'Flows 流量检查器（Obsidian 曜石暗黑）',
+      descZh: '多维度过滤工具栏、可拖拽 SplitPane、JSON/XML/Protobuf/Hex 高亮解析、签名参数自动识别与 5 种语言代码导出。'
+    },
+    {
+      src: 'screenshots/deeptrace-tab.png',
+      titleEn: 'DeepTrace 8-Stage Live Pipeline & Call Graph',
+      descEn: 'Cancellable 8-stage pipeline with APK/JADX caching tracing HTTP requests through Retrofit/OkHttp Java sources down to JNI & native .so symbols.',
+      titleZh: 'DeepTrace 8 阶段实时流水线与调用图',
+      descZh: '支持随时取消与 APK/JADX 缓存秒级复用的 8 阶段追踪流水线，串联 HTTP 请求、Java 源码、JNI 接口与 Native SO 函数。'
+    },
+    {
+      src: 'screenshots/terminal-tab.png',
+      titleEn: 'Workbench Multi-Tab Terminal',
+      descEn: 'Structured diagnostic command blocks with one-click presets for ADB devices, cap android status, Frida, jadx, and radare2 without leaving the desktop app.',
+      titleZh: '工作台多标签内嵌终端',
+      descZh: '结构化诊断命令块与快捷指令预设，无需切换窗口即可执行 ADB、cap android status、Frida、jadx 与 radare2。'
+    },
+    {
+      src: 'screenshots/light-zh-preview.png',
+      titleEn: 'Porcelain Light Theme + Native 简体中文',
+      descEn: 'First-class Porcelain Light appearance paired with complete Simplified Chinese localization across every workspace, tooltip, and status bar.',
+      titleZh: 'Porcelain 陶瓷浅色主题 + 原生简体中文',
+      descZh: '高对比度 Porcelain 陶瓷浅色主题搭配全栈原生简体中文界面，支持顶栏与 ⌘K 命令面板零延迟热切换。'
+    }
+  ];
+
   var state = {
     lang: 'en',
     theme: 'dark',
     flowIdx: 0,
-    tuiTab: 'overview'
+    tuiTab: 'overview',
+    shotIdx: 0
   };
 
   function detectLang() {
@@ -1932,6 +2219,38 @@ go build -o dist/cap ./cmd/cap
     }
   }
 
+  function renderGallery() {
+    var shot = GALLERY_SHOTS[state.shotIdx] || GALLERY_SHOTS[0];
+    var title = state.lang === 'zh' ? shot.titleZh : shot.titleEn;
+    var desc = state.lang === 'zh' ? shot.descZh : shot.descEn;
+    var mainImg = document.getElementById('galleryMainImg');
+    var capTitle = document.getElementById('galleryCaptionTitle');
+    var capDesc = document.getElementById('galleryCaptionDesc');
+    var lbImg = document.getElementById('lightboxImg');
+    var lbCap = document.getElementById('lightboxCaption');
+    if (mainImg) { mainImg.src = shot.src; mainImg.alt = title; }
+    if (capTitle) capTitle.textContent = title;
+    if (capDesc) capDesc.textContent = desc;
+    if (lbImg) { lbImg.src = shot.src; lbImg.alt = title; }
+    if (lbCap) lbCap.textContent = title + ' — ' + desc;
+    document.querySelectorAll('#galleryTabs .gallery-tab').forEach(function (el) {
+      el.classList.toggle('active', parseInt(el.getAttribute('data-shot'), 10) === state.shotIdx);
+    });
+    document.querySelectorAll('#galleryThumbs .gallery-thumb').forEach(function (el) {
+      el.classList.toggle('active', parseInt(el.getAttribute('data-shot'), 10) === state.shotIdx);
+    });
+  }
+
+  function openLightbox() {
+    renderGallery();
+    var lb = document.getElementById('lightbox');
+    if (lb) lb.classList.add('open');
+  }
+  function closeLightbox() {
+    var lb = document.getElementById('lightbox');
+    if (lb) lb.classList.remove('open');
+  }
+
   function applyLang(lang) {
     state.lang = lang === 'zh' ? 'zh' : 'en';
     document.documentElement.lang = state.lang === 'zh' ? 'zh-CN' : 'en';
@@ -1949,6 +2268,7 @@ go build -o dist/cap ./cmd/cap
     if (echo) echo.textContent = state.lang === 'zh' ? '简体中文' : 'EN';
     try { localStorage.setItem('cap.docs.lang', state.lang); } catch (_) {}
     renderFlowInspector();
+    renderGallery();
   }
 
   function applyTheme(theme) {
@@ -2041,10 +2361,50 @@ go build -o dist/cap ./cmd/cap
     }
   });
 
+  // Gallery & Lightbox Controls
+  document.querySelectorAll('#galleryTabs .gallery-tab, #galleryThumbs .gallery-thumb').forEach(function (el) {
+    el.addEventListener('click', function () {
+      state.shotIdx = parseInt(el.getAttribute('data-shot'), 10) || 0;
+      renderGallery();
+    });
+  });
+  var stageTrigger = document.getElementById('galleryStageTrigger');
+  if (stageTrigger) {
+    stageTrigger.addEventListener('click', openLightbox);
+    stageTrigger.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openLightbox(); }
+    });
+  }
+  var expandBtn = document.getElementById('galleryExpandBtn');
+  if (expandBtn) expandBtn.addEventListener('click', openLightbox);
+  var lbClose = document.getElementById('lbClose');
+  if (lbClose) lbClose.addEventListener('click', closeLightbox);
+  var lbPrev = document.getElementById('lbPrev');
+  if (lbPrev) lbPrev.addEventListener('click', function () {
+    state.shotIdx = (state.shotIdx - 1 + GALLERY_SHOTS.length) % GALLERY_SHOTS.length;
+    renderGallery();
+  });
+  var lbNext = document.getElementById('lbNext');
+  if (lbNext) lbNext.addEventListener('click', function () {
+    state.shotIdx = (state.shotIdx + 1) % GALLERY_SHOTS.length;
+    renderGallery();
+  });
+  var lbEl = document.getElementById('lightbox');
+  if (lbEl) lbEl.addEventListener('click', function (e) {
+    if (e.target === lbEl) closeLightbox();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!lbEl || !lbEl.classList.contains('open')) return;
+    if (e.key === 'Escape') closeLightbox();
+    else if (e.key === 'ArrowLeft') { state.shotIdx = (state.shotIdx - 1 + GALLERY_SHOTS.length) % GALLERY_SHOTS.length; renderGallery(); }
+    else if (e.key === 'ArrowRight') { state.shotIdx = (state.shotIdx + 1) % GALLERY_SHOTS.length; renderGallery(); }
+  });
+
   // Initialize
   applyTheme(detectTheme());
   applyLang(detectLang());
   renderTuiTab('overview');
+  renderGallery();
 })();
 </script>
 </body>

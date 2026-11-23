@@ -84,7 +84,7 @@ func TestRootHelpAndSubcommands(t *testing.T) {
 	if strings.Contains(text, "\x1b[") {
 		t.Fatalf("non-TTY cap --help must not emit ANSI escapes:\n%s", text)
 	}
-	for _, want := range []string{"CAPTURE & INSPECTION", "DEVICE & SSL UNPINNING", "start", "tui", "gui", "flows", "export", "android", "unpin", "cap start --tui"} {
+	for _, want := range []string{"CAPTURE & INSPECTION", "DEVICE & SSL UNPINNING", "start", "tui", "gui", "flows", "export", "android", "unpin", "cap start --tui", "© 2026 0xaf (@overkazaf)", "https://github.com/overkazaf/cap"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("cap --help missing %q", want)
 		}
@@ -100,7 +100,7 @@ func TestRootHelpAndSubcommands(t *testing.T) {
 		t.Fatalf("cap --lang zh --help failed: %v", err)
 	}
 	zhText := out.String()
-	for _, want := range []string{"抓包与流量检视", "设备管理与 SSL 绕过", "快速开始"} {
+	for _, want := range []string{"抓包与流量检视", "设备管理与 SSL 绕过", "快速开始", "© 2026 0xaf (@overkazaf)", "https://github.com/overkazaf/cap"} {
 		if !strings.Contains(zhText, want) {
 			t.Errorf("cap --lang zh --help missing %q:\n%s", want, zhText)
 		}

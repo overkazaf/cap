@@ -58,6 +58,7 @@
   let wifiBusy = false
   let appsLoading = false
   let filterSaving = false
+  let syncInFlight = false
   let lastManualCertPrompt = false
 
   let logEl = null
@@ -124,7 +125,8 @@
   $: companionWatchdog = Boolean(companion?.watchdog_running)
   $: companionPerm = Boolean(companion?.has_secure_settings)
 
-  $: activeRouteConnected = Boolean(connStatus?.connected || deviceConnected)
+  $: proxyMismatch = Boolean(connStatus?.proxy_mismatch)
+  $: activeRouteConnected = Boolean(connStatus ? connStatus.connected : deviceConnected)
   $: activeRouteMode = connStatus?.mode === 'vpn' ? $t('core.capture.device.modeVpn') : $t('core.capture.device.modeProxy')
 
   $: certStoreLabel =
@@ -178,10 +180,13 @@
     {
       id: 'route',
       label: $t('core.capture.device.stepRoute'),
-      done: activeRouteConnected,
-      detail: activeRouteConnected
-        ? $t('core.capture.device.stepRouteActive', { mode: activeRouteMode })
-        : $t('core.capture.device.stepRouteIdle'),
+      done: activeRouteConnected && !proxyMismatch,
+      warn: proxyMismatch,
+      detail: proxyMismatch
+        ? $t('core.capture.device.stepRouteMismatch', { actual: connStatus?.proxy_address || '?' })
+        : activeRouteConnected
+          ? $t('core.capture.device.stepRouteActive', { mode: activeRouteMode })
+          : $t('core.capture.device.stepRouteIdle'),
     },
   ]
 
@@ -231,6 +236,39 @@
     }
   }
 
+  function extractValidPort(addr) {
+    if (!addr || typeof addr !== 'string') return ''
+    const trimmed = addr.trim()
+    const idx = trimmed.lastIndexOf(':')
+    if (idx < 0) return ''
+    const candidate = trimmed.slice(idx + 1).trim()
+    if (!/^\d{1,5}$/.test(candidate)) return ''
+    const num = Number(candidate)
+    return num >= 1 && num <= 65535 ? String(num) : ''
+  }
+
+  function replaceAddrPort(addr, newPort) {
+    const trimmed = String(addr || '').trim()
+    const idx = trimmed.lastIndexOf(':')
+    const hostPart = idx >= 0 ? trimmed.slice(0, idx) : (trimmed || '0.0.0.0')
+    return `${hostPart}:${newPort}`
+  }
+
+  function handleProxyAddrInput() {
+    const parsed = extractValidPort(proxyAddr)
+    if (parsed) port = parsed
+  }
+
+  function handlePortInput() {
+    if (isRunning) return
+    const trimmed = String(port || '').trim()
+    if (!/^\d{1,5}$/.test(trimmed)) return
+    const num = Number(trimmed)
+    if (num >= 1 && num <= 65535) {
+      proxyAddr = replaceAddrPort(proxyAddr, String(num))
+    }
+  }
+
   async function addLog(msg, level = 'info') {
     logs = appendCaptureLog(msg, level)
     await tick()
@@ -241,7 +279,8 @@
 
   async function syncBackendState() {
     const api = appApi()
-    if (!api) return
+    if (!api || syncInFlight) return
+    syncInFlight = true
     try {
       const [running, paused, addr, ip, st, errs] = await Promise.all([
         api.IsProxyRunning?.().catch(() => isRunning),
@@ -253,8 +292,13 @@
       ])
       isRunning = Boolean(running)
       isPaused = Boolean(paused)
-      if (addr) liveAddr = addr
-      else if (!isRunning) liveAddr = ''
+      if (addr) {
+        liveAddr = addr
+        const livePort = extractValidPort(addr)
+        if (isRunning && livePort) port = livePort
+      } else if (!isRunning) {
+        liveAddr = ''
+      }
       if (ip) hostIP = ip
       if (st) stats = st
       if (Array.isArray(errs)) tlsErrors = errs
@@ -266,6 +310,7 @@
         rate = { ...rate, req_per_sec: 0, byte_per_sec: 0 }
       }
     } catch (_) {}
+    syncInFlight = false
   }
 
   async function loadCACertInfo() {
@@ -283,6 +328,7 @@
       deviceConnected = false
       return
     }
+    if (statusLoading) return
     statusLoading = true
     try {
       const st = await api.GetDeviceConnectionStatus(serial)
@@ -349,8 +395,8 @@
         isPaused = false
         const addr = (await api.ProxyAddr?.().catch(() => proxyAddr)) || proxyAddr
         liveAddr = addr
-        const portPart = addr.includes(':') ? addr.split(':').pop() : ''
-        if (portPart && /^\d+$/.test(portPart)) port = portPart
+        const parsedPort = extractValidPort(addr)
+        if (parsedPort) port = parsedPort
         addLog(translate('core.capture.logs.proxyListening', { addr }), 'success')
         toast.success(translate('core.capture.toast.proxyStarted', { addr }))
         syncBackendState()
@@ -391,7 +437,7 @@
 
   async function refreshDevices() {
     const api = appApi()
-    if (!api?.ListDevices) return
+    if (!api?.ListDevices || deviceBusy) return
     deviceBusy = true
     addLog(translate('core.capture.logs.scanningDevices'), 'info')
     try {
@@ -546,7 +592,7 @@
 
   async function scanEnv() {
     const api = appApi()
-    if (!api || !selectedDevice) return
+    if (!api || !selectedDevice || envLoading) return
     envLoading = true
     try {
       const [env, frida] = await Promise.all([
@@ -679,7 +725,11 @@
     on('proxy:started', (ev) => {
       isRunning = true
       isPaused = false
-      if (ev?.address) liveAddr = ev.address
+      if (ev?.address) {
+        liveAddr = ev.address
+        const parsedPort = extractValidPort(ev.address)
+        if (parsedPort) port = parsedPort
+      }
     })
     on('proxy:stopped', () => {
       isRunning = false
@@ -796,6 +846,7 @@
             type="text"
             class="addr-input mono"
             bind:value={proxyAddr}
+            on:input={handleProxyAddrInput}
             disabled={isRunning}
             placeholder="0.0.0.0:8080"
             aria-label={$t('core.capture.addrAria')}
@@ -930,9 +981,11 @@
 
         <div class="stepper">
           {#each setupSteps as step, idx}
-            <div class="step" class:done={step.done}>
+            <div class="step" class:done={step.done} class:warn={step.warn}>
               <div class="step-dot" class:pulse-dot={step.pulse}>
-                {#if step.done}
+                {#if step.warn}
+                  <Icon name="alert-triangle" size={11} strokeWidth={2.2} />
+                {:else if step.done}
                   <Icon name="check" size={11} strokeWidth={2.4} />
                 {:else}
                   <span class="mono">{idx + 1}</span>
@@ -940,7 +993,7 @@
               </div>
               <div class="step-info">
                 <div class="step-label">{step.label}</div>
-                <div class="step-detail truncate mono">{step.detail}</div>
+                <div class="step-detail truncate mono" title={step.detail}>{step.detail}</div>
               </div>
             </div>
           {/each}
@@ -1002,6 +1055,7 @@
                 type="text"
                 class="cap-input port-input mono tabular-nums"
                 bind:value={port}
+                on:input={handlePortInput}
                 disabled={deviceBusy}
               />
             </label>
@@ -1022,6 +1076,18 @@
               </span>
             </label>
           </div>
+
+          {#if proxyMismatch}
+            <div class="prot-banner warn">
+              <Icon name="alert-triangle" size={14} />
+              <span>
+                {$t('core.capture.device.proxyMismatch', {
+                  actual: connStatus?.proxy_address || '—',
+                  expected: connStatus?.expected_proxy || displayAddr,
+                })}
+              </span>
+            </div>
+          {/if}
 
           <div class="action-row">
             <Button
@@ -1815,6 +1881,17 @@
   .step.done {
     border-color: var(--status-success-border);
     background: color-mix(in srgb, var(--status-success-bg) 55%, var(--bg-surface));
+  }
+
+  .step.warn {
+    border-color: var(--status-warning-border);
+    background: color-mix(in srgb, var(--status-warning-bg) 60%, var(--bg-surface));
+  }
+
+  .step.warn .step-dot {
+    background: var(--status-warning-bg);
+    border-color: var(--status-warning-border);
+    color: var(--status-warning);
   }
 
   .step-dot {

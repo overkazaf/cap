@@ -10,6 +10,10 @@ const (
 	EventProxyFlow     = "proxy:flow"
 	EventProxyRate     = "proxy:rate"
 	EventCaptureState  = "proxy:capture"
+	EventTraceProgress  = "trace:progress"
+	EventTraceDone      = "trace:done"
+	EventTraceError     = "trace:error"
+	EventPluginExecuted = "plugin:executed"
 )
 
 type EventBus struct {

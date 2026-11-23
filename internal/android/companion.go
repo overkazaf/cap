@@ -218,15 +218,37 @@ func TriggerCompanionCertInstall(serial, certPath string) error {
 	return nil
 }
 
-// GetCompanionStatus inspects the connected device to report whether Cap Guard
-// is installed, its version, whether WRITE_SECURE_SETTINGS is granted, whether
+// GetCompanionStatus inspects the connected device in a single batched
+// `adb shell` invocation to report whether Cap Guard is installed, its
+// version, whether WRITE_SECURE_SETTINGS is granted, whether
 // ProxyGuardService is currently running, and battery whitelist state.
 func GetCompanionStatus(serial string) CompanionStatus {
-	pkgOut, err := AdbShell(serial, "dumpsys package "+CompanionPackage)
-	if err != nil {
+	script := fmt.Sprintf(
+		`echo "===CAP_PKG==="; dumpsys package %s 2>/dev/null; `+
+			`echo "===CAP_SVC==="; dumpsys activity services %s 2>/dev/null; `+
+			`echo "===CAP_WL==="; dumpsys deviceidle whitelist 2>/dev/null; true`,
+		CompanionPackage, CompanionService,
+	)
+	out, err := AdbShell(serial, script)
+	if err != nil && strings.TrimSpace(out) == "" {
 		return CompanionStatus{Error: err.Error()}
 	}
-	installed, verName, verCode, hasSecure := ParseCompanionPackageDump(pkgOut)
+	return ParseBatchedCompanionOutput(out)
+}
+
+// ParseBatchedCompanionOutput parses the sectioned stdout emitted by
+// GetCompanionStatus (and GetDeviceStatus) into a CompanionStatus.
+func ParseBatchedCompanionOutput(output string) CompanionStatus {
+	pkgSec := extractSection(output, "===CAP_PKG===", "===CAP_SVC===")
+	svcSec := extractSection(output, "===CAP_SVC===", "===CAP_WL===")
+	wlSec := extractSection(output, "===CAP_WL===", "")
+
+	// Fallback for unsectioned mock outputs in legacy tests
+	if pkgSec == "" && !strings.Contains(output, "===CAP_PKG===") {
+		pkgSec = output
+	}
+
+	installed, verName, verCode, hasSecure := ParseCompanionPackageDump(pkgSec)
 	status := CompanionStatus{
 		Installed:         installed,
 		Version:           verName,
@@ -236,13 +258,23 @@ func GetCompanionStatus(serial string) CompanionStatus {
 	if !installed {
 		return status
 	}
-
-	svcOut, _ := AdbShell(serial, "dumpsys activity services "+CompanionService)
-	status.WatchdogRunning = ParseCompanionServiceRunning(svcOut)
-
-	wlOut, _ := AdbShell(serial, "dumpsys deviceidle whitelist")
-	status.BatteryWhitelisted = ParseBatteryWhitelisted(wlOut)
+	status.WatchdogRunning = ParseCompanionServiceRunning(svcSec)
+	status.BatteryWhitelisted = ParseBatteryWhitelisted(wlSec)
 	return status
+}
+
+func extractSection(output, startMarker, endMarker string) string {
+	startIdx := strings.Index(output, startMarker)
+	if startIdx < 0 {
+		return ""
+	}
+	rest := output[startIdx+len(startMarker):]
+	if endMarker != "" {
+		if endIdx := strings.Index(rest, endMarker); endIdx >= 0 {
+			rest = rest[:endIdx]
+		}
+	}
+	return strings.TrimSpace(rest)
 }
 
 // ParseCompanionPackageDump extracts installation state, versionName,

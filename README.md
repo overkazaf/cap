@@ -17,10 +17,50 @@
 <p align="center">
   <a href="README_CN.md">中文文档</a> ·
   <a href="https://overkazaf.github.io/cap/">Documentation &amp; Preview</a> ·
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#install--build">Install &amp; Build</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#command-reference">CLI &amp; TUI Reference</a>
 </p>
+
+---
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/flows-detail.png" alt="cap Unified Flows + Plugins Single-Page Debugger (Obsidian Dark)" width="100%">
+  <br>
+  <em>Unified Flows + Plugins Single-Page Debugger — inspect live traffic on the left while writing, matching, and running Python 3 / Node / Shell scripts with live parsed <code>query_params</code> variables on the right.</em>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/capture-tab.png" alt="Capture Control Center" width="100%"><br>
+      <strong>Capture Control Center</strong> — Live KPIs, 4-step Android APEX CA &amp; Companion Guard Watchdog
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/flows-tab.png" alt="Flows Traffic Inspector" width="100%"><br>
+      <strong>Flows Traffic Inspector</strong> — Draggable SplitPane, JSON/XML/Protobuf/Hex &amp; Sign Detection
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/deeptrace-tab.png" alt="DeepTrace 8-Stage Pipeline" width="100%"><br>
+      <strong>DeepTrace 8-Stage Live Pipeline</strong> — HTTP → Java → JNI → Native Call Graph &amp; APK/JADX Cache
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/terminal-tab.png" alt="Workbench Multi-Tab Terminal" width="100%"><br>
+      <strong>Workbench Multi-Tab Terminal</strong> — Structured diagnostic blocks for ADB, Frida &amp; CLI tools
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/screenshots/light-zh-preview.png" alt="Porcelain Light Theme + Simplified Chinese" width="88%"><br>
+      <strong>Porcelain Light Theme + Native 简体中文</strong> — Live hot-switching across 4 themes &amp; EN / 中文
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -38,10 +78,10 @@ Most HTTP proxies (Burp Suite, mitmproxy, HTTP Toolkit) are designed for web sec
 | Multi-language codegen | ✗ | △ curl + Python | ✗ | **✓ 5 languages** |
 | Sign param auto-detect | ✗ | ✗ | ✗ | **✓** |
 | Sign algorithm inference | ✗ | ✗ | ✗ | **✓ MD5/SHA/HMAC** |
-| Static analysis & DeepTrace | ✗ | ✗ | ✗ | **✓ jadx / DEX / Call Graph** |
+| Static analysis & DeepTrace | ✗ | ✗ | ✗ | **✓ 8-stage live jadx / DEX / Call Graph** |
 | One-cmd Android setup | ✗ | ✗ | △ app-based | **✓ ADB direct + Guard APK** |
 | Auto network restore on disconnect | ✗ | ✗ | △ app-based | **✓ Companion Watchdog (rootless)** |
-| Cert inject (Android 7–15) | ✗ manual | ✗ manual | ✓ | **✓ mount --bind / Magisk / KeyChain** |
+| Cert inject (Android 7–15) | ✗ manual | ✗ manual | ✓ | **✓ APEX Conscrypt / mount --bind / Magisk / KeyChain** |
 | SSL unpinning | △ manual | ✗ | ✗ | **✓ Frida / patch / Magisk / CodeShare** |
 | Intercept rules & breakpoints | ✓ | ✓ addon | ✓ Pro | **✓ rules + held breakpoints** |
 | Request replay + diff | ✓ Repeater | ✗ | ✗ | **✓ modify-replay + side-by-side diff** |
@@ -52,7 +92,7 @@ Most HTTP proxies (Burp Suite, mitmproxy, HTTP Toolkit) are designed for web sec
 | WebSocket capture | ✓ | ✓ | ✓ | **⧗ experimental** |
 | SSE stream capture | ✗ | △ | ✗ | **⧗ experimental** |
 | Protobuf auto-decode | ✗ addon | △ addon | ✗ | **⧗ experimental (schema-less)** |
-| Plugin system | ✓ BApp | ✓ addon | ✗ | **⧗ experimental (built-in analyzer)** |
+| Plugin system | ✓ BApp | ✓ addon | ✗ | **✓ single-page Python/Node/Sh workbench** |
 | Single binary | ✗ JVM | ✗ Python | ✗ Electron | **✓ Go single binary** |
 | Open source | ✗ ($449/yr) | ✓ | △ core only | **✓ MIT** |
 
@@ -183,10 +223,10 @@ Native Wails v2 + Svelte 4 desktop workbench compiled into a single binary (no E
   - **Collapsible Left Nav Rail (`⌘B`)** with `⌘1–7` workspace shortcuts, live proxy status pill in the top bar, compact `EN / 中文` switcher, and an IDE-style bottom status bar.
 - **7 Integrated Workspaces**:
   1. **Capture (`⌘1`)**: Live 4-KPI telemetry strip (`req/s` + bandwidth, total flows/bytes, active hosts + avg/P95 latency, error rate + TLS alerts), guided 4-step Android setup (`ADB Device` → `CA Certificate` → `Cap Companion Guard` → `Proxy Route`), domain scope filters, Frida controls, and a tabbed Activity Log / Active Hosts / TLS Alerts console.
-  2. **Flows (`⌘2`)**: Multi-facet filter toolbar (`/` focus, host suggestions, method/status/content-type pills, Flat vs API Groups), horizontal/vertical draggable `SplitPane`, keyboard navigation (`↑/↓`/`j/k`, `Esc`), tabbed inspector (`Params`, `Req/Resp Headers`, `Req/Resp Body` with JSON / XML / Protobuf / Hex + inline search, `Raw`, `Timing`, `Export` to cURL/Python/Go/Java/JS/Agent JSONL), Replay & Modify-Replay, Side-by-Side Flow Diff, Sign Analysis, HAR/Charles Import, and Device Screen Mirror (`Fast` / `scrcpy`).
+  2. **Flows (`⌘2`)**: Multi-facet filter toolbar (`/` focus, host suggestions, method/status/content-type pills, Flat vs API Groups), horizontal/vertical draggable `SplitPane`, keyboard navigation (`↑/↓`/`j/k`, `Esc`), tabbed inspector (`Params`, `Req/Resp Headers`, `Req/Resp Body` with JSON / XML / Protobuf / Hex + inline search, `Raw`, `Timing`, `Export` to cURL/Python/Go/Java/JS/Agent JSONL), Replay & Modify-Replay, Side-by-Side Flow Diff, Sign Analysis, HAR/Charles Import, native loopback **MJPEG Device Monitor** (`Fast` / `scrcpy`, live FPS & drag-swipe), and an inline **Plugins** mode (`PluginWorkbench`) for uninterrupted single-page Flow ↔ Plugin debugging.
   3. **Rules (`⌘3`)**: Split-pane intercept rules engine + live **Held Breakpoints** queue (Forward Edited / Mock / Drop 403), 6 action types, priority ordering, and regex/substring path validation.
-  4. **DeepTrace (`⌘4`)**: Flow + ADB package correlation pipeline, APK Manifest Inspector, Call Graph, DEX Strings, Java Source, Native SO analysis, Summary, and Mermaid export.
-  5. **Plugins (`⌘5`)** *(Experimental)*: Split-pane analyzer studio with starter templates, `⌘S` save, and a draggable Test Runner drawer. *(Currently selects and runs built-in analysis modes; does not execute arbitrary JavaScript.)*
+  4. **DeepTrace (`⌘4`)**: Live 8-stage cancellable trace pipeline with real-time progress events and APK/JADX caching for near-instant repeat traces, plus APK Manifest Inspector, Call Graph, DEX Strings, Java Source, Native SO analysis, Summary, and Mermaid export.
+  5. **Plugins (`⌘5`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
   6. **Terminal (`⌘6`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
   7. **Settings (`⌘7`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android & Capture, Export & Storage, Shortcuts, and About & Diagnostics.
 
@@ -240,7 +280,7 @@ Connecting a phone to a proxy should **never** leave the device stranded without
 - **Rootless Autonomous Proxy Cleanup**: `cap` grants `WRITE_SECURE_SETTINGS` and battery/background whitelisting over ADB on connect — **no root required** for autonomous Wi-Fi proxy restoration.
 - **Active Heartbeat Watchdog (`ProxyGuardService`)**: Foreground service probes `proxy_host:proxy_port` every 3 seconds. After 3 consecutive misses — or on `ACTION_POWER_DISCONNECTED`, reboot (`BootReceiver`), or tapping **Restore Network / 恢复网络** directly in the notification — the APK autonomously clears `http_proxy` (and kills `cap-redir` / iptables rules in `--vpn` root mode) and posts a confirmation notification.
 - **CA Certificate Lifecycle (Android 7–15)**:
-  - **Rooted devices**: 3-strategy system cert injection (`mount --bind` for Android 10+, persistent Magisk module, or legacy `/system` remount) + `cap android cert --check` / `--remove`.
+  - **Rooted devices**: HTTP Toolkit-style Android 14+ APEX Conscrypt namespace injection (`mount --bind` + `TRUST_STORE_CHANGED` live trust reload), Android 10–13 `mount --bind`, persistent Magisk module, or legacy `/system` remount — plus `cap android cert --check` / `--remove`.
   - **Non-rooted devices**: Built-in `MainActivity` launches Android's `KeyChain` CA installer directly for `/sdcard/Download/cap-ca.crt` with guided verification.
 - **Desktop Auto-Teardown**: `cap start --auto-disconnect`, `cap tui --live --auto-disconnect`, and Desktop GUI `StopProxy()` / `App.Shutdown()` automatically tear down tracked Android devices before stopping the proxy.
 
@@ -416,10 +456,10 @@ docs/                   GitHub Pages site (Obsidian/Porcelain theme + EN/中文 
 
 ---
 
-## License
-
-MIT. See [LICENSE](LICENSE).
-
 ## Contributing
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and security review guidelines.
+
+## Author & License
+
+© 2026 [0xaf (@overkazaf)](https://github.com/overkazaf) · MIT License (see [LICENSE](LICENSE)) · [GitHub](https://github.com/overkazaf/cap) · [Docs](https://overkazaf.github.io/cap/)

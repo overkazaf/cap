@@ -2,17 +2,40 @@ package screen
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"os/exec"
+	"sync"
 )
 
 // rawHeaderSize is the size, in bytes, of the header `adb exec-out
 // screencap` (without -p) writes before the raw pixel data: width, height,
 // and pixel format, each a little-endian uint32.
 const rawHeaderSize = 12
+
+// jpegBufPool recycles bytes.Buffer instances used during JPEG encoding to
+// avoid repeated 64KB+ heap allocations on every captured frame.
+var jpegBufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 64*1024))
+	},
+}
+
+// rgbaScratchPool recycles *image.RGBA backing buffers used during fast
+// downscaling inside encodeRawFrame.
+var rgbaScratchPool = sync.Pool{
+	New: func() any {
+		return &rgbaScratch{}
+	},
+}
+
+type rgbaScratch struct {
+	pix  []byte
+	xOff []int
+}
 
 // FastCapture grabs a single frame from the device named by serial (empty
 // lets adb pick its default device) via the raw screencap framebuffer
@@ -22,14 +45,14 @@ const rawHeaderSize = 12
 // ratio; 0 keeps the device's native resolution. quality is the JPEG
 // quality, 1-100; see clampQuality for how out-of-range values are
 // handled.
-//
-// This is the fast path: `adb exec-out screencap -p` asks the device to
-// PNG-encode every frame before sending it over USB/Wi-Fi, which is the
-// main cost of the old screenshot pipeline. Dropping `-p` makes the device
-// hand over the raw framebuffer instead, and the decode/resize/JPEG-encode
-// work happens here on the host — 3-5x faster overall.
 func FastCapture(serial string, maxSize int, quality int) ([]byte, error) {
-	raw, err := runScreencap(serial)
+	return FastCaptureContext(context.Background(), serial, maxSize, quality)
+}
+
+// FastCaptureContext is like FastCapture but cancels any in-flight `adb
+// exec-out screencap` subprocess immediately when ctx is cancelled.
+func FastCaptureContext(ctx context.Context, serial string, maxSize int, quality int) ([]byte, error) {
+	raw, err := runScreencapContext(ctx, serial)
 	if err != nil {
 		return nil, err
 	}
@@ -39,13 +62,22 @@ func FastCapture(serial string, maxSize int, quality int) ([]byte, error) {
 // runScreencap runs `adb [-s serial] exec-out screencap` and returns its
 // raw stdout (the header-prefixed framebuffer).
 func runScreencap(serial string) ([]byte, error) {
+	return runScreencapContext(context.Background(), serial)
+}
+
+// runScreencapContext runs `adb [-s serial] exec-out screencap` tied to ctx
+// so Stop() kills any hung subprocess immediately.
+func runScreencapContext(ctx context.Context, serial string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	args := make([]string, 0, 4)
 	if serial != "" {
 		args = append(args, "-s", serial)
 	}
 	args = append(args, "exec-out", "screencap")
 
-	out, err := exec.Command("adb", args...).Output()
+	out, err := exec.CommandContext(ctx, "adb", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("adb exec-out screencap: %w", err)
 	}
@@ -65,38 +97,38 @@ func parseHeader(data []byte) (width, height int, format PixelFormat, err error)
 	return int(w), int(h), PixelFormat(f), nil
 }
 
-// decodeRaw parses a full raw screencap payload (header followed by pixel
-// data) into an image.
-//
-// Only RGBA_8888 and RGBX_8888 are supported — in practice the only
-// formats real devices emit for screencap — because both pack 4 bytes per
-// pixel in the same R,G,B,(A|X) order as image.RGBA's Pix buffer, so the
-// pixel bytes can be used directly with no per-pixel conversion. The 4th
-// byte is always forced fully opaque: a composited screen framebuffer has
-// no meaningful per-pixel transparency, and RGBX_8888's 4th byte is
-// explicitly undefined, so trusting either risks a bogus alpha-premultiply
-// once the image reaches the JPEG encoder.
-func decodeRaw(raw []byte) (*image.RGBA, error) {
+// parseRawPixels validates a raw screencap header + payload length and
+// returns the raw 4-byte-per-pixel slice without sweeping all pixels.
+func parseRawPixels(raw []byte) (pix []byte, w, h int, err error) {
 	w, h, format, err := parseHeader(raw)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	if w <= 0 || h <= 0 {
-		return nil, fmt.Errorf("screen: invalid screencap dimensions %dx%d", w, h)
+		return nil, 0, 0, fmt.Errorf("screen: invalid screencap dimensions %dx%d", w, h)
 	}
 	switch format {
 	case PixelFormatRGBA8888, PixelFormatRGBX8888:
 		// supported: same 4-bytes-per-pixel layout as image.RGBA
 	default:
-		return nil, fmt.Errorf("screen: unsupported screencap pixel format %s", format)
+		return nil, 0, 0, fmt.Errorf("screen: unsupported screencap pixel format %s", format)
 	}
 
-	pix := raw[rawHeaderSize:]
+	pix = raw[rawHeaderSize:]
 	want := w * h * 4
 	if len(pix) < want {
-		return nil, fmt.Errorf("screen: truncated screencap frame: got %d pixel bytes, want %d for %dx%d", len(pix), want, w, h)
+		return nil, 0, 0, fmt.Errorf("screen: truncated screencap frame: got %d pixel bytes, want %d for %dx%d", len(pix), want, w, h)
 	}
-	pix = pix[:want:want]
+	return pix[:want:want], w, h, nil
+}
+
+// decodeRaw parses a full raw screencap payload (header followed by pixel
+// data) into an image, forcing all alpha bytes to 0xff.
+func decodeRaw(raw []byte) (*image.RGBA, error) {
+	pix, w, h, err := parseRawPixels(raw)
+	if err != nil {
+		return nil, err
+	}
 
 	for i := 3; i < len(pix); i += 4 {
 		pix[i] = 0xff
@@ -133,26 +165,72 @@ func targetSize(srcW, srcH, maxSize int) (w, h int) {
 	return w, h
 }
 
+// sampleNearestRawRGBA samples srcPix (srcW x srcH, 4 bytes/px, srcStride bytes/row)
+// directly into dstPix (dstW x dstH, tightly packed 4 bytes/px) using integer
+// stride arithmetic and forcing alpha = 0xff ONLY on output pixels.
+// xOffScratch is an optional reusable slice of length >= dstW.
+func sampleNearestRawRGBA(srcPix []byte, srcW, srcH, srcStride int, dstPix []byte, dstW, dstH int, xOffScratch []int) {
+	if dstW <= 0 || dstH <= 0 {
+		return
+	}
+	xOff := xOffScratch
+	if cap(xOff) < dstW {
+		xOff = make([]int, dstW)
+	} else {
+		xOff = xOff[:dstW]
+	}
+	// Precompute horizontal source byte offsets once per frame.
+	// Using 64-bit integer ratio (x * srcW / dstW) avoids float conversions in
+	// the hot inner loop and guarantees 0 <= srcX < srcW.
+	for x := 0; x < dstW; x++ {
+		xOff[x] = ((x * srcW) / dstW) * 4
+	}
+
+	dstIdx := 0
+	for y := 0; y < dstH; y++ {
+		srcRow := ((y * srcH) / dstH) * srcStride
+		for x := 0; x < dstW; x++ {
+			s := srcRow + xOff[x]
+			// Bounds check hint for compiler BCE
+			_ = srcPix[s+2]
+			_ = dstPix[dstIdx+3]
+			dstPix[dstIdx] = srcPix[s]
+			dstPix[dstIdx+1] = srcPix[s+1]
+			dstPix[dstIdx+2] = srcPix[s+2]
+			dstPix[dstIdx+3] = 0xff
+			dstIdx += 4
+		}
+	}
+}
+
 // resizeNearest scales img to w x h using nearest-neighbor sampling — the
 // cheapest resampling method and good enough for a live screen mirror. If
 // img is already an *image.RGBA measuring exactly w x h, it is returned
 // unchanged with no copy.
 func resizeNearest(img image.Image, w, h int) *image.RGBA {
 	bounds := img.Bounds()
-	if same, ok := img.(*image.RGBA); ok && bounds.Dx() == w && bounds.Dy() == h {
+	srcW, srcH := bounds.Dx(), bounds.Dy()
+	if same, ok := img.(*image.RGBA); ok && srcW == w && srcH == h {
 		return same
 	}
 
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	if w == 0 || h == 0 {
+	if w <= 0 || h <= 0 || srcW <= 0 || srcH <= 0 {
 		return dst
 	}
-	scaleX := float64(bounds.Dx()) / float64(w)
-	scaleY := float64(bounds.Dy()) / float64(h)
+
+	// Fast path: direct Pix slice stride indexing for *image.RGBA (zero interface boxing).
+	if src, ok := img.(*image.RGBA); ok {
+		startOff := src.PixOffset(bounds.Min.X, bounds.Min.Y)
+		sampleNearestRawRGBA(src.Pix[startOff:], srcW, srcH, src.Stride, dst.Pix, w, h, nil)
+		return dst
+	}
+
+	// Generic fallback for non-RGBA image.Image implementations.
 	for y := 0; y < h; y++ {
-		srcY := bounds.Min.Y + int(float64(y)*scaleY)
+		srcY := bounds.Min.Y + (y*srcH)/h
 		for x := 0; x < w; x++ {
-			srcX := bounds.Min.X + int(float64(x)*scaleX)
+			srcX := bounds.Min.X + (x*srcW)/w
 			dst.Set(x, y, img.At(srcX, srcY))
 		}
 	}
@@ -171,24 +249,68 @@ func clampQuality(quality int) int {
 	return quality
 }
 
-// encodeRawFrame decodes a raw screencap payload, resizes it per maxSize,
-// and JPEG-encodes the result at quality. It's the device-independent half
-// of FastCapture, split out so it can be unit tested without adb or a
-// physical device.
+// encodeRawFrame decodes a raw screencap payload, resizes it per maxSize
+// directly from raw pixel bytes (avoiding any full-frame pre-resize alpha
+// sweep or interface-boxing At/Set calls), and JPEG-encodes the result at
+// quality using pooled scratch buffers.
 func encodeRawFrame(raw []byte, maxSize, quality int) ([]byte, error) {
-	img, err := decodeRaw(raw)
+	pix, srcW, srcH, err := parseRawPixels(raw)
 	if err != nil {
 		return nil, err
 	}
 
-	bounds := img.Bounds()
-	w, h := targetSize(bounds.Dx(), bounds.Dy(), maxSize)
-	resized := resizeNearest(img, w, h)
+	dstW, dstH := targetSize(srcW, srcH, maxSize)
 
-	var buf bytes.Buffer
-	opts := &jpeg.Options{Quality: clampQuality(quality)}
-	if err := jpeg.Encode(&buf, resized, opts); err != nil {
-		return nil, fmt.Errorf("screen: jpeg encode: %w", err)
+	var resized *image.RGBA
+	var scratch *rgbaScratch
+	if dstW == srcW && dstH == srcH {
+		// Same size: force opaque alpha in place without copying pixels.
+		for i := 3; i < len(pix); i += 4 {
+			pix[i] = 0xff
+		}
+		resized = &image.RGBA{
+			Pix:    pix,
+			Stride: srcW * 4,
+			Rect:   image.Rect(0, 0, srcW, srcH),
+		}
+	} else {
+		scratch = rgbaScratchPool.Get().(*rgbaScratch)
+		need := dstW * dstH * 4
+		if cap(scratch.pix) < need {
+			scratch.pix = make([]byte, need)
+		} else {
+			scratch.pix = scratch.pix[:need]
+		}
+		if cap(scratch.xOff) < dstW {
+			scratch.xOff = make([]int, dstW)
+		} else {
+			scratch.xOff = scratch.xOff[:dstW]
+		}
+
+		sampleNearestRawRGBA(pix, srcW, srcH, srcW*4, scratch.pix, dstW, dstH, scratch.xOff)
+		resized = &image.RGBA{
+			Pix:    scratch.pix,
+			Stride: dstW * 4,
+			Rect:   image.Rect(0, 0, dstW, dstH),
+		}
 	}
-	return buf.Bytes(), nil
+
+	buf := jpegBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	opts := &jpeg.Options{Quality: clampQuality(quality)}
+	encodeErr := jpeg.Encode(buf, resized, opts)
+
+	if scratch != nil {
+		rgbaScratchPool.Put(scratch)
+	}
+
+	if encodeErr != nil {
+		jpegBufPool.Put(buf)
+		return nil, fmt.Errorf("screen: jpeg encode: %w", encodeErr)
+	}
+
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	jpegBufPool.Put(buf)
+	return out, nil
 }

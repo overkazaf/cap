@@ -70,6 +70,7 @@ func (a *App) StartProxy(addr string) error {
 				Status:  f.Status,
 				Latency: f.LatencyMs,
 			})
+			go a.runAutoPlugins(f)
 		},
 	})
 	if err != nil {

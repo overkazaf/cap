@@ -303,8 +303,10 @@ func Teardown(serial string) error {
 	return nil
 }
 
-// GetDeviceStatus inspects a connected Android device and returns structured
-// proxy, VPN, CA certificate, and Companion Guard status.
+// GetDeviceStatus inspects a connected Android device in a single batched
+// `adb shell` invocation (plus at most one `su` probe if rooted and cert
+// wasn't already found in system/APEX) and returns structured proxy, VPN,
+// CA certificate, and Companion Guard status.
 func GetDeviceStatus(serial, certPath string) (*DeviceStatus, error) {
 	resolved, err := GetDeviceSerial(serial)
 	if err != nil {
@@ -312,12 +314,78 @@ func GetDeviceStatus(serial, certPath string) (*DeviceStatus, error) {
 	}
 	serial = resolved
 
-	model, _ := AdbShell(serial, "getprop ro.product.model")
-	brand, _ := AdbShell(serial, "getprop ro.product.brand")
-	release, _ := AdbShell(serial, "getprop ro.build.version.release")
-	sdk, _ := AdbShell(serial, "getprop ro.build.version.sdk")
-	proxySetting, _ := AdbShell(serial, "settings get global http_proxy")
-	host, port := ParseProxySetting(proxySetting)
+	hashName := ""
+	if certPath != "" {
+		hashName = CertHashFilename(certPath)
+	}
+
+	var b strings.Builder
+	b.WriteString(`echo "===CAP_META==="; `)
+	b.WriteString(`echo "MODEL=$(getprop ro.product.model)"; `)
+	b.WriteString(`echo "BRAND=$(getprop ro.product.brand)"; `)
+	b.WriteString(`echo "RELEASE=$(getprop ro.build.version.release)"; `)
+	b.WriteString(`echo "SDK=$(getprop ro.build.version.sdk)"; `)
+	b.WriteString(`echo "PROXY=$(settings get global http_proxy 2>/dev/null)"; `)
+	b.WriteString(`echo "ROOT=$(su -c id 2>/dev/null || true)"; `)
+	b.WriteString(`echo "REDIR_PID=$(pidof cap-redir 2>/dev/null || (ps -A 2>/dev/null | grep cap-redir | grep -v grep) || true)"; `)
+	b.WriteString(`echo "REDIR_PORT=$(cat ` + redirPortStateFile + ` 2>/dev/null || true)"; `)
+	b.WriteString(`echo "===CAP_CERT==="; `)
+	if hashName != "" {
+		fmt.Fprintf(&b,
+			`[ -d /apex/com.android.conscrypt/cacerts ] && echo HAS_APEX_DIR; `+
+				`[ -f /apex/com.android.conscrypt/cacerts/%s ] && echo APEX; `+
+				`[ -f /system/etc/security/cacerts/%s ] && echo SYSTEM; `+
+				`[ -f /data/misc/user/0/cacerts-added/%s ] && echo USER; `+
+				`[ -f /data/adb/modules/cap-cert/system/etc/security/cacerts/%s ] && echo MAGISK; `,
+			hashName, hashName, hashName, hashName,
+		)
+	}
+	fmt.Fprintf(&b,
+		`echo "===CAP_PKG==="; dumpsys package %s 2>/dev/null; `+
+			`echo "===CAP_SVC==="; dumpsys activity services %s 2>/dev/null; `+
+			`echo "===CAP_WL==="; dumpsys deviceidle whitelist 2>/dev/null; true`,
+		CompanionPackage, CompanionService,
+	)
+
+	out, err := AdbShell(serial, b.String())
+	if err != nil && strings.TrimSpace(out) == "" {
+		return nil, err
+	}
+
+	st := ParseBatchedDeviceStatusOutput(serial, hashName, certPath != "", out)
+
+	// /data/adb/modules is root-only on Magisk; probe via su only if rooted
+	// and cert was not already detected in system/APEX.
+	if hashName != "" && !st.CertStatus.Installed && st.CertStatus.Method == "" && st.Rooted {
+		suOut, _ := SuShell(serial, fmt.Sprintf(
+			`[ -f /data/adb/modules/cap-cert/system/etc/security/cacerts/%s ] && echo MAGISK; `+
+				`[ -f /data/misc/user/0/cacerts-added/%s ] && echo USER; true`,
+			hashName, hashName,
+		))
+		if strings.TrimSpace(suOut) != "" {
+			certSec := extractSection(out, "===CAP_CERT===", "===CAP_PKG===")
+			st.CertStatus = ParseCertCheckOutput(hashName, certSec+"\n"+suOut)
+		}
+	}
+
+	return st, nil
+}
+
+// ParseBatchedDeviceStatusOutput parses the sectioned output emitted by
+// GetDeviceStatus's single batched `adb shell` call into a *DeviceStatus.
+func ParseBatchedDeviceStatusOutput(serial, hashName string, wantCert bool, output string) *DeviceStatus {
+	metaSec := extractSection(output, "===CAP_META===", "===CAP_CERT===")
+	certSec := extractSection(output, "===CAP_CERT===", "===CAP_PKG===")
+
+	meta := make(map[string]string, 8)
+	for _, line := range strings.Split(metaSec, "\n") {
+		line = strings.TrimSpace(line)
+		if idx := strings.IndexByte(line, '='); idx > 0 {
+			meta[line[:idx]] = strings.TrimSpace(line[idx+1:])
+		}
+	}
+
+	host, port := ParseProxySetting(meta["PROXY"])
 	proxyAddr := ""
 	if host != "" {
 		if port != "" {
@@ -327,33 +395,41 @@ func GetDeviceStatus(serial, certPath string) (*DeviceStatus, error) {
 		}
 	}
 
-	rooted := IsRooted(serial)
+	rooted := strings.Contains(meta["ROOT"], "uid=0")
 
 	vpnActive := false
 	redirPort := ""
-	psOut, _ := AdbShell(serial, "pidof cap-redir 2>/dev/null || ps -A 2>/dev/null | grep cap-redir")
-	if strings.TrimSpace(psOut) != "" && !strings.Contains(psOut, "not found") {
+	pidOut := meta["REDIR_PID"]
+	if pidOut != "" && !strings.Contains(pidOut, "not found") {
 		vpnActive = true
-		pOut, _ := AdbShell(serial, "cat "+redirPortStateFile+" 2>/dev/null || true")
-		redirPort = strings.TrimSpace(pOut)
+		redirPort = meta["REDIR_PORT"]
 		if redirPort == "" {
 			redirPort = "9999"
 		}
 	}
 
 	var certStatus CertStatus
-	if certPath != "" {
-		certStatus = CheckCertStatus(serial, certPath)
+	if wantCert {
+		if hashName == "" {
+			certStatus = CertStatus{
+				Installed: false,
+				Store:     "none",
+				Details:   "local CA certificate file not found or invalid",
+			}
+		} else {
+			certStatus = ParseCertCheckOutput(hashName, certSec)
+		}
 	}
-	companion := GetCompanionStatus(serial)
+
+	companion := ParseBatchedCompanionOutput(output)
 
 	return &DeviceStatus{
 		Serial:          serial,
 		State:           "device",
-		Model:           model,
-		Brand:           brand,
-		AndroidVersion:  release,
-		SDK:             sdk,
+		Model:           meta["MODEL"],
+		Brand:           meta["BRAND"],
+		AndroidVersion:  meta["RELEASE"],
+		SDK:             meta["SDK"],
 		Rooted:          rooted,
 		ProxyHost:       host,
 		ProxyPort:       port,
@@ -362,7 +438,7 @@ func GetDeviceStatus(serial, certPath string) (*DeviceStatus, error) {
 		RedirPort:       redirPort,
 		CertStatus:      certStatus,
 		CompanionStatus: companion,
-	}, nil
+	}
 }
 
 // Status prints the resolved device's identity, Android version, root
@@ -411,24 +487,163 @@ func defaultLocalCertPath() string {
 	return ""
 }
 
-// detectHostIP returns the first non-loopback IPv4 address among this
-// host's network interfaces — a best-effort default for "the IP an
-// Android device on the same network can reach this machine at". Callers
-// on multi-homed hosts (VPNs, multiple NICs) should pass ProxyHost
-// explicitly instead of relying on this.
+// hostIPCandidate represents a single IPv4 address bound to a network
+// interface, used by selectBestHostIP for deterministic LAN interface ranking.
+type hostIPCandidate struct {
+	ifaceName string
+	ip        net.IP
+	up        bool
+	loopback  bool
+}
+
+// DetectHostIP returns the best LAN IPv4 address on this host that an Android
+// device on the same Wi-Fi network can reach, skipping down, loopback,
+// link-local, and virtual/VPN tunnel interfaces (utun, awdl, llw, bridge,
+// docker, veth, 169.254.*, 198.18.*).
+func DetectHostIP() (string, error) {
+	return detectHostIP()
+}
+
+// LocalHostIPv4s returns all active non-loopback IPv4 addresses on this host.
+func LocalHostIPv4s() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var ips []string
+	seen := make(map[string]bool)
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || ip4.IsLoopback() {
+				continue
+			}
+			s := ip4.String()
+			if !seen[s] {
+				seen[s] = true
+				ips = append(ips, s)
+			}
+		}
+	}
+	return ips
+}
+
 func detectHostIP() (string, error) {
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
 	}
-	for _, addr := range addrs {
-		ipnet, ok := addr.(*net.IPNet)
-		if !ok || ipnet.IP.IsLoopback() {
+	var candidates []hostIPCandidate
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
 			continue
 		}
-		if ip4 := ipnet.IP.To4(); ip4 != nil {
-			return ip4.String(), nil
+		up := iface.Flags&net.FlagUp != 0
+		loopback := iface.Flags&net.FlagLoopback != 0
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil {
+				continue
+			}
+			candidates = append(candidates, hostIPCandidate{
+				ifaceName: iface.Name,
+				ip:        ip4,
+				up:        up,
+				loopback:  loopback,
+			})
 		}
 	}
+	if best := selectBestHostIP(candidates); best != "" {
+		return best, nil
+	}
 	return "", fmt.Errorf("no non-loopback IPv4 network interface found")
+}
+
+func selectBestHostIP(candidates []hostIPCandidate) string {
+	bestScore := -1
+	bestIP := ""
+	for _, c := range candidates {
+		score := scoreHostIPCandidate(c)
+		if score > bestScore {
+			bestScore = score
+			bestIP = c.ip.String()
+		}
+	}
+	return bestIP
+}
+
+func scoreHostIPCandidate(c hostIPCandidate) int {
+	if !c.up || c.loopback || c.ip == nil {
+		return -1
+	}
+	ip4 := c.ip.To4()
+	if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() || ip4.IsLinkLocalMulticast() {
+		return -1
+	}
+	// Skip 198.18.0.0/15 (RFC 2544 benchmark / Clash & Surge fake-IP TUN range)
+	if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+		return -1
+	}
+
+	name := strings.ToLower(c.ifaceName)
+	virtual := isVirtualInterfaceName(name)
+	private := isRFC1918(ip4)
+
+	if virtual {
+		// Keep virtual non-link-local IPv4 only as a very last fallback
+		if private {
+			return 10
+		}
+		return 5
+	}
+
+	score := 50
+	if private {
+		score += 40
+	}
+	switch {
+	case name == "en0" || name == "wlan0":
+		score += 30
+	case name == "en1" || name == "eth0" || strings.HasPrefix(name, "wlan") || strings.HasPrefix(name, "wlp"):
+		score += 20
+	case strings.HasPrefix(name, "en") || strings.HasPrefix(name, "eth"):
+		score += 10
+	}
+	return score
+}
+
+func isVirtualInterfaceName(name string) bool {
+	prefixes := []string{
+		"utun", "awdl", "llw", "bridge", "docker", "veth",
+		"lo", "vmnet", "vboxnet", "tailscale", "tun", "tap",
+		"anpi", "ap", "gif", "stf", "ipsec", "feth", "pktap",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRFC1918(ip4 net.IP) bool {
+	return ip4[0] == 10 ||
+		(ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) ||
+		(ip4[0] == 192 && ip4[1] == 168)
 }

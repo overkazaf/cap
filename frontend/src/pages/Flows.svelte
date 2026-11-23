@@ -15,6 +15,7 @@
   import EmptyState from '../components/EmptyState.svelte'
   import Kbd from '../components/Kbd.svelte'
   import SplitPane from '../components/SplitPane.svelte'
+  import PluginWorkbench from '../components/PluginWorkbench.svelte'
 
   const appApi = () => window?.go?.wailsgui?.App
 
@@ -81,16 +82,33 @@
   // API Groups
   let apiGroups = []
 
-  // Device screen mirror & shell
+  // Device screen mirror (native MJPEG stream) & shell
   let screenSrc = ''
+  let streamUrl = ''
   let screenActive = false
-  let screenInterval = null
+  let screenStarting = false
+  let screenInterrupted = false
+  let screenError = ''
+  let screenStartSeq = 0
   let screenSize = [1080, 2400]
   let deviceSerial = ''
-  let screenQuality = 50
-  let screenEngine = 'fast' // 'fast' | 'scrcpy'
+  let screenQuality = 70 // 35 = Low 320p, 70 = Balanced 540p, 90 = HD 720p
+  let screenEngine = 'auto' // 'auto' | 'scrcpy' | 'fast'
+  let activeScreenEngine = '' // 'scrcpy' | 'fast' | ''
+  let screenFallbackReason = ''
   let scrcpyReady = false
   let scrcpyDeploying = false
+  let streamStats = { active: false, engine: '', fps: 0, latency_ms: 0, frames: 0, errors: 0 }
+  let statsTimer = null
+  let statsInFlight = false
+  let fallbackTimer = null
+  let fallbackInFlight = false
+  let qualityDebounceTimer = null
+  let screenImgEl = null
+  let screenBoxEl = null
+  let pointerGesture = null // { pointerId, startX, startY, curX, curY, startTime, devX1, devY1, devX2, devY2, isDrag }
+  let tapRipple = null // { x, y, id }
+  let tapRippleTimer = null
   let shellTabs = []
   let activeShellTab = null
   let shellTabCounter = 0
@@ -319,14 +337,20 @@
     }
   }
 
-  async function selectFlow(f) {
+  async function selectFlow(f, opts = {}) {
     if (!f) return
     const api = appApi()
     if (!api?.GetFlowDetail) return
     detailLoading = true
     try {
       selectedFlow = await api.GetFlowDetail(f.id)
-      rightPanel = 'detail'
+      if (opts.openPlugins) {
+        if (screenActive || screenStarting) stopScreen()
+        rightPanel = 'plugins'
+      } else if (opts.forceDetail || rightPanel !== 'plugins') {
+        if (screenActive || screenStarting) stopScreen()
+        rightPanel = 'detail'
+      }
       bodyFormat = 'auto'
       bodySearch = ''
       headerSearch = ''
@@ -345,6 +369,15 @@
       toast.error(translate('core.flows.toast.loadDetailFailed', { id: f.id, err: e }))
     }
     detailLoading = false
+  }
+
+  async function selectFlowById(flowId) {
+    if (!flowId) return
+    const match = flows.find((item) => item.id === flowId) || { id: flowId }
+    await selectFlow(match)
+    await tick()
+    const row = listBodyEl?.querySelector(`[data-flow-id="${CSS.escape(String(flowId))}"]`)
+    row?.scrollIntoView({ block: 'nearest' })
   }
 
   async function generateExport() {
@@ -958,60 +991,201 @@
     if (mode === 'grouped') loadGroups()
   }
 
-  // ==================== Device Screen Mirror & Shell ====================
+  // ==================== Device Screen Mirror (Native MJPEG) & Shell ====================
+
+  const QUALITY_PRESETS = [
+    { value: 35, labelKey: 'core.flows.devQualityLow' },
+    { value: 70, labelKey: 'core.flows.devQualityBalanced' },
+    { value: 90, labelKey: 'core.flows.devQualityHd' },
+  ]
+
+  function clearStreamTimers() {
+    if (statsTimer) {
+      clearInterval(statsTimer)
+      statsTimer = null
+    }
+    if (fallbackTimer) {
+      clearTimeout(fallbackTimer)
+      fallbackTimer = null
+    }
+    if (qualityDebounceTimer) {
+      clearTimeout(qualityDebounceTimer)
+      qualityDebounceTimer = null
+    }
+    if (tapRippleTimer) {
+      clearTimeout(tapRippleTimer)
+      tapRippleTimer = null
+    }
+  }
+
+  async function pollStreamStats() {
+    if (!screenActive || statsInFlight) return
+    const api = appApi()
+    if (!api?.GetScreenStreamStats) return
+    statsInFlight = true
+    try {
+      const st = await api.GetScreenStreamStats()
+      if (st && screenActive) {
+        streamStats = st
+        if (st.engine) activeScreenEngine = st.engine
+        if (st.width > 0 && st.height > 0) screenSize = [st.width, st.height]
+      }
+    } catch (_) {}
+    statsInFlight = false
+  }
 
   async function startScreen() {
     const api = appApi()
     if (!api) return
+    const seq = ++screenStartSeq
+    clearStreamTimers()
+    screenStarting = true
+    screenInterrupted = false
+    screenError = ''
+    screenFallbackReason = ''
+    streamUrl = ''
+    screenSrc = ''
+
     try {
-      const devs = await api.ListDevices()
+      const devs = await api.ListDevices?.()
+      if (seq !== screenStartSeq) return
       if (devs && devs.length > 0) {
-        deviceSerial = devs[0].serial
-        const sz = await api.GetScreenSize(deviceSerial)
-        if (Array.isArray(sz) && sz.length === 2) screenSize = sz
+        if (!devs.some((d) => d.serial === deviceSerial)) {
+          deviceSerial = devs[0].serial
+        }
+      } else {
+        deviceSerial = ''
+        screenActive = false
+        screenStarting = false
+        return
       }
     } catch (e) {
-      console.error(e)
+      if (seq !== screenStartSeq) return
+      screenError = String(e)
+      screenActive = false
+      screenStarting = false
+      return
     }
 
-    try {
-      scrcpyReady = await api.IsScrcpyReady(deviceSerial)
-    } catch (_) {}
-
-    screenActive = true
     if (shellTabs.length === 0) addShellTab()
-    captureFrame()
-    const fps = screenEngine === 'scrcpy' ? 80 : 500
-    screenInterval = setInterval(captureFrame, fps)
+
+    // Prefer native loopback HTTP MJPEG stream (WebKit C++ off-main-thread decode)
+    if (api.StartScreenStream) {
+      try {
+        const targetFps = screenEngine === 'fast' ? 15 : 30
+        const info = await api.StartScreenStream(deviceSerial, screenEngine, screenQuality, targetFps)
+        if (seq !== screenStartSeq) {
+          api.StopScreenStream?.().catch(() => {})
+          return
+        }
+        streamUrl = info?.url || ''
+        activeScreenEngine = info?.engine || (screenEngine === 'auto' ? 'fast' : screenEngine)
+        scrcpyReady = Boolean(info?.scrcpy_ready)
+        screenFallbackReason = info?.fallback_reason || ''
+        if (info?.width > 0 && info?.height > 0) {
+          screenSize = [info.width, info.height]
+        }
+        screenActive = true
+        screenStarting = false
+        streamStats = {
+          active: true,
+          engine: activeScreenEngine,
+          fps: 0,
+          latency_ms: 0,
+          frames: 0,
+          errors: 0,
+        }
+        pollStreamStats()
+        statsTimer = setInterval(pollStreamStats, 1500)
+        return
+      } catch (e) {
+        if (seq !== screenStartSeq) return
+        screenError = String(e)
+        screenActive = false
+        screenStarting = false
+        toast.error(translate('core.flows.devStreamError', { err: e }))
+        return
+      }
+    }
+
+    // Legacy single-flight guarded fallback (only if StartScreenStream is unavailable)
+    try {
+      const sz = await api.GetScreenSize?.(deviceSerial)
+      if (Array.isArray(sz) && sz.length === 2) screenSize = sz
+      scrcpyReady = Boolean(await api.IsScrcpyReady?.(deviceSerial))
+    } catch (_) {}
+    if (seq !== screenStartSeq) return
+    activeScreenEngine = screenEngine === 'scrcpy' && scrcpyReady ? 'scrcpy' : 'fast'
+    screenActive = true
+    screenStarting = false
+    captureFrameFallback(seq)
   }
 
   function stopScreen() {
+    screenStartSeq += 1
     screenActive = false
-    if (screenInterval) clearInterval(screenInterval)
-    screenInterval = null
+    screenStarting = false
+    screenInterrupted = false
+    pointerGesture = null
+    clearStreamTimers()
+    streamUrl = ''
     screenSrc = ''
+    streamStats = { active: false, engine: '', fps: 0, latency_ms: 0, frames: 0, errors: 0 }
+    if (screenImgEl) {
+      try {
+        screenImgEl.src = ''
+      } catch (_) {}
+    }
+    appApi()?.StopScreenStream?.().catch(() => {})
   }
 
-  async function captureFrame() {
-    if (!screenActive) return
+  async function captureFrameFallback(seq) {
+    if (!screenActive || seq !== screenStartSeq || fallbackInFlight) return
     const api = appApi()
     if (!api) return
+    fallbackInFlight = true
     try {
-      if (screenEngine === 'scrcpy') {
+      if (activeScreenEngine === 'scrcpy' && api.CaptureScrcpy) {
         screenSrc = await api.CaptureScrcpy(deviceSerial)
-      } else {
+      } else if (api.CaptureScreenScaled) {
         screenSrc = await api.CaptureScreenScaled(deviceSerial, screenQuality)
       }
     } catch (_) {
       /* skip frame */
     }
+    fallbackInFlight = false
+    if (screenActive && seq === screenStartSeq && !streamUrl) {
+      const delay = activeScreenEngine === 'scrcpy' ? 60 : 250
+      fallbackTimer = setTimeout(() => captureFrameFallback(seq), delay)
+    }
+  }
+
+  function handleStreamError() {
+    if (!screenActive || !streamUrl) return
+    screenInterrupted = true
+  }
+
+  function handleStreamLoad() {
+    screenInterrupted = false
+    screenError = ''
   }
 
   async function switchEngine(engine) {
+    if (screenEngine === engine && screenActive) return
     screenEngine = engine
-    if (screenActive) {
-      stopScreen()
+    if (screenActive || rightPanel === 'device') {
       await startScreen()
+    }
+  }
+
+  function selectQuality(q) {
+    if (screenQuality === q) return
+    screenQuality = q
+    if (screenActive) {
+      clearTimeout(qualityDebounceTimer)
+      qualityDebounceTimer = setTimeout(() => {
+        if (screenActive) startScreen()
+      }, 180)
     }
   }
 
@@ -1023,41 +1197,150 @@
       const msg = await api.DeployScrcpy(deviceSerial)
       scrcpyReady = true
       toast.success(msg || translate('core.flows.toast.scrcpyDeployed'))
+      if (screenActive) {
+        screenEngine = 'auto'
+        await startScreen()
+      }
     } catch (e) {
       toast.error(translate('core.flows.toast.scrcpyDeployFailed', { err: e }))
     }
     scrcpyDeploying = false
   }
 
-  async function handleScreenClick(e) {
-    const img = e.target
-    const rect = img.getBoundingClientRect()
-    const scaleX = screenSize[0] / rect.width
-    const scaleY = screenSize[1] / rect.height
-    const x = Math.round((e.clientX - rect.left) * scaleX)
-    const y = Math.round((e.clientY - rect.top) * scaleY)
-    try {
-      await appApi().DeviceTap(deviceSerial, x, y)
-      setTimeout(captureFrame, 300)
-    } catch (err) {
-      console.error(err)
+  function mapClientToDevice(clientX, clientY) {
+    if (!screenImgEl) return null
+    const rect = screenImgEl.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null
+
+    // Account for object-fit: contain letterboxing inside the img element
+    const natW = screenImgEl.naturalWidth || screenSize[0] || 1080
+    const natH = screenImgEl.naturalHeight || screenSize[1] || 2400
+    const boxAspect = rect.width / rect.height
+    const imgAspect = natW / natH
+
+    let renderW = rect.width
+    let renderH = rect.height
+    let offsetX = 0
+    let offsetY = 0
+
+    if (boxAspect > imgAspect) {
+      renderW = rect.height * imgAspect
+      offsetX = (rect.width - renderW) / 2
+    } else if (boxAspect < imgAspect) {
+      renderH = rect.width / imgAspect
+      offsetY = (rect.height - renderH) / 2
+    }
+
+    const relX = clientX - rect.left - offsetX
+    const relY = clientY - rect.top - offsetY
+    const nx = Math.max(0, Math.min(1, relX / renderW))
+    const ny = Math.max(0, Math.min(1, relY / renderH))
+
+    const boxRect = screenBoxEl ? screenBoxEl.getBoundingClientRect() : rect
+    return {
+      devX: Math.round(nx * (screenSize[0] || natW)),
+      devY: Math.round(ny * (screenSize[1] || natH)),
+      uiX: clientX - boxRect.left,
+      uiY: clientY - boxRect.top,
     }
   }
 
+  function handleScreenPointerDown(e) {
+    if (e.button !== 0 || !deviceSerial) return
+    const pt = mapClientToDevice(e.clientX, e.clientY)
+    if (!pt) return
+    e.preventDefault()
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch (_) {}
+    pointerGesture = {
+      pointerId: e.pointerId,
+      startX: pt.uiX,
+      startY: pt.uiY,
+      curX: pt.uiX,
+      curY: pt.uiY,
+      startTime: performance.now(),
+      devX1: pt.devX,
+      devY1: pt.devY,
+      devX2: pt.devX,
+      devY2: pt.devY,
+      isDrag: false,
+    }
+  }
+
+  function handleScreenPointerMove(e) {
+    if (!pointerGesture || e.pointerId !== pointerGesture.pointerId) return
+    const pt = mapClientToDevice(e.clientX, e.clientY)
+    if (!pt) return
+    const dist = Math.hypot(pt.uiX - pointerGesture.startX, pt.uiY - pointerGesture.startY)
+    pointerGesture = {
+      ...pointerGesture,
+      curX: pt.uiX,
+      curY: pt.uiY,
+      devX2: pt.devX,
+      devY2: pt.devY,
+      isDrag: pointerGesture.isDrag || dist > 8,
+    }
+  }
+
+  async function handleScreenPointerUp(e) {
+    if (!pointerGesture || e.pointerId !== pointerGesture.pointerId) return
+    const g = pointerGesture
+    pointerGesture = null
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch (_) {}
+
+    const api = appApi()
+    if (!api || !deviceSerial) return
+
+    if (g.isDrag && api.DeviceSwipe) {
+      const duration = Math.max(80, Math.min(800, Math.round(performance.now() - g.startTime)))
+      try {
+        await api.DeviceSwipe(deviceSerial, g.devX1, g.devY1, g.devX2, g.devY2, duration)
+      } catch (err) {
+        console.error(err)
+      }
+    } else if (api.DeviceTap) {
+      tapRipple = { x: g.startX, y: g.startY, id: Date.now() }
+      clearTimeout(tapRippleTimer)
+      tapRippleTimer = setTimeout(() => {
+        tapRipple = null
+      }, 380)
+      try {
+        await api.DeviceTap(deviceSerial, g.devX1, g.devY1)
+      } catch (err) {
+        console.error(err)
+      }
+    }
+  }
+
+  function handleScreenPointerCancel() {
+    pointerGesture = null
+  }
+
   async function deviceBack() {
+    if (!deviceSerial) return
     await appApi()?.DeviceBack?.(deviceSerial)
-    setTimeout(captureFrame, 300)
   }
 
   async function deviceHome() {
+    if (!deviceSerial) return
     await appApi()?.DeviceHome?.(deviceSerial)
-    setTimeout(captureFrame, 300)
+  }
+
+  async function deviceRecent() {
+    if (!deviceSerial) return
+    await appApi()?.DeviceKeyEvent?.(deviceSerial, 187)
   }
 
   function toggleRightPanel(panel) {
     rightPanel = panel
-    if (panel === 'device' && !screenActive) startScreen()
-    if (panel === 'detail' && screenActive) stopScreen()
+    if (panel === 'device') {
+      if (!screenActive && !screenStarting) startScreen()
+    } else if (screenActive || screenStarting) {
+      stopScreen()
+    }
   }
 
   function addShellTab() {
@@ -1262,6 +1545,13 @@
           category: cat,
           icon: 'layers',
           run: () => setViewMode(viewMode === 'list' ? 'grouped' : 'list'),
+        },
+        {
+          id: 'flows:open-plugin-workbench',
+          label: _t('core.flows.cmd.openPluginWorkbench'),
+          category: cat,
+          icon: 'puzzle',
+          run: () => toggleRightPanel('plugins'),
         },
         {
           id: 'flows:import-har',
@@ -1711,6 +2001,15 @@
                 <span class="live-dot"></span>
               {/if}
             </button>
+            <button
+              class="mode-tab"
+              class:active={rightPanel === 'plugins'}
+              type="button"
+              on:click={() => toggleRightPanel('plugins')}
+            >
+              <Icon name="puzzle" size={13} />
+              <span>{$t('core.flows.modePlugins')}</span>
+            </button>
           </div>
 
           <div class="pane-mode-right">
@@ -1748,21 +2047,120 @@
           </div>
         </div>
 
-        {#if rightPanel === 'device'}
-          <!-- Device Screen Mirror + Multi-Tab Shell -->
+        {#if rightPanel === 'plugins'}
+          <!-- Single-Page Plugin Debug Workbench -->
+          <div class="plugins-panel">
+            <PluginWorkbench
+              {selectedFlow}
+              compact={true}
+              on:selectFlow={(e) => selectFlowById(e.detail?.flowId)}
+            />
+          </div>
+        {:else if rightPanel === 'device'}
+          <!-- Device Screen Mirror (Native MJPEG) + Multi-Tab Shell -->
           <div class="device-panel">
-            <SplitPane direction="vertical" initialSize={64} minPrimary={25} minSecondary={18} storageKey="cap.flows.deviceSplit">
+            <SplitPane direction="vertical" initialSize={66} minPrimary={28} minSecondary={18} storageKey="cap.flows.deviceSplit">
               <div slot="primary" class="device-stage">
+                <!-- Live Stream Telemetry Bar -->
+                <div class="device-telemetry-bar">
+                  <div class="telemetry-left">
+                    {#if activeScreenEngine}
+                      <Badge variant={activeScreenEngine === 'scrcpy' ? 'success' : 'info'} size="xs" dot={screenActive && !screenInterrupted} pulse={screenActive && !screenInterrupted} mono>
+                        {activeScreenEngine === 'scrcpy' ? $t('core.flows.devScrcpy') : $t('core.flows.devFast')}
+                      </Badge>
+                    {/if}
+                    {#if screenActive}
+                      <span class="telemetry-metric mono tabular-nums">
+                        {$t('core.flows.devTelemetryFps', { fps: (streamStats?.fps || 0).toFixed(1) })}
+                      </span>
+                      <span class="telemetry-sep">·</span>
+                      <span class="telemetry-metric mono tabular-nums">
+                        {$t('core.flows.devTelemetryLatency', { ms: Math.round(streamStats?.latency_ms || 0) })}
+                      </span>
+                    {/if}
+                    {#if deviceSerial}
+                      <span class="telemetry-serial mono truncate" title={deviceSerial}>{deviceSerial}</span>
+                    {/if}
+                  </div>
+                  <span class="telemetry-hint">{$t('core.flows.devSwipeHint')}</span>
+                </div>
+
+                {#if screenActive && activeScreenEngine === 'fast' && !scrcpyReady}
+                  <div class="device-fallback-bar">
+                    <Icon name="zap" size={12} />
+                    <span class="truncate">
+                      {screenFallbackReason
+                        ? $t('core.flows.devFallbackHint', { reason: screenFallbackReason })
+                        : $t('core.flows.devFallbackShort')}
+                    </span>
+                    <Button variant="subtle" size="xs" icon="download" loading={scrcpyDeploying} on:click={deployScrcpy}>
+                      {$t('core.flows.devDeploy')}
+                    </Button>
+                  </div>
+                {/if}
+
                 <div class="device-viewport">
-                  <div class="device-screen-box" style="aspect-ratio: {screenSize[0]} / {screenSize[1]}">
-                    {#if screenSrc}
-                      <!-- svelte-ignore a11y-click-events-have-key-events -->
+                  <div
+                    bind:this={screenBoxEl}
+                    class="device-screen-box"
+                    style="aspect-ratio: {screenSize[0]} / {screenSize[1]}"
+                  >
+                    {#if (streamUrl || screenSrc) && !screenInterrupted}
                       <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-                      <img class="device-img" src={screenSrc} alt={$t('core.flows.deviceAlt')} on:click={handleScreenClick} />
+                      <img
+                        bind:this={screenImgEl}
+                        class="device-img"
+                        src={streamUrl || screenSrc}
+                        alt={$t('core.flows.deviceAlt')}
+                        draggable="false"
+                        on:load={handleStreamLoad}
+                        on:error={handleStreamError}
+                        on:pointerdown={handleScreenPointerDown}
+                        on:pointermove={handleScreenPointerMove}
+                        on:pointerup={handleScreenPointerUp}
+                        on:pointercancel={handleScreenPointerCancel}
+                      />
+
+                      <!-- Subtle Touch / Swipe Visual Feedback Overlay -->
+                      {#if pointerGesture?.isDrag || tapRipple}
+                        <svg class="gesture-overlay" aria-hidden="true">
+                          {#if pointerGesture?.isDrag}
+                            <line
+                              x1={pointerGesture.startX}
+                              y1={pointerGesture.startY}
+                              x2={pointerGesture.curX}
+                              y2={pointerGesture.curY}
+                              class="swipe-line"
+                            />
+                            <circle cx={pointerGesture.startX} cy={pointerGesture.startY} r="4" class="swipe-start" />
+                            <circle cx={pointerGesture.curX} cy={pointerGesture.curY} r="6" class="swipe-end" />
+                          {/if}
+                          {#if tapRipple}
+                            <circle cx={tapRipple.x} cy={tapRipple.y} r="14" class="tap-ring" />
+                          {/if}
+                        </svg>
+                      {/if}
                     {:else}
                       <div class="device-connecting">
-                        <Icon name="smartphone" size={24} />
-                        <span>{deviceSerial ? $t('core.flows.deviceStreaming', { serial: deviceSerial }) : $t('core.flows.deviceWaiting')}</span>
+                        <Icon name={screenInterrupted || screenError ? 'alert-triangle' : 'smartphone'} size={24} />
+                        <span>
+                          {#if screenStarting}
+                            {$t('core.flows.devConnecting')}
+                          {:else if screenInterrupted}
+                            {$t('core.flows.devReconnecting')}
+                          {:else if screenError}
+                            {$t('core.flows.devStreamError', { err: screenError })}
+                          {:else if deviceSerial}
+                            {$t('core.flows.deviceStreaming', { serial: deviceSerial })}
+                          {:else}
+                            {$t('core.flows.devNoDevice')}
+                          {/if}
+                        </span>
+                        {#if !screenStarting}
+                          <Button variant="secondary" size="xs" icon="refresh" on:click={startScreen}>
+                            {$t('core.flows.devRefresh')}
+                          </Button>
+                        {/if}
                       </div>
                     {/if}
                   </div>
@@ -1770,19 +2168,20 @@
 
                 <div class="device-toolbar">
                   <div class="dev-nav-btns">
-                    <Button variant="secondary" size="xs" icon="chevron-left" iconOnly title={$t('core.flows.devBack')} on:click={deviceBack} />
-                    <Button variant="secondary" size="xs" icon="square" iconOnly title={$t('core.flows.devHome')} on:click={deviceHome} />
-                    <Button variant="secondary" size="xs" icon="refresh" iconOnly title={$t('core.flows.devRefresh')} on:click={captureFrame} />
+                    <Button variant="secondary" size="xs" icon="chevron-left" iconOnly title={$t('core.flows.devBack')} disabled={!deviceSerial} on:click={deviceBack} />
+                    <Button variant="secondary" size="xs" icon="square" iconOnly title={$t('core.flows.devHome')} disabled={!deviceSerial} on:click={deviceHome} />
+                    <Button variant="secondary" size="xs" icon="layers" iconOnly title={$t('core.flows.devRecent')} disabled={!deviceSerial} on:click={deviceRecent} />
+                    <Button variant="secondary" size="xs" icon="refresh" iconOnly title={$t('core.flows.devRefresh')} loading={screenStarting} on:click={startScreen} />
                   </div>
 
                   <div class="seg-group">
                     <button
                       class="seg-btn"
-                      class:active={screenEngine === 'fast'}
+                      class:active={screenEngine === 'auto'}
                       type="button"
-                      on:click={() => switchEngine('fast')}
+                      on:click={() => switchEngine('auto')}
                     >
-                      {$t('core.flows.devFast')}
+                      {$t('core.flows.devAuto')}
                     </button>
                     <button
                       class="seg-btn"
@@ -1793,22 +2192,28 @@
                     >
                       {$t('core.flows.devScrcpy')}
                     </button>
+                    <button
+                      class="seg-btn"
+                      class:active={screenEngine === 'fast'}
+                      type="button"
+                      on:click={() => switchEngine('fast')}
+                    >
+                      {$t('core.flows.devFast')}
+                    </button>
                   </div>
 
-                  {#if !scrcpyReady}
-                    <Button variant="subtle" size="xs" icon="download" loading={scrcpyDeploying} on:click={deployScrcpy}>
-                      {$t('core.flows.devDeploy')}
-                    </Button>
-                  {/if}
-
-                  {#if screenEngine === 'fast'}
-                    <div class="quality-wrap">
-                      <input type="range" min="20" max="100" step="10" bind:value={screenQuality} class="quality-slider" />
-                      <span class="mono tabular-nums">{screenQuality}%</span>
-                    </div>
-                  {:else}
-                    <Badge variant="info" size="xs" mono>H.264</Badge>
-                  {/if}
+                  <div class="seg-group">
+                    {#each QUALITY_PRESETS as preset}
+                      <button
+                        class="seg-btn"
+                        class:active={screenQuality === preset.value}
+                        type="button"
+                        on:click={() => selectQuality(preset.value)}
+                      >
+                        {$t(preset.labelKey)}
+                      </button>
+                    {/each}
+                  </div>
                 </div>
               </div>
 
@@ -2349,6 +2754,9 @@
     </button>
     <button class="ctx-item" type="button" on:click={() => { replayFlow(ctxMenu.flow.id); hideContextMenu() }}>
       <Icon name="play" size={13} /> <span>{$t('core.flows.ctx.replay')}</span>
+    </button>
+    <button class="ctx-item" type="button" on:click={() => { const f = ctxMenu.flow; hideContextMenu(); selectFlow(f, { openPlugins: true }) }}>
+      <Icon name="puzzle" size={13} /> <span>{$t('core.flows.ctx.debugInPlugins')}</span>
     </button>
 
     <div class="ctx-sep"></div>
@@ -3683,11 +4091,14 @@
     color: var(--text-secondary);
   }
 
-  /* Device Mirror Panel */
+  /* Plugin Workbench & Device Mirror Panels */
+  .plugins-panel,
   .device-panel {
     flex: 1;
     min-height: 0;
     display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   .device-stage {
@@ -3696,6 +4107,64 @@
     height: 100%;
     min-height: 0;
     background: var(--bg-app);
+  }
+
+  .device-telemetry-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 5px 10px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .telemetry-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .telemetry-metric {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 11px;
+  }
+
+  .telemetry-sep {
+    color: var(--text-faint);
+  }
+
+  .telemetry-serial {
+    color: var(--text-muted);
+    font-size: 10.5px;
+    max-width: 140px;
+  }
+
+  .telemetry-hint {
+    color: var(--text-faint);
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+
+  .device-fallback-bar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 10px;
+    background: var(--status-info-bg);
+    border-bottom: 1px solid var(--status-info-border);
+    color: var(--status-info);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .device-fallback-bar span {
+    flex: 1;
+    min-width: 0;
   }
 
   .device-viewport {
@@ -3709,6 +4178,7 @@
   }
 
   .device-screen-box {
+    position: relative;
     height: 100%;
     max-width: 100%;
     border-radius: var(--radius-lg);
@@ -3724,8 +4194,54 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
-    cursor: pointer;
+    cursor: crosshair;
     display: block;
+    user-select: none;
+    touch-action: none;
+    -webkit-user-drag: none;
+  }
+
+  .gesture-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  .swipe-line {
+    stroke: var(--accent);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-dasharray: 4 3;
+  }
+
+  .swipe-start {
+    fill: var(--accent);
+    opacity: 0.85;
+  }
+
+  .swipe-end {
+    fill: var(--accent-soft);
+    stroke: var(--accent);
+    stroke-width: 2;
+  }
+
+  .tap-ring {
+    fill: var(--accent-soft);
+    stroke: var(--accent);
+    stroke-width: 2;
+    animation: tap-pulse 360ms ease-out forwards;
+  }
+
+  @keyframes tap-pulse {
+    from {
+      opacity: 0.95;
+    }
+    to {
+      opacity: 0;
+    }
   }
 
   .device-connecting {
@@ -3753,19 +4269,6 @@
   .dev-nav-btns {
     display: flex;
     gap: 4px;
-  }
-
-  .quality-wrap {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-
-  .quality-slider {
-    width: 64px;
-    accent-color: var(--accent);
   }
 
   .device-shell {

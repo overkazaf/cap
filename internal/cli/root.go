@@ -154,4 +154,5 @@ func renderRootHelp(w io.Writer, root *cobra.Command) {
 		fmt.Fprintln(w, flags)
 	}
 	fmt.Fprintf(w, "\n%s\n", th.Fg(th.FgMuted, i18n.T("cli.root.footer")))
+	fmt.Fprintf(w, "%s\n", th.Dim(th.FgMuted, i18n.T("cli.root.copyright")))
 }

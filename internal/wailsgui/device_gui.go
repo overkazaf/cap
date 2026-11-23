@@ -1,7 +1,9 @@
 package wailsgui
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,6 +34,8 @@ type DeviceConnectionStatus struct {
 	ADBState         string                  `json:"adb_state"` // "device", "offline", "unauthorized", "disconnected"
 	Connected        bool                    `json:"connected"`
 	ProxyAddress     string                  `json:"proxy_address"`
+	ProxyMismatch    bool                    `json:"proxy_mismatch,omitempty"`
+	ExpectedProxy    string                  `json:"expected_proxy,omitempty"`
 	VPNActive        bool                    `json:"vpn_active"`
 	Mode             string                  `json:"mode"` // "proxy", "vpn", "none"
 	Rooted           bool                    `json:"rooted"`
@@ -40,6 +44,28 @@ type DeviceConnectionStatus struct {
 	CertStatus       android.CertStatus      `json:"cert_status"`
 	Companion        android.CompanionStatus `json:"companion"`
 	CompanionWarning string                  `json:"companion_warning,omitempty"`
+}
+
+type ScreenStreamInfo struct {
+	URL             string `json:"url"`
+	Engine          string `json:"engine"`           // "scrcpy" | "fast"
+	RequestedEngine string `json:"requested_engine"` // "auto" | "scrcpy" | "fast"
+	Width           int    `json:"width"`
+	Height          int    `json:"height"`
+	ScrcpyReady     bool   `json:"scrcpy_ready"`
+	FallbackReason  string `json:"fallback_reason,omitempty"`
+}
+
+type ScreenStreamStats struct {
+	Active    bool    `json:"active"`
+	Engine    string  `json:"engine"`
+	Serial    string  `json:"serial"`
+	FPS       float64 `json:"fps"`
+	LatencyMs int64   `json:"latency_ms"`
+	Frames    uint64  `json:"frames"`
+	Errors    uint64  `json:"errors"`
+	Width     int     `json:"width"`
+	Height    int     `json:"height"`
 }
 
 type DeviceDisconnectedEvent struct {
@@ -88,9 +114,18 @@ func (a *App) ConnectDevice(serial, port string, installCert bool) error {
 // ConnectDeviceAdvanced connects an Android device with full control over CA
 // certificate installation, VPN/iptables vs Wi-Fi proxy mode, and the Cap Guard
 // Companion APK watchdog, returning live connection status.
+// If cap's MITM proxy is not running yet, it automatically starts the proxy on
+// 0.0.0.0:<port> BEFORE configuring the device so traffic and Companion Guard's
+// heartbeat succeed immediately.
 func (a *App) ConnectDeviceAdvanced(serial, port string, installCert, vpnMode, installCompanion bool) (*DeviceConnectionStatus, error) {
 	if port == "" {
-		port = "8080"
+		port = a.expectedProxyPort()
+	}
+
+	if !a.IsProxyRunning() {
+		if err := a.StartProxy("0.0.0.0:" + port); err != nil {
+			return nil, fmt.Errorf("auto-start proxy on :%s: %w", port, err)
+		}
 	}
 
 	certPath, _, err := proxy.EnsureCA(a.certDir)
@@ -138,6 +173,7 @@ func (a *App) ConnectDeviceAdvanced(serial, port string, installCert, vpnMode, i
 			ADBState:         "device",
 			Connected:        true,
 			ProxyAddress:     proxyAddr,
+			ExpectedProxy:    proxyAddr,
 			VPNActive:        res.Mode == "vpn",
 			Mode:             res.Mode,
 			Rooted:           res.Rooted,
@@ -236,14 +272,36 @@ func (a *App) GetDeviceConnectionStatus(serial string) (*DeviceConnectionStatus,
 		return nil, err
 	}
 
+	expectedHost, expectedPort := a.expectedProxyHostPort()
+	expectedProxy := ""
+	if expectedHost != "" && expectedPort != "" {
+		expectedProxy = expectedHost + ":" + expectedPort
+	} else if expectedPort != "" {
+		expectedProxy = ":" + expectedPort
+	}
+
 	mode := "none"
 	connected := false
+	proxyMismatch := false
 	if st.VPNActive {
 		mode = "vpn"
 		connected = true
 	} else if st.ProxyAddress != "" {
-		mode = "proxy"
-		connected = true
+		localIPs := android.LocalHostIPv4s()
+		if expectedHost != "" {
+			localIPs = append(localIPs, expectedHost)
+		}
+		hasReverse := false
+		if st.ProxyHost == "127.0.0.1" || strings.EqualFold(st.ProxyHost, "localhost") {
+			revOut, _ := android.AdbCmd(targetSerial, "reverse", "--list")
+			hasReverse = strings.Contains(revOut, "tcp:"+expectedPort)
+		}
+		if proxyMatchesCap(st.ProxyAddress, localIPs, expectedPort, hasReverse) {
+			mode = "proxy"
+			connected = true
+		} else {
+			proxyMismatch = true
+		}
 	}
 
 	return &DeviceConnectionStatus{
@@ -251,6 +309,8 @@ func (a *App) GetDeviceConnectionStatus(serial string) (*DeviceConnectionStatus,
 		ADBState:       st.State,
 		Connected:      connected,
 		ProxyAddress:   st.ProxyAddress,
+		ProxyMismatch:  proxyMismatch,
+		ExpectedProxy:  expectedProxy,
 		VPNActive:      st.VPNActive,
 		Mode:           mode,
 		Rooted:         st.Rooted,
@@ -259,6 +319,65 @@ func (a *App) GetDeviceConnectionStatus(serial string) (*DeviceConnectionStatus,
 		CertStatus:     st.CertStatus,
 		Companion:      st.CompanionStatus,
 	}, nil
+}
+
+func (a *App) expectedProxyPort() string {
+	if liveAddr := a.ProxyAddr(); liveAddr != "" {
+		if idx := strings.LastIndex(liveAddr, ":"); idx >= 0 && idx+1 < len(liveAddr) {
+			return liveAddr[idx+1:]
+		}
+	}
+	a.mu.Lock()
+	port := a.settings["proxy_port"]
+	if port == "" {
+		if addr := a.settings["proxy_addr"]; addr != "" {
+			if idx := strings.LastIndex(addr, ":"); idx >= 0 && idx+1 < len(addr) {
+				port = addr[idx+1:]
+			}
+		}
+	}
+	a.mu.Unlock()
+	if port == "" {
+		return "8080"
+	}
+	return port
+}
+
+func (a *App) expectedProxyHostPort() (host, port string) {
+	port = a.expectedProxyPort()
+	if liveAddr := a.ProxyAddr(); liveAddr != "" {
+		if idx := strings.LastIndex(liveAddr, ":"); idx > 0 {
+			h := strings.Trim(liveAddr[:idx], "[]")
+			if h != "" && h != "0.0.0.0" && h != "::" && h != "127.0.0.1" {
+				host = h
+			}
+		}
+	}
+	if host == "" {
+		if detected, err := android.DetectHostIP(); err == nil {
+			host = detected
+		}
+	}
+	return host, port
+}
+
+// proxyMatchesCap reports whether a device's http_proxy value actually points
+// at cap's expected port on one of this host's LAN IPs (or 127.0.0.1 when an
+// active `adb reverse` tunnel is present for expectedPort).
+func proxyMatchesCap(proxyAddr string, localIPs []string, expectedPort string, hasADBReverse bool) bool {
+	host, port := android.ParseProxySetting(proxyAddr)
+	if host == "" || port == "" || expectedPort == "" || port != expectedPort {
+		return false
+	}
+	if host == "127.0.0.1" || strings.EqualFold(host, "localhost") {
+		return hasADBReverse
+	}
+	for _, ip := range localIPs {
+		if ip != "" && host == ip {
+			return true
+		}
+	}
+	return false
 }
 
 // InstallDeviceCert installs cap's CA certificate on the selected Android
@@ -595,39 +714,80 @@ type DeviceEnv struct {
 }
 
 func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
-	prop := func(key string) string {
-		out, _ := android.AdbShell(serial, "getprop "+key)
-		return out
+	baseScript := strings.Join([]string{
+		`echo "MODEL=$(getprop ro.product.model)"`,
+		`echo "BRAND=$(getprop ro.product.brand)"`,
+		`echo "ANDROID=$(getprop ro.build.version.release)"`,
+		`echo "SDK=$(getprop ro.build.version.sdk)"`,
+		`echo "CPU=$(getprop ro.product.cpu.abi)"`,
+		`echo "KERNEL=$(uname -r)"`,
+		`echo "FINGERPRINT=$(getprop ro.build.fingerprint)"`,
+		`echo "WM_SIZE=$(wm size 2>/dev/null | tail -n 1)"`,
+		`echo "MEMTOTAL=$(head -n 1 /proc/meminfo 2>/dev/null)"`,
+		`echo "BATTERY=$(dumpsys battery 2>/dev/null | grep -m1 level)"`,
+		`echo "ROOT=$(su -c id 2>/dev/null || true)"`,
+		`echo "KSUD=$(ksud --version 2>/dev/null || true)"`,
+		`echo "KSU_MOD=$(ls /data/adb/modules/.kernelsu 2>/dev/null || true)"`,
+		`echo "ZYGISK_PROP=$(getprop persist.magisk.zygisk)"`,
+		`echo "LSPD_PKG=$(pm list packages 2>/dev/null | grep -m1 lspd || true)"`,
+		`echo "SELINUX=$(getenforce 2>/dev/null || true)"`,
+		`echo "GMS=$(dumpsys package com.google.android.gms 2>/dev/null | grep -m1 versionName || true)"`,
+		`echo "VBOOT=$(getprop ro.boot.verifiedbootstate)"`,
+	}, "; ")
+
+	baseOut, err := android.AdbShell(serial, baseScript)
+	if err != nil && strings.TrimSpace(baseOut) == "" {
+		return nil, err
 	}
 
-	shell := func(cmd string) string {
-		out, _ := android.AdbShell(serial, cmd)
-		return out
+	rootOut := ""
+	if strings.Contains(baseOut, "uid=0") {
+		rootScript := strings.Join([]string{
+			`echo "MAGISK_V=$(magisk -v 2>/dev/null || true)"`,
+			`echo "MAGISK_DIR=$(ls /data/adb/magisk/ 2>/dev/null | head -n 1 || true)"`,
+			`echo "KSU_DIR=$(ls /data/adb/ksu/ 2>/dev/null | head -n 1 || true)"`,
+			`echo "ZYGISK_MOD=$(ls /data/adb/modules/zygisksu /data/adb/modules/zygisk* 2>/dev/null | head -n 1 || true)"`,
+			`echo "LSPD_DIR=$(ls /data/adb/lspd/ /data/adb/modules/lsposed* 2>/dev/null | head -n 1 || true)"`,
+			`echo "LSPD_VER=$(cat /data/adb/lspd/manager/version 2>/dev/null || true)"`,
+		}, "; ")
+		rootOut, _ = android.SuShell(serial, rootScript)
 	}
 
-	suShell := func(cmd string) string {
-		out, _ := android.SuShell(serial, cmd)
-		return out
+	return parseDeviceEnvOutput(baseOut, rootOut), nil
+}
+
+func parseDeviceEnvOutput(baseOut, rootOut string) *DeviceEnv {
+	kv := make(map[string]string, 24)
+	for _, block := range []string{baseOut, rootOut} {
+		for _, line := range strings.Split(block, "\n") {
+			line = strings.TrimSpace(line)
+			if idx := strings.IndexByte(line, '='); idx > 0 {
+				kv[line[:idx]] = strings.TrimSpace(line[idx+1:])
+			}
+		}
 	}
 
 	env := &DeviceEnv{
-		Model:       prop("ro.product.model"),
-		Brand:       prop("ro.product.brand"),
-		Android:     prop("ro.build.version.release"),
-		SDK:         prop("ro.build.version.sdk"),
-		CPU:         prop("ro.product.cpu.abi"),
-		Kernel:      shell("uname -r"),
-		Fingerprint: prop("ro.build.fingerprint"),
+		Model:       kv["MODEL"],
+		Brand:       kv["BRAND"],
+		Android:     kv["ANDROID"],
+		SDK:         kv["SDK"],
+		CPU:         kv["CPU"],
+		Kernel:      kv["KERNEL"],
+		Fingerprint: kv["FINGERPRINT"],
+		SELinux:     kv["SELINUX"],
+		Magisk:      "not found",
 	}
 
 	// Screen
-	env.Screen = shell("wm size")
-	if idx := strings.Index(env.Screen, ": "); idx >= 0 {
-		env.Screen = env.Screen[idx+2:]
+	screenStr := kv["WM_SIZE"]
+	if idx := strings.Index(screenStr, ": "); idx >= 0 {
+		screenStr = strings.TrimSpace(screenStr[idx+2:])
 	}
+	env.Screen = screenStr
 
 	// RAM
-	memInfo := shell("cat /proc/meminfo | head -1")
+	memInfo := kv["MEMTOTAL"]
 	if strings.Contains(memInfo, "MemTotal") {
 		parts := strings.Fields(memInfo)
 		if len(parts) >= 2 {
@@ -638,7 +798,7 @@ func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
 	}
 
 	// Battery
-	battInfo := shell("dumpsys battery | grep level")
+	battInfo := kv["BATTERY"]
 	if strings.Contains(battInfo, "level") {
 		parts := strings.Split(battInfo, ":")
 		if len(parts) >= 2 {
@@ -647,87 +807,65 @@ func (a *App) GetDeviceEnv(serial string) (*DeviceEnv, error) {
 	}
 
 	// Root check
-	rootCheck := shell("su -c id")
-	env.Rooted = strings.Contains(rootCheck, "uid=0")
+	env.Rooted = strings.Contains(kv["ROOT"], "uid=0")
 	if env.Rooted {
 		env.RootMethod = "su"
 	}
 
 	// Magisk
-	magiskVer := suShell("magisk -v")
+	magiskVer := kv["MAGISK_V"]
 	if magiskVer != "" && !strings.Contains(magiskVer, "not found") && !strings.Contains(magiskVer, "error") {
 		env.Magisk = "installed"
 		env.MagiskVer = magiskVer
 		env.RootMethod = "Magisk"
-	} else {
-		magiskDir := suShell("ls /data/adb/magisk/")
-		if magiskDir != "" && !strings.Contains(magiskDir, "No such") {
-			env.Magisk = "installed"
-			env.RootMethod = "Magisk"
-		} else {
-			env.Magisk = "not found"
-		}
+	} else if dir := kv["MAGISK_DIR"]; dir != "" && !strings.Contains(dir, "No such") {
+		env.Magisk = "installed"
+		env.RootMethod = "Magisk"
 	}
 
 	// KernelSU
-	ksuVer := shell("ksud --version 2>/dev/null")
-	if ksuVer != "" && !strings.Contains(ksuVer, "not found") {
+	if ksuVer := kv["KSUD"]; ksuVer != "" && !strings.Contains(ksuVer, "not found") {
 		env.KernelSU = true
 		env.KernelSUVer = ksuVer
 		if env.RootMethod == "su" {
 			env.RootMethod = "KernelSU"
 		}
-	} else {
-		ksuDir := suShell("ls /data/adb/ksu/ 2>/dev/null")
-		if ksuDir != "" && !strings.Contains(ksuDir, "No such") {
-			env.KernelSU = true
-			env.RootMethod = "KernelSU"
-		} else {
-			ksuModule := shell("ls /data/adb/modules/.kernelsu 2>/dev/null")
-			if ksuModule != "" && !strings.Contains(ksuModule, "No such") {
-				env.KernelSU = true
-			}
-		}
+	} else if dir := kv["KSU_DIR"]; dir != "" && !strings.Contains(dir, "No such") {
+		env.KernelSU = true
+		env.RootMethod = "KernelSU"
+	} else if mod := kv["KSU_MOD"]; mod != "" && !strings.Contains(mod, "No such") {
+		env.KernelSU = true
 	}
 
 	// Zygisk
-	zygiskProp := prop("persist.magisk.zygisk")
-	if zygiskProp == "1" {
+	if kv["ZYGISK_PROP"] == "1" {
 		env.Zygisk = true
-	} else {
-		zygiskCheck := suShell("ls /data/adb/modules/zygisksu 2>/dev/null || ls /data/adb/modules/zygisk* 2>/dev/null")
-		env.Zygisk = zygiskCheck != "" && !strings.Contains(zygiskCheck, "No such")
+	} else if mod := kv["ZYGISK_MOD"]; mod != "" && !strings.Contains(mod, "No such") {
+		env.Zygisk = true
 	}
 
 	// LSPosed
-	lsposedCheck := shell("pm list packages 2>/dev/null | grep lspd")
-	if strings.Contains(lsposedCheck, "lspd") {
+	if strings.Contains(kv["LSPD_PKG"], "lspd") {
 		env.LSPosed = true
-	} else {
-		lspdDir := suShell("ls /data/adb/lspd/ 2>/dev/null || ls /data/adb/modules/lsposed* 2>/dev/null")
-		env.LSPosed = lspdDir != "" && !strings.Contains(lspdDir, "No such")
+	} else if dir := kv["LSPD_DIR"]; dir != "" && !strings.Contains(dir, "No such") {
+		env.LSPosed = true
 	}
 	if env.LSPosed {
-		env.LSPosedVer = suShell("cat /data/adb/lspd/manager/version 2>/dev/null")
+		env.LSPosedVer = kv["LSPD_VER"]
 	}
 
-	// SELinux
-	env.SELinux = shell("getenforce")
-
 	// Google Play Integrity (basic check)
-	gmsVer := shell("dumpsys package com.google.android.gms 2>/dev/null | grep versionName | head -1")
-	if strings.Contains(gmsVer, "versionName") {
+	if gmsVer := kv["GMS"]; strings.Contains(gmsVer, "versionName") {
 		parts := strings.Split(gmsVer, "=")
 		if len(parts) >= 2 {
 			env.Integrity = "GMS " + strings.TrimSpace(parts[1])
 		}
 	}
-	integrityCheck := prop("ro.boot.verifiedbootstate")
-	if integrityCheck != "" {
-		env.Integrity += " | boot=" + integrityCheck
+	if vboot := kv["VBOOT"]; vboot != "" {
+		env.Integrity += " | boot=" + vboot
 	}
 
-	return env, nil
+	return env
 }
 
 // ==================== RE Tools ====================
@@ -901,23 +1039,484 @@ func (a *App) RunLogcat(serial, filter string, lines int) (string, error) {
 
 // ==================== Deep Trace ====================
 
+const maxTraceLogEntries = 300
+
+type TraceStageState struct {
+	Stage      string `json:"stage"`
+	StageIndex int    `json:"stage_index"`
+	Status     string `json:"status"` // "pending" | "running" | "ok" | "skip" | "error" | "cancelled"
+	Detail     string `json:"detail"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+type TraceLogEntry struct {
+	TimestampMs int64  `json:"timestamp_ms"`
+	ElapsedMs   int64  `json:"elapsed_ms"`
+	Stage       string `json:"stage"`
+	Status      string `json:"status"`
+	Percent     int    `json:"percent"`
+	Detail      string `json:"detail"`
+}
+
+type TraceMatchCounts struct {
+	DexMatches    int `json:"dex_matches"`
+	JavaMatches   int `json:"java_matches"`
+	NativeMatches int `json:"native_matches"`
+	GraphEdges    int `json:"graph_edges"`
+}
+
+type DeepTraceState struct {
+	Running      bool                  `json:"running"`
+	RunID        string                `json:"run_id"`
+	FlowID       string                `json:"flow_id"`
+	Package      string                `json:"package"`
+	APKPath      string                `json:"apk_path,omitempty"`
+	ForceRefresh bool                  `json:"force_refresh"`
+	Status       string                `json:"status"` // "idle" | "running" | "done" | "error" | "cancelled"
+	Percent      int                   `json:"percent"`
+	CurrentStage string                `json:"current_stage"`
+	StageIndex   int                   `json:"stage_index"`
+	TotalStages  int                   `json:"total_stages"`
+	Detail       string                `json:"detail"`
+	Stages       []TraceStageState     `json:"stages"`
+	Logs         []TraceLogEntry       `json:"logs"`
+	Counts       TraceMatchCounts      `json:"counts"`
+	Result       *captrace.TraceResult `json:"result,omitempty"`
+	Error        string                `json:"error,omitempty"`
+	StartedAtMs  int64                 `json:"started_at_ms"`
+	ElapsedMs    int64                 `json:"elapsed_ms"`
+}
+
+type TraceProgressPayload struct {
+	RunID         string               `json:"run_id"`
+	FlowID        string               `json:"flow_id"`
+	Package       string               `json:"package"`
+	Stage         string               `json:"stage"`
+	StageIndex    int                  `json:"stage_index"`
+	TotalStages   int                  `json:"total_stages"`
+	Percent       int                  `json:"percent"`
+	Status        string               `json:"status"`
+	Detail        string               `json:"detail"`
+	DurationMs    int64                `json:"duration_ms"`
+	ElapsedMs     int64                `json:"elapsed_ms"`
+	DexMatches    int                  `json:"dex_matches"`
+	JavaMatches   int                  `json:"java_matches"`
+	NativeMatches int                  `json:"native_matches"`
+	GraphEdges    int                  `json:"graph_edges"`
+	Step          *captrace.StepResult `json:"step,omitempty"`
+}
+
+type TraceDonePayload struct {
+	RunID     string                `json:"run_id"`
+	FlowID    string                `json:"flow_id"`
+	Package   string                `json:"package"`
+	ElapsedMs int64                 `json:"elapsed_ms"`
+	Counts    TraceMatchCounts      `json:"counts"`
+	Result    *captrace.TraceResult `json:"result"`
+}
+
+type TraceErrorPayload struct {
+	RunID     string `json:"run_id"`
+	FlowID    string `json:"flow_id"`
+	Package   string `json:"package"`
+	Cancelled bool   `json:"cancelled"`
+	ElapsedMs int64  `json:"elapsed_ms"`
+	Error     string `json:"error"`
+}
+
+func defaultTraceStages() []TraceStageState {
+	order := []string{
+		captrace.StagePreflight,
+		captrace.StageAPKPull,
+		captrace.StageAPKInspect,
+		captrace.StageDEXSearch,
+		captrace.StageJadxDecompile,
+		captrace.StageJavaSearch,
+		captrace.StageNative,
+		captrace.StageGraphBuild,
+	}
+	stages := make([]TraceStageState, len(order))
+	for i, name := range order {
+		stages[i] = TraceStageState{
+			Stage:      name,
+			StageIndex: i + 1,
+			Status:     "pending",
+		}
+	}
+	return stages
+}
+
+func cloneDeepTraceState(st *DeepTraceState) *DeepTraceState {
+	if st == nil {
+		return &DeepTraceState{
+			Status:      "idle",
+			TotalStages: captrace.TotalPipelineStages,
+			Stages:      defaultTraceStages(),
+			Logs:        []TraceLogEntry{},
+		}
+	}
+	cp := *st
+	cp.Stages = make([]TraceStageState, len(st.Stages))
+	copy(cp.Stages, st.Stages)
+	cp.Logs = make([]TraceLogEntry, len(st.Logs))
+	copy(cp.Logs, st.Logs)
+	if cp.Running && cp.StartedAtMs > 0 {
+		cp.ElapsedMs = time.Now().UnixMilli() - cp.StartedAtMs
+		if cp.ElapsedMs < 0 {
+			cp.ElapsedMs = 0
+		}
+	}
+	return &cp
+}
+
+func (a *App) applyTraceProgress(runID string, ev captrace.ProgressEvent) (TraceProgressPayload, bool) {
+	nowMs := time.Now().UnixMilli()
+
+	a.traceMu.Lock()
+	defer a.traceMu.Unlock()
+
+	if a.traceState == nil || a.traceState.RunID != runID {
+		return TraceProgressPayload{}, false
+	}
+
+	st := a.traceState
+	elapsed := nowMs - st.StartedAtMs
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	st.ElapsedMs = elapsed
+	if ev.Percent >= st.Percent || ev.Status == "error" || ev.Status == "cancelled" {
+		st.Percent = ev.Percent
+	}
+	if ev.Stage != "" {
+		st.CurrentStage = ev.Stage
+	}
+	if ev.StageIndex > 0 {
+		st.StageIndex = ev.StageIndex
+	}
+	if ev.TotalStages > 0 {
+		st.TotalStages = ev.TotalStages
+	}
+	if ev.Detail != "" {
+		st.Detail = ev.Detail
+	}
+
+	for i := range st.Stages {
+		if st.Stages[i].Stage == ev.Stage {
+			if ev.Status != "" {
+				st.Stages[i].Status = ev.Status
+			}
+			if ev.Detail != "" {
+				st.Stages[i].Detail = ev.Detail
+			}
+			if ev.DurationMs > 0 {
+				st.Stages[i].DurationMs = ev.DurationMs
+			}
+			break
+		}
+	}
+
+	if ev.DexMatches > st.Counts.DexMatches {
+		st.Counts.DexMatches = ev.DexMatches
+	}
+	if ev.JavaMatches > st.Counts.JavaMatches {
+		st.Counts.JavaMatches = ev.JavaMatches
+	}
+	if ev.NativeMatches > st.Counts.NativeMatches {
+		st.Counts.NativeMatches = ev.NativeMatches
+	}
+	if ev.GraphEdges > st.Counts.GraphEdges {
+		st.Counts.GraphEdges = ev.GraphEdges
+	}
+
+	if ev.Detail != "" {
+		st.Logs = append(st.Logs, TraceLogEntry{
+			TimestampMs: nowMs,
+			ElapsedMs:   elapsed,
+			Stage:       ev.Stage,
+			Status:      ev.Status,
+			Percent:     st.Percent,
+			Detail:      ev.Detail,
+		})
+		if len(st.Logs) > maxTraceLogEntries {
+			st.Logs = st.Logs[len(st.Logs)-maxTraceLogEntries:]
+		}
+	}
+
+	payload := TraceProgressPayload{
+		RunID:         runID,
+		FlowID:        st.FlowID,
+		Package:       st.Package,
+		Stage:         ev.Stage,
+		StageIndex:    ev.StageIndex,
+		TotalStages:   st.TotalStages,
+		Percent:       st.Percent,
+		Status:        ev.Status,
+		Detail:        ev.Detail,
+		DurationMs:    ev.DurationMs,
+		ElapsedMs:     elapsed,
+		DexMatches:    st.Counts.DexMatches,
+		JavaMatches:   st.Counts.JavaMatches,
+		NativeMatches: st.Counts.NativeMatches,
+		GraphEdges:    st.Counts.GraphEdges,
+		Step:          ev.Step,
+	}
+	return payload, true
+}
+
+func (a *App) buildTraceOptions(packageName, apkPath string, forceRefresh bool) captrace.Options {
+	apkPath = strings.TrimSpace(apkPath)
+	packageName = strings.TrimSpace(packageName)
+
+	serial := ""
+	if apkPath == "" {
+		devices, _ := android.ListDevices()
+		for _, d := range devices {
+			if d.State == "device" {
+				serial = d.Serial
+				break
+			}
+		}
+		if serial == "" && len(devices) > 0 {
+			serial = devices[0].Serial
+		}
+	}
+
+	dirKey := packageName
+	if dirKey == "" && apkPath != "" {
+		dirKey = strings.TrimSuffix(filepath.Base(apkPath), filepath.Ext(apkPath))
+	}
+	if dirKey == "" {
+		dirKey = "default"
+	}
+
+	return captrace.Options{
+		Serial:       serial,
+		APKPath:      apkPath,
+		OutputDir:    filepath.Join(a.certDir, "trace", dirKey),
+		Package:      packageName,
+		ForceRefresh: forceRefresh,
+	}
+}
+
+// StartDeepTrace begins an asynchronous, cancellable DeepTrace run and emits
+// live `trace:progress`, `trace:done`, and `trace:error` Wails events while
+// persisting state on App so switching tabs never loses progress or results.
+func (a *App) StartDeepTrace(flowID, packageName, apkPath string, forceRefresh bool) (string, error) {
+	flowID = strings.TrimSpace(flowID)
+	packageName = strings.TrimSpace(packageName)
+	apkPath = strings.TrimSpace(apkPath)
+
+	if flowID == "" {
+		return "", fmt.Errorf("flow ID is required")
+	}
+	if packageName == "" && apkPath == "" {
+		return "", fmt.Errorf("package name or local APK path is required")
+	}
+	if a.store == nil {
+		return "", fmt.Errorf("flow store unavailable")
+	}
+	f, err := a.store.GetFlow(flowID)
+	if err != nil {
+		return "", err
+	}
+
+	runID := fmt.Sprintf("trace-%d", time.Now().UnixNano())
+	startedAt := time.Now().UnixMilli()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	a.traceMu.Lock()
+	if a.traceState != nil && a.traceState.Running {
+		a.traceMu.Unlock()
+		cancel()
+		return "", fmt.Errorf("a DeepTrace run (%s) is already in progress", a.traceState.RunID)
+	}
+	a.traceCancel = cancel
+	a.traceState = &DeepTraceState{
+		Running:      true,
+		RunID:        runID,
+		FlowID:       flowID,
+		Package:      packageName,
+		APKPath:      apkPath,
+		ForceRefresh: forceRefresh,
+		Status:       "running",
+		Percent:      0,
+		CurrentStage: captrace.StagePreflight,
+		StageIndex:   1,
+		TotalStages:  captrace.TotalPipelineStages,
+		Detail:       "Starting DeepTrace...",
+		Stages:       defaultTraceStages(),
+		Logs:         make([]TraceLogEntry, 0, 64),
+		StartedAtMs:  startedAt,
+	}
+	a.traceMu.Unlock()
+
+	go func() {
+		defer cancel()
+		opts := a.buildTraceOptions(packageName, apkPath, forceRefresh)
+		result, traceErr := captrace.TraceContext(ctx, f, opts, func(ev captrace.ProgressEvent) {
+			if payload, ok := a.applyTraceProgress(runID, ev); ok {
+				a.events.Emit(EventTraceProgress, payload)
+			}
+		})
+
+		finishedMs := time.Now().UnixMilli()
+		cancelled := ctx.Err() != nil || errors.Is(traceErr, context.Canceled)
+
+		a.traceMu.Lock()
+		st := a.traceState
+		active := st != nil && st.RunID == runID
+		var elapsed int64
+		var counts TraceMatchCounts
+		if active {
+			st.Running = false
+			elapsed = finishedMs - st.StartedAtMs
+			if elapsed < 0 {
+				elapsed = 0
+			}
+			st.ElapsedMs = elapsed
+			a.traceCancel = nil
+
+			if cancelled {
+				st.Status = "cancelled"
+				st.Error = "trace cancelled"
+				st.Detail = "Trace cancelled"
+				for i := range st.Stages {
+					if st.Stages[i].Status == "running" {
+						st.Stages[i].Status = "cancelled"
+					}
+				}
+			} else if traceErr != nil {
+				st.Status = "error"
+				st.Error = traceErr.Error()
+				st.Detail = traceErr.Error()
+				for i := range st.Stages {
+					if st.Stages[i].Status == "running" {
+						st.Stages[i].Status = "error"
+					}
+				}
+			} else {
+				st.Status = "done"
+				st.Percent = 100
+				st.CurrentStage = captrace.StageDone
+				st.StageIndex = st.TotalStages
+				st.Result = result
+				if result != nil {
+					if len(result.DexStrings) > st.Counts.DexMatches {
+						st.Counts.DexMatches = len(result.DexStrings)
+					}
+					if len(result.JavaTrace) > st.Counts.JavaMatches {
+						st.Counts.JavaMatches = len(result.JavaTrace)
+					}
+					if len(result.NativeTrace) > st.Counts.NativeMatches {
+						st.Counts.NativeMatches = len(result.NativeTrace)
+					}
+					if len(result.CallGraph) > st.Counts.GraphEdges {
+						st.Counts.GraphEdges = len(result.CallGraph)
+					}
+				}
+				counts = st.Counts
+			}
+		}
+		a.traceMu.Unlock()
+
+		if !active {
+			return
+		}
+		if cancelled {
+			a.events.Emit(EventTraceError, TraceErrorPayload{
+				RunID:     runID,
+				FlowID:    flowID,
+				Package:   packageName,
+				Cancelled: true,
+				ElapsedMs: elapsed,
+				Error:     "trace cancelled",
+			})
+			return
+		}
+		if traceErr != nil {
+			a.events.Emit(EventTraceError, TraceErrorPayload{
+				RunID:     runID,
+				FlowID:    flowID,
+				Package:   packageName,
+				Cancelled: false,
+				ElapsedMs: elapsed,
+				Error:     traceErr.Error(),
+			})
+			return
+		}
+		a.events.Emit(EventTraceDone, TraceDonePayload{
+			RunID:     runID,
+			FlowID:    flowID,
+			Package:   packageName,
+			ElapsedMs: elapsed,
+			Counts:    counts,
+			Result:    result,
+		})
+	}()
+
+	return runID, nil
+}
+
+// CancelDeepTrace immediately cancels any running DeepTrace job (killing
+// in-flight adb pull / jadx / r2 subprocesses). Safe to call when idle.
+func (a *App) CancelDeepTrace() error {
+	a.traceMu.Lock()
+	cancel := a.traceCancel
+	a.traceMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
+// GetDeepTraceState returns a thread-safe snapshot of the current or most
+// recent DeepTrace run so switching GUI tabs restores live progress or results.
+func (a *App) GetDeepTraceState() *DeepTraceState {
+	a.traceMu.Lock()
+	defer a.traceMu.Unlock()
+	return cloneDeepTraceState(a.traceState)
+}
+
+// GetTraceToolsStatus probes local availability & versions of adb, jadx, and r2.
+func (a *App) GetTraceToolsStatus() captrace.ToolsStatus {
+	return captrace.CheckTools(captrace.Options{})
+}
+
 func (a *App) DeepTrace(flowID, packageName string) (*captrace.TraceResult, error) {
 	f, err := a.store.GetFlow(flowID)
 	if err != nil {
 		return nil, err
 	}
 
-	devices, _ := android.ListDevices()
-	serial := ""
-	if len(devices) > 0 {
-		serial = devices[0].Serial
-	}
+	runID := fmt.Sprintf("trace-sync-%d", time.Now().UnixNano())
+	startedAt := time.Now().UnixMilli()
+	opts := a.buildTraceOptions(packageName, "", false)
 
-	return captrace.Trace(f, captrace.Options{
-		Serial:    serial,
-		OutputDir: filepath.Join(a.certDir, "trace", packageName),
-		Package:   packageName,
-	}, nil)
+	return captrace.TraceContext(context.Background(), f, opts, func(ev captrace.ProgressEvent) {
+		elapsed := time.Now().UnixMilli() - startedAt
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		a.events.Emit(EventTraceProgress, TraceProgressPayload{
+			RunID:         runID,
+			FlowID:        flowID,
+			Package:       packageName,
+			Stage:         ev.Stage,
+			StageIndex:    ev.StageIndex,
+			TotalStages:   ev.TotalStages,
+			Percent:       ev.Percent,
+			Status:        ev.Status,
+			Detail:        ev.Detail,
+			DurationMs:    ev.DurationMs,
+			ElapsedMs:     elapsed,
+			DexMatches:    ev.DexMatches,
+			JavaMatches:   ev.JavaMatches,
+			NativeMatches: ev.NativeMatches,
+			GraphEdges:    ev.GraphEdges,
+			Step:          ev.Step,
+		})
+	})
 }
 
 func (a *App) GetTraceMermaid(flowID, packageName string) (string, error) {
@@ -929,6 +1528,131 @@ func (a *App) GetTraceMermaid(flowID, packageName string) (string, error) {
 }
 
 // ==================== Device Screen ====================
+
+func qualityToMaxSize(quality int) int {
+	if quality <= 0 {
+		quality = screen.DefaultQuality
+	}
+	switch {
+	case quality > 80:
+		return 720
+	case quality > 60:
+		return 540
+	case quality > 40:
+		return 400
+	default:
+		return 320
+	}
+}
+
+// StartScreenStream starts a zero-jank loopback MJPEG HTTP stream for the
+// selected Android device. engine accepts "auto" (default: prefers scrcpy when
+// deployed + ffmpeg available, else fast), "scrcpy", or "fast". Any previously
+// active stream is cleanly stopped before starting the new session.
+func (a *App) StartScreenStream(serial, engine string, quality, fps int) (*ScreenStreamInfo, error) {
+	resolved, err := android.GetDeviceSerial(serial)
+	if err != nil {
+		return nil, err
+	}
+	serial = resolved
+
+	// Stop any prior stream cleanly before opening a new one.
+	_ = a.StopScreenStream()
+
+	if quality <= 0 {
+		quality = screen.DefaultQuality
+	}
+	maxSize := qualityToMaxSize(quality)
+
+	srv, err := screen.StartMJPEGServer(screen.MJPEGConfig{
+		Serial:  serial,
+		Engine:  engine,
+		MaxSize: maxSize,
+		Quality: quality,
+		FPS:     fps,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch native display dimensions so frontend touch/swipe coordinates map
+	// accurately onto `input tap` / `input swipe`.
+	nativeW, nativeH := 0, 0
+	if dims, dimErr := a.GetScreenSize(serial); dimErr == nil && len(dims) == 2 {
+		nativeW, nativeH = dims[0], dims[1]
+		srv.SetDimensions(nativeW, nativeH)
+	}
+
+	a.screenMu.Lock()
+	old := a.screenStream
+	a.screenStream = srv
+	a.screenMu.Unlock()
+	if old != nil && old != srv {
+		old.Stop()
+	}
+
+	info := srv.Info()
+	w, h := info.Width, info.Height
+	if nativeW > 0 && nativeH > 0 {
+		w, h = nativeW, nativeH
+	}
+
+	return &ScreenStreamInfo{
+		URL:             info.URL,
+		Engine:          info.Engine,
+		RequestedEngine: info.RequestedEngine,
+		Width:           w,
+		Height:          h,
+		ScrcpyReady:     info.ScrcpyReady,
+		FallbackReason:  info.FallbackReason,
+	}, nil
+}
+
+// StopScreenStream immediately shuts down any active loopback MJPEG stream
+// and tears down its underlying capture engine (scrcpy/ffmpeg or FastStream).
+func (a *App) StopScreenStream() error {
+	a.screenMu.Lock()
+	srv := a.screenStream
+	a.screenStream = nil
+	a.screenMu.Unlock()
+
+	if srv != nil {
+		srv.Stop()
+	}
+	screen.StopScrcpy()
+	return nil
+}
+
+// GetScreenStreamStats returns live rolling FPS, capture latency, frame count,
+// error count, and dimensions for the active screen stream.
+func (a *App) GetScreenStreamStats() *ScreenStreamStats {
+	a.screenMu.Lock()
+	srv := a.screenStream
+	a.screenMu.Unlock()
+
+	if srv == nil {
+		return &ScreenStreamStats{Active: false}
+	}
+	st := srv.Stats()
+	return &ScreenStreamStats{
+		Active:    st.Active,
+		Engine:    st.Engine,
+		Serial:    st.Serial,
+		FPS:       st.FPS,
+		LatencyMs: st.LatencyMs,
+		Frames:    st.Frames,
+		Errors:    st.Errors,
+		Width:     st.Width,
+		Height:    st.Height,
+	}
+}
+
+// DeviceKeyEvent sends an arbitrary Android keyevent code (e.g. 187 Recent,
+// 26 Power, 4 Back, 3 Home) to the target device.
+func (a *App) DeviceKeyEvent(serial string, keycode int) error {
+	_, err := android.AdbShell(serial, fmt.Sprintf("input keyevent %d", keycode))
+	return err
+}
 
 func (a *App) CaptureScreen(serial string) (string, error) {
 	return a.CaptureScreenScaled(serial, 50)

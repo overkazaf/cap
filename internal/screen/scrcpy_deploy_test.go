@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // withFakeRunAdb substitutes runAdb (the seam IsScrcpyDeployed/
@@ -198,15 +199,37 @@ func TestDownloadScrcpyServer_PropagatesDownloadError(t *testing.T) {
 // implementation (not a fake) against a local httptest server, so the
 // actual HTTP-fetch-and-write-to-disk code path gets coverage without
 // depending on GitHub or the network.
+func startTestDownloadServer(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	if os.Getenv("CAP_SKIP_NETWORK") == "1" {
+		pl := newPipeListener()
+		srv := &http.Server{Handler: handler}
+		go func() { _ = srv.Serve(pl) }()
+		origClient := httpClient
+		httpClient = &http.Client{
+			Timeout:   5 * time.Second,
+			Transport: &http.Transport{DialContext: pl.DialContext},
+		}
+		t.Cleanup(func() {
+			httpClient = origClient
+			_ = srv.Close()
+			_ = pl.Close()
+		})
+		return "http://127.0.0.1"
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 func TestDownloadFile_SavesBodyToDest(t *testing.T) {
 	const body = "fake scrcpy-server jar bytes"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	baseURL := startTestDownloadServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(body))
 	}))
-	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "out.jar")
-	if err := downloadFile(srv.URL, dest); err != nil {
+	if err := downloadFile(baseURL, dest); err != nil {
 		t.Fatalf("downloadFile() error = %v, want nil", err)
 	}
 
@@ -225,13 +248,12 @@ func TestDownloadFile_SavesBodyToDest(t *testing.T) {
 }
 
 func TestDownloadFile_PropagatesHTTPErrorStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	baseURL := startTestDownloadServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "out.jar")
-	if err := downloadFile(srv.URL, dest); err == nil {
+	if err := downloadFile(baseURL, dest); err == nil {
 		t.Fatal("downloadFile() with a 404 response: want error, got nil")
 	}
 	if _, err := os.Stat(dest); !os.IsNotExist(err) {

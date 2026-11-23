@@ -14,6 +14,7 @@ package screen
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -127,6 +128,12 @@ type ScrcpyServer struct {
 	mu             sync.Mutex
 	running        bool
 	lastFrame      []byte
+	seq            uint64
+	notifyCh       chan struct{}
+	fpsTracker     *fpsTracker
+	frameCount     uint64
+	lastFrameAt    time.Time
+	lastLatencyMs  int64
 	deviceName     string
 	videoW, videoH int
 }
@@ -145,12 +152,14 @@ func NewScrcpyServer(serial string, maxSize, maxFPS, quality int) *ScrcpyServer 
 		maxFPS = DefaultFPS
 	}
 	return &ScrcpyServer{
-		serial:    serial,
-		maxSize:   maxSize,
-		maxFPS:    maxFPS,
-		bitrate:   DefaultScrcpyBitrate,
-		quality:   clampQuality(quality),
-		localPort: DefaultScrcpyLocalPort,
+		serial:     serial,
+		maxSize:    maxSize,
+		maxFPS:     maxFPS,
+		bitrate:    DefaultScrcpyBitrate,
+		quality:    clampQuality(quality),
+		localPort:  DefaultScrcpyLocalPort,
+		notifyCh:   make(chan struct{}),
+		fpsTracker: newFPSTracker(2 * time.Second),
 	}
 }
 
@@ -428,6 +437,13 @@ func (s *ScrcpyServer) Start() error {
 	s.videoH = height
 	s.stopCh = stopCh
 	s.frameCh = frameCh
+	if s.notifyCh == nil {
+		s.notifyCh = make(chan struct{})
+	}
+	if s.fpsTracker == nil {
+		s.fpsTracker = newFPSTracker(2 * time.Second)
+	}
+	s.lastFrameAt = time.Time{}
 	s.running = true
 	s.mu.Unlock()
 
@@ -504,14 +520,17 @@ func (s *ScrcpyServer) feedFFmpeg(stdin io.WriteCloser, conn net.Conn) {
 }
 
 // collectFrames parses JPEG frames out of ffmpeg's stdout until it returns
-// an error (ffmpeg exited) or stopCh is closed.
+// an error (ffmpeg exited) or stopCh is closed, then closes frameCh so
+// dispatchFrames wakes any waiting subscribers.
 func (s *ScrcpyServer) collectFrames(stdout io.Reader, frameCh chan<- []byte, stopCh <-chan struct{}) {
 	defer s.wg.Done()
+	defer close(frameCh)
 	splitJPEGFrames(stdout, frameCh, stopCh)
 }
 
 // dispatchFrames stores each frame produced by collectFrames as the latest
-// frame, until stopCh is closed or frameCh is drained and closed.
+// frame and notifies all WaitFrame subscribers immediately with zero polling
+// delay, until stopCh is closed or frameCh is closed.
 func (s *ScrcpyServer) dispatchFrames(frameCh <-chan []byte, stopCh <-chan struct{}) {
 	defer s.wg.Done()
 	for {
@@ -520,10 +539,32 @@ func (s *ScrcpyServer) dispatchFrames(frameCh <-chan []byte, stopCh <-chan struc
 			return
 		case frame, ok := <-frameCh:
 			if !ok {
+				// Underlying ffmpeg stream ended; wake any blocked subscribers.
+				s.mu.Lock()
+				if s.notifyCh != nil {
+					close(s.notifyCh)
+					s.notifyCh = make(chan struct{})
+				}
+				s.mu.Unlock()
 				return
 			}
+			now := time.Now()
 			s.mu.Lock()
 			s.lastFrame = frame
+			s.seq++
+			s.frameCount++
+			if !s.lastFrameAt.IsZero() {
+				s.lastLatencyMs = now.Sub(s.lastFrameAt).Milliseconds()
+			}
+			s.lastFrameAt = now
+			if s.fpsTracker == nil {
+				s.fpsTracker = newFPSTracker(2 * time.Second)
+			}
+			s.fpsTracker.record(now)
+			if s.notifyCh != nil {
+				close(s.notifyCh)
+			}
+			s.notifyCh = make(chan struct{})
 			s.mu.Unlock()
 		}
 	}
@@ -543,6 +584,10 @@ func (s *ScrcpyServer) Stop() {
 	stopCh := s.stopCh
 	serverCmd := s.serverCmd
 	ffmpegCmd := s.ffmpegCmd
+	if s.notifyCh != nil {
+		close(s.notifyCh)
+		s.notifyCh = make(chan struct{})
+	}
 	s.mu.Unlock()
 
 	close(stopCh)
@@ -579,6 +624,55 @@ func (s *ScrcpyServer) Frame() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastFrame
+}
+
+// WaitFrame blocks until a frame newer than afterSeq is decoded, the server
+// stops, or ctx is cancelled. Always delivers the most recent frame so slow
+// consumers drop stale intermediate frames instead of accumulating lag.
+func (s *ScrcpyServer) WaitFrame(ctx context.Context, afterSeq uint64) ([]byte, uint64, bool) {
+	for {
+		s.mu.Lock()
+		if s.seq > afterSeq && s.lastFrame != nil {
+			frame := s.lastFrame
+			seq := s.seq
+			s.mu.Unlock()
+			return frame, seq, true
+		}
+		if !s.running {
+			seq := s.seq
+			s.mu.Unlock()
+			return nil, seq, false
+		}
+		if s.notifyCh == nil {
+			s.notifyCh = make(chan struct{})
+		}
+		ch := s.notifyCh
+		s.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return nil, afterSeq, false
+		case <-ch:
+		}
+	}
+}
+
+// Stats returns live rolling FPS, frame-to-frame latency, frame count, and
+// negotiated video dimensions for the scrcpy stream.
+func (s *ScrcpyServer) Stats() StreamStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fps := 0.0
+	if s.fpsTracker != nil {
+		fps = s.fpsTracker.fps(time.Now())
+	}
+	return StreamStats{
+		FPS:        fps,
+		LatencyMs:  s.lastLatencyMs,
+		FrameCount: s.frameCount,
+		Width:      s.videoW,
+		Height:     s.videoH,
+	}
 }
 
 // IsRunning reports whether the server is currently started.

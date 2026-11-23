@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,10 +10,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/overkazaf/cap/internal/types"
 )
+
+const maxExecutionLogs = 200
 
 type Plugin struct {
 	Name        string `json:"name"`
@@ -20,14 +24,42 @@ type Plugin struct {
 	Code        string `json:"code"`
 	Enabled     bool   `json:"enabled"`
 	Type        string `json:"type"` // "request_filter", "response_modifier", "analyzer"
+	Runtime     string `json:"runtime,omitempty"`      // ""|"builtin"|"python3"|"node"|"sh"
+	AutoRun     bool   `json:"auto_run,omitempty"`     // auto-execute on matching live flows
+	HostPattern string `json:"host_pattern,omitempty"` // substring, glob '*', or /regex/
+	PathPattern string `json:"path_pattern,omitempty"` // substring, glob '*', or /regex/
+	Method      string `json:"method,omitempty"`       // "" = any, or GET/POST/...
+	TimeoutSec  int    `json:"timeout_sec,omitempty"`  // default 10s, clamped 1..60s
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
 }
 
+// ExecutionRecord captures one plugin execution (auto-run on live traffic or
+// manual test run) for the bounded in-memory log and live GUI stream.
+type ExecutionRecord struct {
+	ID         string `json:"id"`
+	PluginName string `json:"plugin_name"`
+	Runtime    string `json:"runtime"`
+	FlowID     string `json:"flow_id"`
+	Method     string `json:"method"`
+	URL        string `json:"url"`
+	Status     int    `json:"status"`
+	Output     string `json:"output"`
+	Error      string `json:"error"`
+	DurationMs int64  `json:"duration_ms"`
+	Timestamp  string `json:"timestamp"`
+	Trigger    string `json:"trigger"` // "auto" or "manual"
+}
+
 type Engine struct {
-	dir     string
-	plugins map[string]*Plugin
-	mu      sync.RWMutex
+	dir      string
+	plugins  map[string]*Plugin
+	dirStamp string
+	mu       sync.RWMutex
+
+	logMu   sync.RWMutex
+	logs    []ExecutionRecord
+	execSeq atomic.Int64
 }
 
 var ErrEmptyName = errors.New("plugin: name is required")
@@ -40,30 +72,102 @@ func NewEngine(dir string) (*Engine, error) {
 	return e, e.loadAll()
 }
 
-func (e *Engine) loadAll() error {
-	entries, err := os.ReadDir(e.dir)
+// Dir returns the local directory where plugin *.json files are stored.
+func (e *Engine) Dir() string {
+	return e.dir
+}
+
+// Reload re-reads all *.json plugin files from e.dir under a write lock so
+// locally created or edited plugins take effect without restarting cap.
+func (e *Engine) Reload() error {
+	stamp := computeDirStamp(e.dir)
+	loaded, err := readPluginsDir(e.dir)
 	if err != nil {
-		return nil
+		return err
 	}
+	e.mu.Lock()
+	e.plugins = loaded
+	e.dirStamp = stamp
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *Engine) loadAll() error {
+	stamp := computeDirStamp(e.dir)
+	loaded, err := readPluginsDir(e.dir)
+	if err != nil {
+		return err
+	}
+	e.plugins = loaded
+	e.dirStamp = stamp
+	return nil
+}
+
+// maybeReloadFromDisk performs a cheap directory stat fingerprint check and
+// hot-reloads e.dir whenever local *.json files have been added, modified, or
+// removed on disk.
+func (e *Engine) maybeReloadFromDisk() {
+	stamp := computeDirStamp(e.dir)
+	e.mu.RLock()
+	unchanged := stamp == e.dirStamp
+	e.mu.RUnlock()
+	if unchanged {
+		return
+	}
+	loaded, err := readPluginsDir(e.dir)
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	e.plugins = loaded
+	e.dirStamp = stamp
+	e.mu.Unlock()
+}
+
+func computeDirStamp(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
 	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(e.dir, entry.Name()))
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "%s:%d:%d;", entry.Name(), info.Size(), info.ModTime().UnixNano())
+	}
+	return b.String()
+}
+
+func readPluginsDir(dir string) (map[string]*Plugin, error) {
+	out := make(map[string]*Plugin)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out, nil
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			continue
 		}
 		var p Plugin
-		if json.Unmarshal(data, &p) == nil && p.Name != "" {
+		if json.Unmarshal(data, &p) == nil && strings.TrimSpace(p.Name) != "" {
 			key := sanitizeName(p.Name)
-			if existing, exists := e.plugins[key]; exists && existing.Name != p.Name {
-				return fmt.Errorf("plugin: %q collides with %q on disk", p.Name, existing.Name)
+			if existing, exists := out[key]; exists && existing.Name != p.Name {
+				return nil, fmt.Errorf("plugin: %q collides with %q on disk", p.Name, existing.Name)
 			}
 			stored := p
-			e.plugins[key] = &stored
+			out[key] = &stored
 		}
 	}
-	return nil
+	return out, nil
 }
 
 func (e *Engine) List() []*Plugin {
@@ -122,6 +226,7 @@ func (e *Engine) Save(p *Plugin) error {
 	}
 
 	e.plugins[key] = stored
+	e.dirStamp = computeDirStamp(e.dir)
 	return nil
 }
 
@@ -133,6 +238,7 @@ func (e *Engine) Delete(name string) error {
 	filename := key + ".json"
 	os.Remove(filepath.Join(e.dir, filename))
 	delete(e.plugins, key)
+	e.dirStamp = computeDirStamp(e.dir)
 	return nil
 }
 
@@ -156,6 +262,7 @@ func (e *Engine) Toggle(name string) error {
 		return err
 	}
 	e.plugins[key] = toggled
+	e.dirStamp = computeDirStamp(e.dir)
 	return nil
 }
 
@@ -165,19 +272,221 @@ type ExecResult struct {
 }
 
 func (e *Engine) RunAnalyzer(name string, flow *types.Flow) *ExecResult {
+	return e.RunAnalyzerContext(context.Background(), name, flow)
+}
+
+// RunAnalyzerContext executes a single named plugin (built-in or script
+// runtime) against flow, recording EVERY execution (including disabled or
+// missing plugin errors) in the engine's log buffer.
+func (e *Engine) RunAnalyzerContext(ctx context.Context, name string, flow *types.Flow) *ExecResult {
+	e.maybeReloadFromDisk()
+
 	e.mu.RLock()
 	key := sanitizeName(name)
-	p, ok := e.plugins[key]
+	orig, ok := e.plugins[key]
+	var p *Plugin
+	if ok {
+		p = clonePlugin(orig, key)
+	}
 	e.mu.RUnlock()
 
-	if !ok {
-		return &ExecResult{Error: fmt.Sprintf("plugin %q not found", name)}
-	}
-	if !p.Enabled {
-		return &ExecResult{Error: fmt.Sprintf("plugin %q is disabled", name)}
+	if flow == nil {
+		flow = &types.Flow{}
 	}
 
-	// Run built-in pattern analysis based on plugin type
+	if !ok {
+		errMsg := fmt.Sprintf("plugin %q not found", name)
+		e.RecordExecution(ExecutionRecord{
+			ID:         fmt.Sprintf("px-%d", e.execSeq.Add(1)),
+			PluginName: name,
+			Runtime:    RuntimeBuiltin,
+			FlowID:     flow.ID,
+			Method:     flow.Method,
+			URL:        flow.URL,
+			Status:     flow.Status,
+			Error:      errMsg,
+			Timestamp:  time.Now().Format(time.RFC3339),
+			Trigger:    "manual",
+		})
+		return &ExecResult{Error: errMsg}
+	}
+	if !p.Enabled {
+		errMsg := fmt.Sprintf("plugin %q is disabled", name)
+		e.RecordExecution(ExecutionRecord{
+			ID:         fmt.Sprintf("px-%d", e.execSeq.Add(1)),
+			PluginName: p.Name,
+			Runtime:    normalizeRuntime(p.Runtime),
+			FlowID:     flow.ID,
+			Method:     flow.Method,
+			URL:        flow.URL,
+			Status:     flow.Status,
+			Error:      errMsg,
+			Timestamp:  time.Now().Format(time.RFC3339),
+			Trigger:    "manual",
+		})
+		return &ExecResult{Error: errMsg}
+	}
+
+	res, rec := e.executePlugin(ctx, p, flow, "manual")
+	e.RecordExecution(rec)
+	return res
+}
+
+// RunDraftContext executes an unsaved/in-memory Plugin draft against flow
+// (even when p.Enabled is false), records a "manual" ExecutionRecord with a
+// non-empty ID in the engine's log ring buffer, and returns both the ExecResult
+// and the recorded ExecutionRecord.
+func (e *Engine) RunDraftContext(ctx context.Context, p *Plugin, flow *types.Flow) (*ExecResult, ExecutionRecord) {
+	if flow == nil {
+		flow = &types.Flow{}
+	}
+	if p == nil {
+		errMsg := "plugin draft is nil"
+		rec := ExecutionRecord{
+			ID:         fmt.Sprintf("px-%d", e.execSeq.Add(1)),
+			PluginName: "draft",
+			Runtime:    RuntimeBuiltin,
+			FlowID:     flow.ID,
+			Method:     flow.Method,
+			URL:        flow.URL,
+			Status:     flow.Status,
+			Error:      errMsg,
+			Timestamp:  time.Now().Format(time.RFC3339),
+			Trigger:    "manual",
+		}
+		e.RecordExecution(rec)
+		return &ExecResult{Error: errMsg}, rec
+	}
+
+	draft := clonePlugin(p, "draft")
+	if strings.TrimSpace(draft.Name) == "" {
+		draft.Name = "draft"
+	}
+	res, rec := e.executePlugin(ctx, draft, flow, "manual")
+	e.RecordExecution(rec)
+	return res, rec
+}
+
+// RunMatching finds all Enabled && AutoRun plugins whose filters match f,
+// automatically reloading disk edits in e.dir if changed, executes each one
+// respecting ctx, records every ExecutionRecord into the bounded log ring
+// buffer, and returns the records in deterministic name order.
+func (e *Engine) RunMatching(ctx context.Context, f *types.Flow) []ExecutionRecord {
+	if f == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	e.maybeReloadFromDisk()
+
+	e.mu.RLock()
+	var matched []*Plugin
+	for key, p := range e.plugins {
+		if p.Enabled && p.AutoRun && MatchesFlow(p, f) {
+			matched = append(matched, clonePlugin(p, key))
+		}
+	}
+	e.mu.RUnlock()
+
+	if len(matched) == 0 {
+		return nil
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].Name < matched[j].Name })
+
+	records := make([]ExecutionRecord, 0, len(matched))
+	for _, p := range matched {
+		if ctx.Err() != nil {
+			break
+		}
+		_, rec := e.executePlugin(ctx, p, f, "auto")
+		e.RecordExecution(rec)
+		records = append(records, rec)
+	}
+	return records
+}
+
+func (e *Engine) executePlugin(ctx context.Context, p *Plugin, flow *types.Flow, trigger string) (*ExecResult, ExecutionRecord) {
+	if flow == nil {
+		flow = &types.Flow{}
+	}
+	rt := normalizeRuntime(p.Runtime)
+	start := time.Now()
+
+	var res *ExecResult
+	if rt == RuntimeBuiltin {
+		res = runBuiltin(p, flow)
+	} else {
+		res = runScript(ctx, p, flow)
+	}
+	if res == nil {
+		res = &ExecResult{}
+	}
+
+	rec := ExecutionRecord{
+		ID:         fmt.Sprintf("px-%d", e.execSeq.Add(1)),
+		PluginName: p.Name,
+		Runtime:    rt,
+		FlowID:     flow.ID,
+		Method:     flow.Method,
+		URL:        flow.URL,
+		Status:     flow.Status,
+		Output:     res.Output,
+		Error:      res.Error,
+		DurationMs: time.Since(start).Milliseconds(),
+		Timestamp:  start.Format(time.RFC3339),
+		Trigger:    trigger,
+	}
+	return res, rec
+}
+
+// RecordExecution appends rec into the engine's bounded ring buffer (capped at
+// maxExecutionLogs entries).
+func (e *Engine) RecordExecution(rec ExecutionRecord) {
+	if rec.ID == "" {
+		rec.ID = fmt.Sprintf("px-%d", e.execSeq.Add(1))
+	}
+	if rec.Timestamp == "" {
+		rec.Timestamp = time.Now().Format(time.RFC3339)
+	}
+	e.logMu.Lock()
+	e.logs = append(e.logs, rec)
+	if len(e.logs) > maxExecutionLogs {
+		excess := len(e.logs) - maxExecutionLogs
+		e.logs = append([]ExecutionRecord(nil), e.logs[excess:]...)
+	}
+	e.logMu.Unlock()
+}
+
+// Logs returns up to limit most recent ExecutionRecords (newest first).
+// limit <= 0 returns all retained records.
+func (e *Engine) Logs(limit int) []ExecutionRecord {
+	e.logMu.RLock()
+	defer e.logMu.RUnlock()
+
+	n := len(e.logs)
+	if n == 0 {
+		return []ExecutionRecord{}
+	}
+	if limit > 0 && limit < n {
+		n = limit
+	}
+	out := make([]ExecutionRecord, n)
+	for i := 0; i < n; i++ {
+		out[i] = e.logs[len(e.logs)-1-i]
+	}
+	return out
+}
+
+// ClearLogs empties the in-memory execution log buffer.
+func (e *Engine) ClearLogs() {
+	e.logMu.Lock()
+	e.logs = nil
+	e.logMu.Unlock()
+}
+
+func runBuiltin(p *Plugin, flow *types.Flow) *ExecResult {
 	switch p.Type {
 	case "request_filter":
 		return runRequestFilter(p, flow)
@@ -301,6 +610,7 @@ var ExamplePlugins = []Plugin{
 		Name:        "log-requests",
 		Description: "Log all POST requests with their body",
 		Type:        "request_filter",
+		Runtime:     RuntimeBuiltin,
 		Enabled:     false,
 		Code: `// Plugin: log-requests
 // Type: request_filter
@@ -328,6 +638,7 @@ function onRequest(flow) {
 		Name:        "detect-api-keys",
 		Description: "Flag requests that contain API keys or tokens in headers",
 		Type:        "analyzer",
+		Runtime:     RuntimeBuiltin,
 		Enabled:     false,
 		Code: `// Plugin: detect-api-keys
 // Type: analyzer
@@ -370,6 +681,7 @@ function analyze(flow) {
 		Name:        "sign-validator",
 		Description: "Validate sign parameter by replaying with different timestamp",
 		Type:        "analyzer",
+		Runtime:     RuntimeBuiltin,
 		Enabled:     false,
 		Code: `// Plugin: sign-validator
 // Type: analyzer
@@ -400,5 +712,89 @@ function analyze(flow) {
     hint: "Compare sign values across requests with different timestamps"
   };
 }`,
+	},
+	{
+		Name:        "python-flow-inspector",
+		Description: "Python 3 script reading captured flow JSON from stdin and logging API latency & payload keys",
+		Type:        "analyzer",
+		Runtime:     RuntimePython3,
+		AutoRun:     false,
+		PathPattern: "/api/*",
+		TimeoutSec:  10,
+		Enabled:     false,
+		Code: `import json
+import sys
+
+flow = json.load(sys.stdin)
+summary = {
+    "flow_id": flow.get("id"),
+    "method": flow.get("method"),
+    "host": flow.get("host"),
+    "path": flow.get("path"),
+    "status": flow.get("status"),
+    "latency_ms": flow.get("latency_ms"),
+    "slow": (flow.get("latency_ms") or 0) >= 500,
+}
+
+resp_body = flow.get("resp_body") or ""
+try:
+    parsed = json.loads(resp_body)
+    if isinstance(parsed, dict):
+        summary["resp_keys"] = sorted(parsed.keys())[:20]
+    elif isinstance(parsed, list):
+        summary["resp_items"] = len(parsed)
+except Exception:
+    summary["resp_bytes"] = len(resp_body)
+
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+`,
+	},
+	{
+		Name:        "node-local-webhook",
+		Description: "Node.js script forwarding a compact JSON flow summary to a local webhook endpoint",
+		Type:        "analyzer",
+		Runtime:     RuntimeNode,
+		AutoRun:     false,
+		Method:      "POST",
+		PathPattern: "/api/*",
+		TimeoutSec:  10,
+		Enabled:     false,
+		Code: `const fs = require("fs");
+const http = require("http");
+
+const flow = JSON.parse(fs.readFileSync(0, "utf8"));
+const payload = JSON.stringify({
+  id: flow.id,
+  method: flow.method,
+  url: flow.url,
+  status: flow.status,
+  latency_ms: flow.latency_ms,
+});
+
+// Replace with your local collector or webhook receiver:
+const WEBHOOK_URL = process.env.CAP_WEBHOOK_URL || "http://127.0.0.1:9000/hook";
+console.log("Prepared payload for " + WEBHOOK_URL + ":\n" + payload);
+
+if (process.env.CAP_WEBHOOK_SEND === "1") {
+  const u = new URL(WEBHOOK_URL);
+  const req = http.request(
+    {
+      hostname: u.hostname,
+      port: u.port || 80,
+      path: u.pathname + u.search,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+      },
+      timeout: 3000,
+    },
+    (res) => console.log("Webhook status:", res.statusCode)
+  );
+  req.on("error", (err) => console.error("Webhook error:", err.message));
+  req.write(payload);
+  req.end();
+}
+`,
 	},
 }

@@ -8,10 +8,50 @@
 <p align="center">
   <a href="README.md">English</a> ·
   <a href="https://overkazaf.github.io/cap/">文档与预览站</a> ·
+  <a href="#产品界面预览">界面预览</a> ·
   <a href="#安装与构建">安装与构建</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#命令参考">CLI / TUI 命令参考</a>
 </p>
+
+---
+
+## 产品界面预览
+
+<p align="center">
+  <img src="docs/screenshots/flows-detail.png" alt="cap 请求流与插件单页联调工作台（Obsidian 暗黑主题）" width="100%">
+  <br>
+  <em>请求流 + 插件单页联调工作台 —— 左侧实时浏览抓包请求，右侧内嵌 <code>PluginWorkbench</code> 即时查看解析后的 <code>query_params</code> 变量、匹配状态并按 <code>⌘Enter</code> 运行 Python 3 / Node / Shell 脚本草稿。</em>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/capture-tab.png" alt="抓包控制中心" width="100%"><br>
+      <strong>抓包控制中心</strong> —— 实时 KPI 看板、4 步 Android APEX 证书与代理守护看门狗
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/flows-tab.png" alt="流量检查器" width="100%"><br>
+      <strong>Flows 流量检查器</strong> —— 可拖拽分屏、JSON/XML/Protobuf/Hex 与签名参数自动识别
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/deeptrace-tab.png" alt="DeepTrace 8 阶段实时追踪" width="100%"><br>
+      <strong>DeepTrace 8 阶段实时流水线</strong> —— HTTP → Java → JNI → Native 调用链与 APK/JADX 缓存
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/terminal-tab.png" alt="多标签内嵌终端" width="100%"><br>
+      <strong>工作台多标签终端</strong> —— 结构化诊断命令块，无缝执行 ADB、Frida 与 CLI 工具
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/screenshots/light-zh-preview.png" alt="Porcelain 陶瓷浅色主题 + 简体中文" width="88%"><br>
+      <strong>Porcelain 陶瓷浅色主题 + 原生简体中文</strong> —— 4 套主题与中英双语零延迟热切换
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -29,10 +69,10 @@
 | 多语言代码生成 | ✗ | △ curl + Python | ✗ | **✓ 5 种语言** |
 | 签名参数自动识别 | ✗ | ✗ | ✗ | **✓** |
 | 签名算法推理 | ✗ | ✗ | ✗ | **✓ MD5/SHA/HMAC** |
-| 静态分析与 DeepTrace | ✗ | ✗ | ✗ | **✓ jadx / DEX / 调用图** |
+| 静态分析与 DeepTrace | ✗ | ✗ | ✗ | **✓ 8 阶段实时 jadx / DEX / 调用图** |
 | 一键连接 Android | ✗ | ✗ | △ 需装 App | **✓ ADB 直连 + 守护 APK** |
 | 拔线/断网自动恢复代理 | ✗ | ✗ | △ 依赖 App | **✓ Companion 看门狗（免 Root）** |
-| 证书注入 (Android 7–15) | ✗ 手动 | ✗ 手动 | ✓ | **✓ mount --bind / Magisk / KeyChain** |
+| 证书注入 (Android 7–15) | ✗ 手动 | ✗ 手动 | ✓ | **✓ APEX Conscrypt / mount --bind / Magisk / KeyChain** |
 | SSL Unpinning 脱钉 | △ 手动 | ✗ | ✗ | **✓ Frida / patch / Magisk / CodeShare** |
 | 拦截规则与断点 | ✓ | ✓ 插件 | ✓ Pro | **✓ 规则改写 + 实时断点放行** |
 | 请求重放 + Diff | ✓ Repeater | ✗ | ✗ | **✓ 改参重放 + 并排 Diff** |
@@ -43,7 +83,7 @@
 | WebSocket 抓取 | ✓ | ✓ | ✓ | **⧗ 实验性** |
 | SSE 流抓取 | ✗ | △ | ✗ | **⧗ 实验性** |
 | Protobuf 无 Schema 解码 | ✗ 插件 | △ 插件 | ✗ | **⧗ 实验性** |
-| 插件系统 | ✓ BApp | ✓ addon | ✗ | **⧗ 实验性（内置分析器编辑器）** |
+| 插件系统 | ✓ BApp | ✓ addon | ✗ | **✓ 单页联调 Python/Node/Sh 工作台** |
 | 单文件分发 | ✗ JVM | ✗ Python | ✗ Electron | **✓ Go 单二进制** |
 | 开源免费 | ✗ ($449/年) | ✓ | △ 核心开源 | **✓ MIT** |
 
@@ -174,10 +214,10 @@ sequenceDiagram
   - **可折叠左侧导航栏（`⌘B`）**：支持 `⌘1–7` 快捷键直达工作区，顶部集成实时代理状态胶囊与 `EN / 中文` 切换按钮，底部配备 IDE 风格状态栏。
 - **7 大核心工作区**：
   1. **Capture 抓包中心（`⌘1`）**：4 指标 KPI 实时看板（`req/s` + 吞吐带宽、总流量/字节数、活跃主机 + 平均/P95 延迟、错误率 + TLS 告警）、4 步向导式 Android 接入卡片（`ADB 设备` → `CA 证书` → `Cap 代理守护` → `代理路由`）、域名作用域过滤、Frida 脱钉控制，以及活动日志 / 活跃主机 / TLS 告警多标签控制台。
-  2. **Flows 流量分析器（`⌘2`）**：多维过滤工具栏（`/` 聚焦、主机自动补全、方法/状态码/内容类型胶囊、平铺与 API 分组视图）、可拖拽横向/纵向 `SplitPane`、键盘导航（`↑/↓`/`j/k`、`Esc`）、多标签详情检查器（`Params`、`Req/Resp Headers`、`Req/Resp Body` 支持 JSON / XML / Protobuf / Hex 及内联搜索、`Raw`、`Timing`、`Export` 一键生成 cURL/Python/Go/Java/JS/Agent JSONL）、改参重放、并排 Flow Diff、签名分析、HAR/Charles 导入，以及手机实时投屏（`Fast` / `scrcpy`）。
+  2. **Flows 流量分析器（`⌘2`）**：多维过滤工具栏（`/` 聚焦、主机自动补全、方法/状态码/内容类型胶囊、平铺与 API 分组视图）、可拖拽横向/纵向 `SplitPane`、键盘导航（`↑/↓`/`j/k`、`Esc`）、多标签详情检查器（`Params`、`Req/Resp Headers`、`Req/Resp Body` 支持 JSON / XML / Protobuf / Hex 及内联搜索、`Raw`、`Timing`、`Export` 一键生成 cURL/Python/Go/Java/JS/Agent JSONL）、改参重放、并排 Flow Diff、签名分析、HAR/Charles 导入、原生回环 **MJPEG 设备投屏**（`Fast` / `scrcpy`，实时 FPS 与拖拽滑动），以及右侧内置 **插件调试（`PluginWorkbench`）** 模式实现单页无缝联调。
   3. **Rules 拦截规则与断点（`⌘3`）**：分屏规则管理 + 实时**挂起断点队列**（支持编辑后放行 / Mock 返回 / 丢弃 403），涵盖 6 类动作、优先级排序及正则/路径校验。
-  4. **DeepTrace 深度追踪（`⌘4`）**：Flow 与 ADB 目标包名关联流水线，集成 APK Manifest 检查器、调用图（Call Graph）、DEX 字符串、Java 源码、Native SO 分析、摘要与 Mermaid 导出。
-  5. **Plugins 插件工坊（`⌘5`）** *（实验性）*：分屏分析器工作台，内置示例模板、`⌘S` 保存与可拖拽测试运行抽屉。*（当前用于选择和运行内置分析模式，不执行任意 JavaScript。）*
+  4. **DeepTrace 深度追踪（`⌘4`）**：8 阶段实时可取消追踪流水线，内置实时进度推送与 APK/JADX 缓存复用（二次分析秒级完成），集成 APK Manifest 检查器、调用图（Call Graph）、DEX 字符串、Java 源码、Native SO 分析、摘要与 Mermaid 导出。
+  5. **Plugins 插件工坊（`⌘5`）**：可脚本化分析插件工作台与单页联调器（本地 `~/.cap/plugins/*.json` 自动热重载），支持 `python3` / `node` / `sh` / `builtin` 运行时、实时解析 `query_params` 与流变量检查器（点击即插代码片段）、实时 `stdin JSON` 预览、`命中当前请求` 实时匹配指示（支持查询字符串与通配符 `*`）、`⌘Enter` 免保存即刻运行草稿、实时流量自动触发及实时执行日志面板。
   6. **Terminal 内嵌终端（`⌘6`）**：多 Tab 暗色 PTY 终端（`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`），内置 `adb`、`frida`、`curl` 常用诊断快捷指令。
   7. **Settings 系统设置（`⌘7`）**：分栏配置外观与显示语言（`English` / `简体中文`）、代理与证书、Android 与抓包、导出与存储、快捷键速查及关于/诊断信息。
 
@@ -229,7 +269,7 @@ cap tui --lang zh                    # 直接以简体中文界面启动
 - **免 Root 自主清理代理**：连接时通过 ADB 自动授予 `WRITE_SECURE_SETTINGS` 与后台/电池白名单 —— **无需 Root 权限**即可由手机端自主还原系统代理。
 - **前台心跳看门狗（`ProxyGuardService`）**：每 3 秒主动探测 `proxy_host:proxy_port` 连通性。连续失败 3 次、拔掉 USB（`ACTION_POWER_DISCONNECTED`）、设备重启（`BootReceiver`）或点击通知栏**「恢复网络」**按钮时，自动清除全局 `http_proxy`（在 Root `--vpn` 模式下同时清理 `cap-redir` 与 iptables 规则），并弹出「代理已自动清理，网络已恢复」通知。
 - **全版本 CA 证书管理（Android 7–15）**：
-  - **Root 设备**：三策略系统证书注入（Android 10+ `mount --bind` 即时注入、Magisk 持久化模块、Android 9 及以下 `/system` 重挂），支持 `cap android cert --check` 验证与 `--remove` 移除。
+  - **Root 设备**：支持 HTTP Toolkit 方案的 Android 14+ APEX Conscrypt 命名空间注入（`mount --bind` + `TRUST_STORE_CHANGED` 实时重载信任库）、Android 10–13 `mount --bind`、Magisk 持久化模块与 Android 9 及以下 `/system` 重挂，并提供 `cap android cert --check` 验证与 `--remove` 移除。
   - **非 Root 设备**：守护 App 内置 `MainActivity` 一键调起系统 `KeyChain` 安装 `/sdcard/Download/cap-ca.crt`，配合 GUI 状态向导快速校验。
 - **桌面端自动收尾**：`cap start --auto-disconnect`、`cap tui --live --auto-disconnect` 以及桌面 GUI 的 `StopProxy()` / `App.Shutdown()` 都会在停止代理前自动断开并恢复已追踪的 Android 设备。
 
@@ -405,10 +445,10 @@ docs/                   GitHub Pages 官网（Obsidian/Porcelain 双主题 + 实
 
 ---
 
-## 协议
-
-MIT，见 [LICENSE](LICENSE)。
-
 ## 参与贡献
 
 欢迎提交 Issue 与 Pull Request，开发环境搭建、测试与安全审查规范请见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 作者与开源协议
+
+© 2026 [0xaf (@overkazaf)](https://github.com/overkazaf) · MIT 协议（见 [LICENSE](LICENSE)） · [GitHub](https://github.com/overkazaf/cap) · [文档站](https://overkazaf.github.io/cap/)

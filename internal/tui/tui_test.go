@@ -440,9 +440,12 @@ func TestRenderScreenDimensionsAndModes(t *testing.T) {
 							}
 						}
 					}
-					if loc == i18n.ZH && tc.name == "help-modal" && tab == TabOverview {
+					if tc.name == "help-modal" && tab == TabOverview {
 						joined := StripANSI(strings.Join(lines, "\n"))
-						if !strings.Contains(joined, "CAP 快捷键指南") || !strings.Contains(joined, "切换界面语言") {
+						if !strings.Contains(joined, "© 2026 0xaf (@overkazaf)") || !strings.Contains(joined, "github.com/overkazaf/cap") {
+							t.Errorf("%s help modal missing copyright footer", loc)
+						}
+						if loc == i18n.ZH && (!strings.Contains(joined, "CAP 快捷键指南") || !strings.Contains(joined, "切换界面语言")) {
 							t.Errorf("ZH help modal missing localized strings")
 						}
 					}

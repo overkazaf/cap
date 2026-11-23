@@ -91,6 +91,8 @@ registerMessages('common', {
       hintPalette: '{mod}K Palette',
       switchThemeTooltip: 'Switch theme',
       switchLangTooltip: 'Switch language',
+      copyrightLabel: '© 2026 0xaf · GitHub',
+      copyrightTooltip: '© 2026 0xaf (@overkazaf) · MIT License — Open GitHub Repository',
     },
     palette: {
       ariaLabel: 'Command palette',
@@ -107,6 +109,7 @@ registerMessages('common', {
         interface: 'Interface',
         appearance: 'Appearance',
         language: 'Language',
+        links: 'Links & About',
       },
       commands: {
         goTo: 'Go to {label}',
@@ -120,6 +123,7 @@ registerMessages('common', {
         switchTheme: 'Switch Theme: {theme}',
         toggleLanguage: 'Switch Language ({next})',
         setLanguage: 'Language: {lang}',
+        openGithub: 'Open GitHub Repository',
       },
       badges: {
         active: 'Active',
@@ -272,6 +276,8 @@ registerMessages('common', {
       hintPalette: '{mod}K 命令面板',
       switchThemeTooltip: '切换主题',
       switchLangTooltip: '切换界面语言',
+      copyrightLabel: '© 2026 0xaf · GitHub',
+      copyrightTooltip: '© 2026 0xaf (@overkazaf) · MIT 许可证 — 打开 GitHub 仓库',
     },
     palette: {
       ariaLabel: '命令面板',
@@ -288,6 +294,7 @@ registerMessages('common', {
         interface: '界面布局',
         appearance: '外观主题',
         language: '界面语言',
+        links: '链接与关于',
       },
       commands: {
         goTo: '切换到 {label}',
@@ -301,6 +308,7 @@ registerMessages('common', {
         switchTheme: '切换主题：{theme}',
         toggleLanguage: '切换界面语言（{next}）',
         setLanguage: '界面语言：{lang}',
+        openGithub: '打开 GitHub 仓库',
       },
       badges: {
         active: '当前页',

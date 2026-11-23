@@ -173,6 +173,7 @@ var catalogs = map[Locale]map[string]string{
 		"tui.help.act.lang":       "Toggle UI language (English ↔ 中文)",
 		"tui.help.act.misc":       "Toggle Dark-Light theme / Help / Quit",
 		"tui.help.footer":         "Press ? or Esc to close",
+		"tui.help.copyright":      "© 2026 0xaf (@overkazaf) · github.com/overkazaf/cap · MIT",
 
 		// CLI Root Help
 		"cli.root.tagline":         "HTTP(S) MITM Proxy & Reverse-Engineering Workbench",
@@ -184,6 +185,7 @@ var catalogs = map[Locale]map[string]string{
 		"cli.root.quickstart":      "QUICK START",
 		"cli.root.flags":           "FLAGS",
 		"cli.root.footer":          `Run "cap <command> --help" for detailed flags and examples.`,
+		"cli.root.copyright":       "© 2026 0xaf (@overkazaf) · MIT License · https://github.com/overkazaf/cap",
 		"cli.root.ex.start_tui":    "Start live MITM proxy inside the interactive TUI",
 		"cli.root.ex.start_stream": "Stream live color-coded traffic to your terminal",
 		"cli.root.ex.tui":          "Browse & inspect saved flows interactively",
@@ -445,6 +447,7 @@ var catalogs = map[Locale]map[string]string{
 		"tui.help.act.lang":       "切换界面语言 (English ↔ 中文)",
 		"tui.help.act.misc":       "切换深浅主题 / 帮助 / 退出",
 		"tui.help.footer":         "按 ? 或 Esc 关闭帮助",
+		"tui.help.copyright":      "© 2026 0xaf (@overkazaf) · github.com/overkazaf/cap · MIT",
 
 		// CLI Root Help
 		"cli.root.tagline":         "HTTP(S) 中间人抓包与逆向分析工作台",
@@ -456,6 +459,7 @@ var catalogs = map[Locale]map[string]string{
 		"cli.root.quickstart":      "快速开始",
 		"cli.root.flags":           "参数选项",
 		"cli.root.footer":          `运行 "cap <command> --help" 查看子命令的详细参数与示例。`,
+		"cli.root.copyright":       "© 2026 0xaf (@overkazaf) · MIT License · https://github.com/overkazaf/cap",
 		"cli.root.ex.start_tui":    "在交互式全屏 TUI 中启动实时 MITM 抓包",
 		"cli.root.ex.start_stream": "在终端实时流式输出彩色流量日志",
 		"cli.root.ex.tui":          "交互式浏览与检视已保存的流量数据库",

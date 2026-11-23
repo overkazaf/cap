@@ -31,6 +31,7 @@
   import Settings from './pages/Settings.svelte'
 
   const SIDEBAR_KEY = 'cap.ui.sidebarExpanded'
+  const GITHUB_REPO_URL = 'https://github.com/overkazaf/cap'
 
   let sidebarExpanded = true
   let version = 'v0.2.0'
@@ -51,6 +52,15 @@
 
   const appApi = () => window?.go?.wailsgui?.App
   const runtimeApi = () => window?.runtime
+
+  function openExternal(url) {
+    const rt = runtimeApi()
+    if (rt?.BrowserOpenURL) {
+      rt.BrowserOpenURL(url)
+      return
+    }
+    window.open(url, '_blank', 'noopener')
+  }
 
   function toggleSidebar() {
     sidebarExpanded = !sidebarExpanded
@@ -386,6 +396,15 @@
         },
       }
     }),
+    {
+      id: 'link:github',
+      label: $t('common.palette.commands.openGithub'),
+      category: $t('common.palette.categories.links'),
+      icon: 'external-link',
+      keywords: 'github repository source code author 0xaf overkazaf license mit 仓库 源码 开源',
+      badge: 'overkazaf/cap',
+      run: () => openExternal(GITHUB_REPO_URL),
+    },
   ]
 </script>
 
@@ -698,6 +717,15 @@
         >
           <Icon name="palette" size={11} />
           <span>{activeThemeLabel}</span>
+        </button>
+        <span class="status-sep"></span>
+        <button
+          class="status-item status-copyright"
+          on:click={() => openExternal(GITHUB_REPO_URL)}
+          title={$t('common.statusbar.copyrightTooltip')}
+        >
+          <span>{$t('common.statusbar.copyrightLabel')}</span>
+          <Icon name="external-link" size={10} />
         </button>
         <span class="status-sep"></span>
         <span class="status-item static mono">{version}</span>
@@ -1370,6 +1398,15 @@
     font-size: 10.5px;
     color: var(--text-faint);
     white-space: nowrap;
+  }
+
+  .status-copyright {
+    font-size: 10.5px;
+    color: var(--text-faint);
+  }
+
+  .status-copyright:hover {
+    color: var(--accent);
   }
 
   @media (max-width: 1040px) {

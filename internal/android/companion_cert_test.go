@@ -3,6 +3,7 @@ package android
 import (
 	"archive/zip"
 	"bytes"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,27 @@ func TestParseCertCheckOutput(t *testing.T) {
 		wantReboot  bool
 	}{
 		{
+			name:        "android 14+ apex dir with apex cert installed",
+			output:      "HAS_APEX_DIR\nAPEX\nSYSTEM\n",
+			wantInstall: true,
+			wantStore:   "system",
+			wantMethod:  "apex",
+		},
+		{
+			name:        "android 14+ apex dir with ONLY legacy system cert must report NOT installed",
+			output:      "HAS_APEX_DIR\nSYSTEM\n",
+			wantInstall: false,
+			wantStore:   "none",
+			wantMethod:  "legacy_system_only",
+		},
+		{
+			name:        "android 14+ apex dir with user cert only",
+			output:      "HAS_APEX_DIR\nUSER\n",
+			wantInstall: true,
+			wantStore:   "user",
+			wantMethod:  "user",
+		},
+		{
 			name:        "apex and system",
 			output:      "APEX\nSYSTEM\n",
 			wantInstall: true,
@@ -65,7 +87,7 @@ func TestParseCertCheckOutput(t *testing.T) {
 			wantMethod:  "apex",
 		},
 		{
-			name:        "system only",
+			name:        "android 10-13 system only (no apex dir)",
 			output:      "SYSTEM\n",
 			wantInstall: true,
 			wantStore:   "system",
@@ -252,6 +274,20 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 			switch {
 			case sh == "su -c id":
 				return "uid=0(root) gid=0(root)", nil
+			case strings.Contains(sh, "===CAP_PKG==="):
+				pkgSection := "Unable to find package: " + CompanionPackage
+				if companionInstalled {
+					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=1\n  versionName=1.0.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
+				}
+				svcSection := "  (nothing)"
+				if watchdogStarted {
+					svcSection = "* ServiceRecord{123 com.overkazaf.cap.companion/.ProxyGuardService}\n  isForeground=true"
+				}
+				wlSection := ""
+				if companionInstalled {
+					wlSection = "user," + CompanionPackage + ",10200"
+				}
+				return "===CAP_PKG===\n" + pkgSection + "\n===CAP_SVC===\n" + svcSection + "\n===CAP_WL===\n" + wlSection + "\n", nil
 			case strings.HasPrefix(sh, "dumpsys package "+CompanionPackage):
 				if !companionInstalled {
 					return "Unable to find package: " + CompanionPackage, nil
@@ -386,5 +422,95 @@ func TestInstallCACertNonRootedCompanionFlow(t *testing.T) {
 	}
 	if !res.Success || res.Method != "companion_keychain" || !res.NeedsManual || !launchedCompanion {
 		t.Errorf("unexpected non-rooted InstallCACert result: %+v (launched=%v)", res, launchedCompanion)
+	}
+}
+
+func TestParseBatchedDeviceStatusOutput(t *testing.T) {
+	batched := `
+===CAP_META===
+MODEL=Pixel 7 Pro
+BRAND=google
+RELEASE=14
+SDK=34
+PROXY=192.168.1.50:8080
+ROOT=uid=0(root) gid=0(root)
+REDIR_PID=4321
+REDIR_PORT=9988
+===CAP_CERT===
+APEX
+SYSTEM
+===CAP_PKG===
+Package [com.overkazaf.cap.companion] (abc):
+  versionCode=1 minSdk=24 targetSdk=34
+  versionName=1.0.0
+  android.permission.WRITE_SECURE_SETTINGS: granted=true
+===CAP_SVC===
+  * ServiceRecord{1234 u0 com.overkazaf.cap.companion/.ProxyGuardService}
+    isForeground=true
+===CAP_WL===
+user,com.overkazaf.cap.companion,10222
+`
+	st := ParseBatchedDeviceStatusOutput("PIXEL7", "9a5ba575.0", true, batched)
+	if st.Model != "Pixel 7 Pro" || st.Brand != "google" || st.AndroidVersion != "14" || st.SDK != "34" {
+		t.Errorf("unexpected device metadata: %+v", st)
+	}
+	if !st.Rooted || st.ProxyAddress != "192.168.1.50:8080" || !st.VPNActive || st.RedirPort != "9988" {
+		t.Errorf("unexpected proxy/vpn/root state: %+v", st)
+	}
+	if !st.CertStatus.Installed || st.CertStatus.Store != "system" || st.CertStatus.Method != "apex" {
+		t.Errorf("unexpected cert status: %+v", st.CertStatus)
+	}
+	if !st.CompanionStatus.Installed || !st.CompanionStatus.HasSecureSettings || !st.CompanionStatus.WatchdogRunning || !st.CompanionStatus.BatteryWhitelisted {
+		t.Errorf("unexpected companion status: %+v", st.CompanionStatus)
+	}
+}
+
+func TestSelectBestHostIPInterfaceRanking(t *testing.T) {
+	candidates := []hostIPCandidate{
+		{ifaceName: "lo0", ip: net.ParseIP("127.0.0.1"), up: true, loopback: true},
+		{ifaceName: "utun3", ip: net.ParseIP("198.18.0.1"), up: true},
+		{ifaceName: "utun4", ip: net.ParseIP("100.64.1.2"), up: true},
+		{ifaceName: "awdl0", ip: net.ParseIP("169.254.12.34"), up: true},
+		{ifaceName: "bridge100", ip: net.ParseIP("192.168.64.1"), up: true},
+		{ifaceName: "docker0", ip: net.ParseIP("172.17.0.1"), up: true},
+		{ifaceName: "en0", ip: net.ParseIP("192.168.1.42"), up: true},
+		{ifaceName: "en5", ip: net.ParseIP("10.0.0.5"), up: false}, // down
+	}
+
+	if got := selectBestHostIP(candidates); got != "192.168.1.42" {
+		t.Errorf("selectBestHostIP() = %q, want 192.168.1.42 (en0 LAN IP)", got)
+	}
+
+	// Only virtual non-link-local fallback available (198.18.* must still be rejected)
+	onlyVirtual := []hostIPCandidate{
+		{ifaceName: "utun0", ip: net.ParseIP("198.18.0.1"), up: true},
+		{ifaceName: "bridge100", ip: net.ParseIP("192.168.64.1"), up: true},
+	}
+	if got := selectBestHostIP(onlyVirtual); got != "192.168.64.1" {
+		t.Errorf("selectBestHostIP(onlyVirtual) = %q, want 192.168.64.1", got)
+	}
+}
+
+func TestBuildBindMountScript_HTTPToolkitAndroid14Compliance(t *testing.T) {
+	script := BuildBindMountScript("d7932d1e.0", "/data/local/tmp/d7932d1e.0")
+	mustContain := []string{
+		"mount -t tmpfs tmpfs \"$SYSTEM_CERTS\"",
+		"u:object_r:system_security_cacerts_file:s0",
+		"chown system:system",
+		"zygote zygote64 webview_zygote",
+		"system_server",
+		"readlink \"/proc/$PID/ns/mnt\"",
+		"nsenter --mount=\"/proc/$PID/ns/mnt\" -- mount --bind \"$SYSTEM_CERTS\" \"$APEX_CERTS\"",
+		"nsenter --mount=\"/proc/$ZPID/ns/mnt\" -- test -r \"$APEX_CERTS/$HASH\"",
+		"am broadcast -a android.security.action.TRUST_STORE_CHANGED",
+	}
+	for _, needle := range mustContain {
+		if !strings.Contains(script, needle) {
+			t.Errorf("BuildBindMountScript missing required Android 14+ directive %q", needle)
+		}
+	}
+	// Must never bind-mount /data/local/tmp directly onto /system or /apex
+	if strings.Contains(script, `mount --bind "$TMPDIR"`) || strings.Contains(script, `mount --bind "$STAGE"`) {
+		t.Errorf("BuildBindMountScript must mount tmpfs rather than bind-mounting /data/local/tmp")
 	}
 }

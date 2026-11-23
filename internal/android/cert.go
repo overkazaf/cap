@@ -90,6 +90,9 @@ func subjectHashOld(rawSubject []byte) uint32 {
 
 // CheckCertStatus inspects the device's system, APEX Conscrypt, Magisk module,
 // and user trust stores to report accurate CA certificate installation status.
+// On Android 14+ (where /apex/com.android.conscrypt/cacerts exists), a cert
+// present ONLY in legacy /system/etc/security/cacerts is NOT considered
+// installed in the active system trust store.
 func CheckCertStatus(serial, certPath string) CertStatus {
 	hashName := CertHashFilename(certPath)
 	if hashName == "" {
@@ -101,7 +104,8 @@ func CheckCertStatus(serial, certPath string) CertStatus {
 	}
 
 	probeCmd := fmt.Sprintf(
-		`[ -f /apex/com.android.conscrypt/cacerts/%s ] && echo APEX; `+
+		`[ -d /apex/com.android.conscrypt/cacerts ] && echo HAS_APEX_DIR; `+
+			`[ -f /apex/com.android.conscrypt/cacerts/%s ] && echo APEX; `+
 			`[ -f /system/etc/security/cacerts/%s ] && echo SYSTEM; `+
 			`[ -f /data/misc/user/0/cacerts-added/%s ] && echo USER; `+
 			`[ -f /data/adb/modules/cap-cert/system/etc/security/cacerts/%s ] && echo MAGISK; `+
@@ -136,6 +140,7 @@ func CheckCertStatus(serial, certPath string) CertStatus {
 // ParseCertCheckOutput converts the marker lines emitted by CheckCertStatus's
 // shell probe into a structured CertStatus.
 func ParseCertCheckOutput(hashName, output string) CertStatus {
+	hasApexDir := false
 	hasApex := false
 	hasSystem := false
 	hasUser := false
@@ -143,6 +148,8 @@ func ParseCertCheckOutput(hashName, output string) CertStatus {
 
 	for _, line := range strings.Split(output, "\n") {
 		switch strings.TrimSpace(line) {
+		case "HAS_APEX_DIR":
+			hasApexDir = true
 		case "APEX":
 			hasApex = true
 		case "SYSTEM":
@@ -151,6 +158,53 @@ func ParseCertCheckOutput(hashName, output string) CertStatus {
 			hasUser = true
 		case "MAGISK":
 			hasMagisk = true
+		}
+	}
+
+	// Android 14+ (APEX Conscrypt trust store active): Conscrypt reads CA certs
+	// from /apex/com.android.conscrypt/cacerts, NOT /system/etc/security/cacerts.
+	if hasApexDir {
+		switch {
+		case hasApex:
+			return CertStatus{
+				Installed: true,
+				Store:     "system",
+				Hash:      hashName,
+				Method:    "apex",
+				Details:   "installed in Android 14+ APEX Conscrypt system trust store",
+			}
+		case hasUser:
+			return CertStatus{
+				Installed: true,
+				Store:     "user",
+				Hash:      hashName,
+				Method:    "user",
+				Details:   "installed in user trust store (missing from Android 14+ APEX Conscrypt)",
+			}
+		case hasSystem:
+			return CertStatus{
+				Installed: false,
+				Store:     "none",
+				Hash:      hashName,
+				Method:    "legacy_system_only",
+				Details:   "present in legacy /system only — missing from Android 14+ APEX Conscrypt",
+			}
+		case hasMagisk:
+			return CertStatus{
+				Installed:   false,
+				Store:       "system",
+				Hash:        hashName,
+				Method:      "magisk",
+				NeedsReboot: true,
+				Details:     "Magisk module staged — reboot device to activate",
+			}
+		default:
+			return CertStatus{
+				Installed: false,
+				Store:     "none",
+				Hash:      hashName,
+				Details:   "CA certificate not installed in Android 14+ APEX Conscrypt",
+			}
 		}
 	}
 
@@ -298,87 +352,167 @@ func installCACertRootedDetailed(serial, certPath, hashName string) (CertInstall
 	return CertInstallResult{Hash: hashName, Store: "none"}, fmt.Errorf("all root cert install methods failed — try installing manually")
 }
 
-// installBindMount injects a CA certificate into the system trust store
-// without rebooting, using the same approach as HTTP Toolkit:
+// BuildBindMountScript builds the root shell script implementing HTTP Toolkit's
+// Android 10–16 CA certificate injection algorithm:
 //
-//  1. Clean up any stale cap bind mounts from previous runs.
-//  2. Build a temp dir with all existing system certs + ours. On Android
-//     14+ the originals live under the versioned APEX path
-//     (/apex/com.android.conscrypt@<ver>/cacerts/), because the
-//     non-versioned path may be covered by tmpfs overlays.
-//  3. Bind-mount the temp dir over every cert dir in init's namespace
-//     (via Magisk's su --mount-master).
-//  4. Use nsenter to inject the mount into Zygote's namespace (so new
-//     apps inherit it) and every already-running app process.
-func installBindMount(serial, hashName, remoteCertPath string) error {
-	script := fmt.Sprintf(`
+//  1. Never bind-mounts /data/local/tmp/... directly onto /system or /apex
+//     (SELinux Enforcing blocks untrusted apps from reading /data/local/tmp).
+//  2. Stages all original system/APEX certs + our cert into a temp staging dir,
+//     mounts a real in-memory tmpfs onto /system/etc/security/cacerts, copies
+//     all certs in, and applies the exact SELinux label
+//     u:object_r:system_security_cacerts_file:s0 (fallback u:object_r:system_file:s0).
+//  3. On Android 14+ (where /apex/com.android.conscrypt/cacerts exists):
+//     - If APEX cacerts (or versioned @*/cacerts) is already a writable tmpfs,
+//       copies our cert directly with system:system ownership, 0644 mode, and
+//       u:object_r:system_security_cacerts_file:s0 context.
+//     - Propagates the tmpfs mount into every unique mount namespace across
+//       init (PID 1), zygote, zygote64, webview_zygote, system_server, and ALL
+//       running children whose PPID is any zygote PID (deduplicated by
+//       readlink /proc/$PID/ns/mnt).
+//     - Verifies the cert is readable inside zygote64/zygote's mount namespace.
+func BuildBindMountScript(hashName, remoteCertPath string) string {
+	return fmt.Sprintf(`
 set -e
 
-TMPDIR=/data/local/tmp/cap-cacerts
+HASH=%s
+REMOTE_CERT=%s
+STAGE=/data/local/tmp/cap-cacerts-stage
 APEX_CERTS=/apex/com.android.conscrypt/cacerts
 SYSTEM_CERTS=/system/etc/security/cacerts
 
-# --- Clean up stale cap mounts from previous runs ---
-for TARGET in "$SYSTEM_CERTS" "$APEX_CERTS"; do
-    umount "$TARGET" 2>/dev/null || true
-    umount "$TARGET" 2>/dev/null || true
-done
-rm -rf "$TMPDIR"
-mkdir -p "$TMPDIR"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
 
-# --- Find original system certs ---
-# On Android 14+ the versioned APEX path has the originals;
-# the non-versioned path may be covered by tmpfs.
-VERSIONED=$(ls -d /apex/com.android.conscrypt@*/cacerts 2>/dev/null | head -1)
-if [ -n "$VERSIONED" ] && [ "$(ls "$VERSIONED" 2>/dev/null | wc -l)" -gt 0 ]; then
-    cp "$VERSIONED"/* "$TMPDIR/"
+# --- Stage all original system/APEX certs ---
+VERSIONED=$(ls -d /apex/com.android.conscrypt@*/cacerts 2>/dev/null | head -n 1 || true)
+if [ -d "$APEX_CERTS" ] && [ "$(ls "$APEX_CERTS" 2>/dev/null | wc -l)" -gt 0 ]; then
+    cp "$APEX_CERTS"/* "$STAGE/"
+elif [ -n "$VERSIONED" ] && [ "$(ls "$VERSIONED" 2>/dev/null | wc -l)" -gt 0 ]; then
+    cp "$VERSIONED"/* "$STAGE/"
 elif [ "$(ls "$SYSTEM_CERTS" 2>/dev/null | wc -l)" -gt 0 ]; then
-    cp "$SYSTEM_CERTS"/* "$TMPDIR/"
-elif [ "$(ls "$APEX_CERTS" 2>/dev/null | wc -l)" -gt 0 ]; then
-    cp "$APEX_CERTS"/* "$TMPDIR/"
+    cp "$SYSTEM_CERTS"/* "$STAGE/"
 fi
 
-# Add our cert
-cp %s "$TMPDIR/%s"
-chmod 644 "$TMPDIR"/*
-chcon u:object_r:system_file:s0 "$TMPDIR"/* 2>/dev/null || true
+# Add our CA cert
+cp "$REMOTE_CERT" "$STAGE/$HASH"
 
-CERT_COUNT=$(ls "$TMPDIR" | wc -l)
-[ "$CERT_COUNT" -lt 2 ] && echo "FAIL: only $CERT_COUNT cert(s)" && exit 1
+CERT_COUNT=$(ls "$STAGE" 2>/dev/null | wc -l)
+if [ "$CERT_COUNT" -lt 2 ]; then
+    echo "FAIL: only $CERT_COUNT cert(s) staged"
+    rm -rf "$STAGE"
+    exit 1
+fi
 
-# --- Bind-mount into init namespace ---
-nsenter --mount=/proc/1/ns/mnt -- mount --bind "$TMPDIR" "$SYSTEM_CERTS"
+# --- Mount real in-memory tmpfs over /system/etc/security/cacerts ---
+# Never bind-mount /data/local/tmp onto /system or /apex (blocked by SELinux Enforcing).
+if grep -q " $SYSTEM_CERTS tmpfs " /proc/mounts 2>/dev/null; then
+    umount "$SYSTEM_CERTS" 2>/dev/null || true
+fi
+mount -t tmpfs tmpfs "$SYSTEM_CERTS"
+cp "$STAGE"/* "$SYSTEM_CERTS/"
+chown root:root "$SYSTEM_CERTS" 2>/dev/null || true
+chown root:root "$SYSTEM_CERTS"/* 2>/dev/null || true
+chmod 755 "$SYSTEM_CERTS"
+chmod 644 "$SYSTEM_CERTS"/*
+chcon u:object_r:system_security_cacerts_file:s0 "$SYSTEM_CERTS" "$SYSTEM_CERTS"/* 2>/dev/null || \
+    chcon u:object_r:system_file:s0 "$SYSTEM_CERTS" "$SYSTEM_CERTS"/* 2>/dev/null || true
+
+# --- Android 14+ APEX Conscrypt injection & deduplicated nsenter propagation ---
 if [ -d "$APEX_CERTS" ]; then
-    nsenter --mount=/proc/1/ns/mnt -- mount --bind "$TMPDIR" "$APEX_CERTS" 2>/dev/null || true
+    # Match APEX ownership (dir root:shell, files system:system) & SELinux context
+    chown root:shell "$SYSTEM_CERTS" 2>/dev/null || true
+    chown system:system "$SYSTEM_CERTS"/* 2>/dev/null || true
+    chcon u:object_r:system_security_cacerts_file:s0 "$SYSTEM_CERTS" "$SYSTEM_CERTS"/* 2>/dev/null || true
+
+    # Fast path: if APEX cacerts (or versioned @*/cacerts) is already a writable tmpfs
+    # (e.g. Magisk/Pixel overlay), write our cert directly with exact ownership & SELinux label.
+    for ADIR in "$APEX_CERTS" /apex/com.android.conscrypt@*/cacerts; do
+        [ ! -d "$ADIR" ] && continue
+        if cp "$STAGE/$HASH" "$ADIR/$HASH" 2>/dev/null; then
+            chown system:system "$ADIR/$HASH" 2>/dev/null || chown root:root "$ADIR/$HASH" 2>/dev/null || true
+            chmod 644 "$ADIR/$HASH" 2>/dev/null || true
+            chcon u:object_r:system_security_cacerts_file:s0 "$ADIR/$HASH" 2>/dev/null || \
+                chcon u:object_r:system_file:s0 "$ADIR/$HASH" 2>/dev/null || true
+        fi
+    done
+
+    # Collect zygote PIDs + all child app PIDs whose PPID is any zygote PID
+    ZYGOTE_PIDS=""
+    for ZNAME in zygote zygote64 webview_zygote; do
+        ZP=$(pidof "$ZNAME" 2>/dev/null || true)
+        [ -n "$ZP" ] && ZYGOTE_PIDS="$ZYGOTE_PIDS $ZP"
+    done
+
+    TARGET_PIDS="1 $ZYGOTE_PIDS $(pidof system_server 2>/dev/null || true)"
+
+    if [ -n "$ZYGOTE_PIDS" ]; then
+        for PROC in /proc/[0-9]*; do
+            PID=${PROC##*/}
+            [ ! -r "$PROC/stat" ] && continue
+            STAT=$(cat "$PROC/stat" 2>/dev/null || true)
+            [ -z "$STAT" ] && continue
+            REST=${STAT##*\) }
+            set -- $REST
+            PPID_VAL=$2
+            case " $ZYGOTE_PIDS " in
+                *" $PPID_VAL "*) TARGET_PIDS="$TARGET_PIDS $PID" ;;
+            esac
+        done
+    fi
+
+    # Deduplicate by mount namespace inode so each namespace is entered ONCE
+    SEEN_NS=" "
+    for PID in $TARGET_PIDS; do
+        [ ! -e "/proc/$PID/ns/mnt" ] && continue
+        NS=$(readlink "/proc/$PID/ns/mnt" 2>/dev/null || true)
+        [ -z "$NS" ] && continue
+        case "$SEEN_NS" in
+            *" $NS "*) continue ;;
+        esac
+        SEEN_NS="$SEEN_NS$NS "
+
+        # If this namespace doesn't already see our cert in APEX, bind-mount our tmpfs over APEX
+        if ! nsenter --mount="/proc/$PID/ns/mnt" -- test -r "$APEX_CERTS/$HASH" 2>/dev/null; then
+            nsenter --mount="/proc/$PID/ns/mnt" -- mount --bind "$SYSTEM_CERTS" "$APEX_CERTS" 2>/dev/null || true
+            for VDIR in /apex/com.android.conscrypt@*/cacerts; do
+                [ -d "$VDIR" ] && nsenter --mount="/proc/$PID/ns/mnt" -- mount --bind "$SYSTEM_CERTS" "$VDIR" 2>/dev/null || true
+            done
+        fi
+    done
+
+    # Verify cert is readable inside zygote64/zygote mount namespace (or global APEX)
+    VERIFIED=0
+    for ZPID in $ZYGOTE_PIDS; do
+        if nsenter --mount="/proc/$ZPID/ns/mnt" -- test -r "$APEX_CERTS/$HASH" 2>/dev/null; then
+            VERIFIED=1
+            break
+        fi
+    done
+    if [ "$VERIFIED" -eq 0 ] && [ -r "$APEX_CERTS/$HASH" ]; then
+        VERIFIED=1
+    fi
+    if [ "$VERIFIED" -ne 1 ]; then
+        echo "FAIL: cert not visible in APEX/zygote mount namespace"
+        rm -rf "$STAGE" "$REMOTE_CERT"
+        exit 1
+    fi
+else
+    # Android 10-13 verification
+    if [ ! -r "$SYSTEM_CERTS/$HASH" ]; then
+        echo "FAIL: cert not visible in $SYSTEM_CERTS"
+        rm -rf "$STAGE" "$REMOTE_CERT"
+        exit 1
+    fi
 fi
 
-# --- Inject into Zygote so new apps inherit the mount ---
-for ZNAME in zygote zygote64; do
-    ZPID=$(pidof "$ZNAME" 2>/dev/null || true)
-    [ -z "$ZPID" ] && continue
-    nsenter --mount=/proc/$ZPID/ns/mnt -- mount --bind "$TMPDIR" "$SYSTEM_CERTS" 2>/dev/null || true
-    if [ -d "$APEX_CERTS" ]; then
-        nsenter --mount=/proc/$ZPID/ns/mnt -- mount --bind "$TMPDIR" "$APEX_CERTS" 2>/dev/null || true
-    fi
-done
-
-# --- Inject into already-running app processes ---
-for PID in /proc/[0-9]*; do
-    PID=${PID##*/}
-    [ ! -f "/proc/$PID/cmdline" ] && continue
-    CMD=$(cat /proc/$PID/cmdline 2>/dev/null | tr '\0' '\n' | head -1 || true)
-    case "$CMD" in com.*|org.*|net.*|io.*|cn.*|tv.*)
-        nsenter --mount=/proc/$PID/ns/mnt -- mount --bind "$TMPDIR" "$SYSTEM_CERTS" 2>/dev/null || true
-        if [ -d "$APEX_CERTS" ]; then
-            nsenter --mount=/proc/$PID/ns/mnt -- mount --bind "$TMPDIR" "$APEX_CERTS" 2>/dev/null || true
-        fi
-    ;; esac
-done
-
-rm -f %s
+rm -rf "$STAGE" "$REMOTE_CERT"
+am broadcast -a android.security.action.TRUST_STORE_CHANGED >/dev/null 2>&1 || true
 echo "OK"
-`, remoteCertPath, hashName, remoteCertPath)
+`, shellQuote(hashName), shellQuote(remoteCertPath))
+}
 
+func installBindMount(serial, hashName, remoteCertPath string) error {
+	script := BuildBindMountScript(hashName, remoteCertPath)
 	out, err := SuShellMountMaster(serial, script)
 	if err != nil || !strings.Contains(out, "OK") {
 		return fmt.Errorf("bind mount failed: %s %v", out, err)
@@ -387,7 +521,8 @@ echo "OK"
 }
 
 // installMagiskModule creates a Magisk overlay module that adds the cert
-// to the system trust store. Persistent across reboots but requires one reboot.
+// to the system trust store AND includes an Android 14+ APEX-compatible
+// service.sh boot injector. Persistent across reboots (requires one reboot).
 func installMagiskModule(serial, hashName, remoteCertPath string) error {
 	script := fmt.Sprintf(`
 set -e
@@ -398,11 +533,39 @@ chmod 644 "$MODDIR/system/etc/security/cacerts/%s"
 cat > "$MODDIR/module.prop" << 'PROP'
 id=cap-cert
 name=Cap CA Certificate
-version=1.0
-versionCode=1
+version=2.0
+versionCode=2
 author=cap
-description=MITM CA certificate for cap proxy
+description=MITM CA certificate for cap proxy (Android 10-16 + APEX Conscrypt)
 PROP
+cat > "$MODDIR/service.sh" << 'SVC'
+#!/system/bin/sh
+MODDIR=${0%%/*}
+APEX_CERTS=/apex/com.android.conscrypt/cacerts
+SYSTEM_CERTS=/system/etc/security/cacerts
+[ ! -d "$APEX_CERTS" ] && exit 0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$(ls "$APEX_CERTS" 2>/dev/null | wc -l)" -gt 0 ] && break
+    sleep 1
+done
+STAGE=/data/local/tmp/cap-magisk-stage
+rm -rf "$STAGE" && mkdir -p "$STAGE"
+cp "$APEX_CERTS"/* "$STAGE/" 2>/dev/null || true
+cp "$MODDIR/system/etc/security/cacerts/"* "$STAGE/" 2>/dev/null || true
+mount -t tmpfs tmpfs "$SYSTEM_CERTS" 2>/dev/null || true
+cp "$STAGE"/* "$SYSTEM_CERTS/" 2>/dev/null || true
+chown root:shell "$SYSTEM_CERTS" 2>/dev/null || true
+chown system:system "$SYSTEM_CERTS"/* 2>/dev/null || true
+chmod 755 "$SYSTEM_CERTS"
+chmod 644 "$SYSTEM_CERTS"/* 2>/dev/null || true
+chcon u:object_r:system_security_cacerts_file:s0 "$SYSTEM_CERTS" "$SYSTEM_CERTS"/* 2>/dev/null || true
+for PID in 1 $(pidof zygote zygote64 webview_zygote system_server 2>/dev/null); do
+    nsenter --mount="/proc/$PID/ns/mnt" -- mount --bind "$SYSTEM_CERTS" "$APEX_CERTS" 2>/dev/null || true
+done
+rm -rf "$STAGE"
+am broadcast -a android.security.action.TRUST_STORE_CHANGED >/dev/null 2>&1 || true
+SVC
+chmod 755 "$MODDIR/service.sh"
 rm -f %s
 echo "OK"
 `, remoteCertPath, hashName, hashName, remoteCertPath)
@@ -498,11 +661,11 @@ for TARGET in "$SYSTEM_CERTS" "$APEX_CERTS"; do
     umount "$TARGET" 2>/dev/null || true
     umount "$TARGET" 2>/dev/null || true
 done
-rm -rf /data/local/tmp/cap-cacerts
+rm -rf /data/local/tmp/cap-cacerts /data/local/tmp/cap-cacerts-stage
 rm -rf /data/adb/modules/cap-cert
 `
 		if hashName != "" {
-			script += fmt.Sprintf("rm -f /data/local/tmp/%s\n", hashName)
+			script += fmt.Sprintf("rm -f /data/local/tmp/%s /apex/com.android.conscrypt/cacerts/%s /apex/com.android.conscrypt@*/cacerts/%s 2>/dev/null || true\n", hashName, hashName, hashName)
 		}
 		script += "echo OK\n"
 		if out, err := SuShellMountMaster(serial, script); err != nil || !strings.Contains(out, "OK") {

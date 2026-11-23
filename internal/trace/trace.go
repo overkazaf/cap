@@ -105,7 +105,8 @@ type Options struct {
 	Package    string // target package name; used to pull the APK when APKPath is empty
 
 	JadxTimeout   time.Duration // max time allowed for jadx to decompile; <=0 defaults to 5 minutes
-	R2Timeout     time.Duration // max time allowed per radare2 invocation; <=0 defaults to 45 seconds
+	R2Timeout     time.Duration // max time allowed per radare2 invocation (capped at 8s in targeted mode); <=0 defaults to 45s (8s targeted)
+	R2Budget      time.Duration // overall Stage 7 radare2 time budget across all selected .so files; <=0 defaults to 25 seconds
 	MaxDexMatches int           // cap on how many DexMatch results are returned; <=0 defaults to 50
 	SearchTerms   []string      // extra terms to search for, alongside those derived from the flow
 	ForceRefresh  bool          // bypass cached pulled APK and cached jadx output
@@ -193,15 +194,17 @@ type TraceResult struct {
 
 	Steps []StepResult `json:"steps"` // what Trace did, in order, regardless of outcome
 
-	DexStrings  []DexMatch  `json:"dex_strings"`  // Strategy 1
-	APKInfo     *APKInfo    `json:"apk_info"`     // Strategy 2
-	JavaTrace   []JavaRef   `json:"java_trace"`   // Strategy 3
-	NativeTrace []NativeRef `json:"native_trace"` // Strategy 4
+	DexStrings  []DexMatch     `json:"dex_strings"`         // Strategy 1A: raw DEX string search
+	DexXRefs    []DexMethodRef `json:"dex_xrefs,omitempty"` // Strategy 1B: Pure-Go DEX bytecode XRefs
+	APKInfo     *APKInfo       `json:"apk_info"`            // Strategy 2
+	JavaTrace   []JavaRef      `json:"java_trace"`          // Strategy 3
+	NativeTrace []NativeRef    `json:"native_trace"`        // Strategy 4
 
-	CallGraph []CallEdge `json:"call_graph"`
-	Mermaid   string     `json:"mermaid"`
-	Summary   string     `json:"summary"`
-	ToolsUsed []string   `json:"tools_used"` // which strategies actually produced results
+	CallGraph []CallEdge   `json:"call_graph"`
+	Mermaid   string       `json:"mermaid"`
+	Summary   string       `json:"summary"`
+	ToolsUsed []string     `json:"tools_used"`       // which strategies actually produced results
+	Report    *TraceReport `json:"report,omitempty"` // Commercial-grade synthesized report & 3-perspective graph
 }
 
 // --- search terms -----------------------------------------------------
@@ -1797,6 +1800,157 @@ func buildCallGraph(flow *types.Flow, javaRefs []JavaRef, nativeRefs []NativeRef
 	return edges
 }
 
+// buildCallGraphWithXRefs extends buildCallGraph with Pure-Go DEX bytecode
+// method XRefs (callers -> matched methods -> HTTP & JNI/loadLibrary), so
+// CallGraph and Mermaid remain multi-hop even when jadx is not installed.
+func buildCallGraphWithXRefs(flow *types.Flow, javaRefs []JavaRef, dexXRefs []DexMethodRef, nativeRefs []NativeRef) []CallEdge {
+	edges := buildCallGraph(flow, javaRefs, nativeRefs)
+	if len(dexXRefs) == 0 {
+		return edges
+	}
+	if flow == nil {
+		flow = &types.Flow{}
+	}
+
+	httpNode := strings.TrimSpace(flow.Method + " " + flow.Path)
+	if httpNode == "" {
+		httpNode = flow.URL
+	}
+
+	seen := make(map[string]bool, len(edges)+len(dexXRefs)*3)
+	for _, e := range edges {
+		seen[e.From+"|"+e.To+"|"+e.Type] = true
+	}
+	addEdge := func(e CallEdge) {
+		key := e.From + "|" + e.To + "|" + e.Type
+		if e.From == "" || e.To == "" || e.From == e.To || seen[key] {
+			return
+		}
+		seen[key] = true
+		edges = append(edges, e)
+	}
+
+	nativeByFunc := make(map[string][]NativeRef, len(nativeRefs))
+	for _, nr := range nativeRefs {
+		nativeByFunc[nr.Function] = append(nativeByFunc[nr.Function], nr)
+	}
+
+	limit := len(dexXRefs)
+	if limit > 12 {
+		limit = 12
+	}
+	for _, dm := range dexXRefs[:limit] {
+		methodNode := dm.ClassName + "." + dm.MethodName + "()"
+		label := dm.Category
+		if len(dm.MatchedTerms) > 0 {
+			label = truncateRunes(dm.MatchedTerms[0], 32)
+		}
+		addEdge(CallEdge{From: httpNode, To: methodNode, Type: "java_call", Label: label})
+
+		for i, caller := range dm.Callers {
+			if i >= 2 {
+				break
+			}
+			addEdge(CallEdge{From: caller + "()", To: methodNode, Type: "java_call", Label: "dex_call"})
+		}
+		for _, lib := range dm.LoadsLibrary {
+			addEdge(CallEdge{From: methodNode, To: normalizeSOName(lib), Type: "jni", Label: "loadLibrary"})
+		}
+		if dm.IsNative {
+			symNode := "native:" + dm.MethodName
+			addEdge(CallEdge{From: methodNode, To: symNode, Type: "jni", Label: "JNI"})
+			for _, nr := range nativeByFunc[dm.MethodName] {
+				addEdge(CallEdge{From: symNode, To: nr.SOFile + ":" + nr.Function, Type: "native_call", Label: "resolved"})
+			}
+		}
+	}
+
+	return edges
+}
+
+func mergeDexNativeSignals(knownMethods []string, referencedLibs map[string]bool, xref *DexXRefResult) ([]string, map[string]bool) {
+	if xref == nil {
+		return knownMethods, referencedLibs
+	}
+	seenMethod := make(map[string]bool, len(knownMethods)+8)
+	for _, m := range knownMethods {
+		seenMethod[m] = true
+	}
+	addMethod := func(m string) {
+		if m != "" && !seenMethod[m] {
+			seenMethod[m] = true
+			knownMethods = append(knownMethods, m)
+		}
+	}
+	if referencedLibs == nil {
+		referencedLibs = make(map[string]bool)
+	}
+	for _, dm := range xref.Methods {
+		if dm.IsNative {
+			addMethod(dm.MethodName)
+		}
+		for _, lib := range dm.LoadsLibrary {
+			if norm := normalizeSOName(lib); norm != "" {
+				referencedLibs[norm] = true
+			}
+		}
+	}
+	for _, nc := range xref.NativeClasses {
+		for _, nm := range nc.NativeMethods {
+			addMethod(nm)
+		}
+	}
+	for _, lib := range xref.LoadLibraries {
+		if norm := normalizeSOName(lib); norm != "" {
+			referencedLibs[norm] = true
+		}
+	}
+	return knownMethods, referencedLibs
+}
+
+func collectParamTerms(flow *types.Flow) []string {
+	if flow == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if len(s) < minSearchTermLen || seen[strings.ToLower(s)] {
+			return
+		}
+		seen[strings.ToLower(s)] = true
+		out = append(out, s)
+	}
+	for _, sp := range flow.SignParams {
+		add(sp)
+	}
+	if u, err := url.Parse(flow.URL); err == nil {
+		qKeys := make([]string, 0, len(u.Query()))
+		for k := range u.Query() {
+			qKeys = append(qKeys, k)
+		}
+		sort.Strings(qKeys)
+		for _, k := range qKeys {
+			add(k)
+		}
+	}
+	if len(flow.ReqHeaders) > 0 {
+		hKeys := make([]string, 0, len(flow.ReqHeaders))
+		for k := range flow.ReqHeaders {
+			lk := strings.ToLower(k)
+			if strings.HasPrefix(lk, "x-") || interestingSignParamRe.MatchString(k) {
+				hKeys = append(hKeys, k)
+			}
+		}
+		sort.Strings(hKeys)
+		for _, k := range hKeys {
+			add(k)
+		}
+	}
+	return out
+}
+
 // --- Mermaid rendering ----------------------------------------------------
 
 // mermaidHeader is generateMermaid's fixed preamble: a graph declaration
@@ -2021,9 +2175,12 @@ func TraceContext(ctx context.Context, flow *types.Flow, opts Options, onProgres
 		tracker.emit(stage, stageIdx, pct, "running", detail, 0, nil)
 	}
 
+	var xrefRes *DexXRefResult
+
 	cancelFinish := func(stage string, stageIdx int) (*TraceResult, error) {
-		result.CallGraph = buildCallGraph(flow, result.JavaTrace, result.NativeTrace)
+		result.CallGraph = buildCallGraphWithXRefs(flow, result.JavaTrace, result.DexXRefs, result.NativeTrace)
 		result.Mermaid = generateMermaid(result.CallGraph)
+		result.Report = SynthesizeReport(flow, result, xrefRes)
 		result.Summary = generateSummary(result)
 		recordStep(StageDone, stageIdx, tracker.lastPct, "done", "cancelled", "trace cancelled", 0)
 		return result, ctx.Err()
@@ -2075,6 +2232,7 @@ func TraceContext(ctx context.Context, flow *types.Flow, opts Options, onProgres
 		}
 		result.CallGraph = buildCallGraph(flow, nil, nil)
 		result.Mermaid = generateMermaid(result.CallGraph)
+		result.Report = SynthesizeReport(flow, result, nil)
 		recordStep(StageDone, 2, 100, "done", "error", err.Error(), 0)
 		result.Summary = generateSummary(result)
 		return result, err
@@ -2112,13 +2270,13 @@ func TraceContext(ctx context.Context, flow *types.Flow, opts Options, onProgres
 		return cancelFinish(StageAPKInspect, 3)
 	}
 
-	// Stage 4: DEX String Search (22% -> 38%)
+	// Stage 4: DEX String Search & Pure-Go Bytecode XRefs (22% -> 38%)
 	emitLive(StageDEXSearch, 4, 23, "scanning DEX files for flow signatures...")
 	t0 = time.Now()
 	matches, dexErr := searchDexStringsContext(ctx, apkPath, searchTerms, opts.MaxDexMatches, func(dexName string, idx, total, hitCount int) {
 		pct := 23
 		if total > 0 {
-			pct = 23 + (idx*14)/total
+			pct = 23 + (idx*9)/total
 		}
 		tracker.setCounts(hitCount, 0, 0, 0)
 		tracker.emit(StageDEXSearch, 4, pct, "running", fmt.Sprintf("Scanning %s (%d/%d) — %d hit(s)", dexName, idx, total, hitCount), 0, nil)
@@ -2128,13 +2286,36 @@ func TraceContext(ctx context.Context, flow *types.Flow, opts Options, onProgres
 		return cancelFinish(StageDEXSearch, 4)
 	}
 	if dexErr != nil {
-		recordStep(StageDEXSearch, 4, 38, "dex_search", "error", dexErr.Error(), time.Since(t0))
+		recordStep(StageDEXSearch, 4, 33, "dex_search", "error", dexErr.Error(), time.Since(t0))
 	} else {
 		result.DexStrings = matches
 		if len(matches) > 0 {
 			result.ToolsUsed = append(result.ToolsUsed, "dex_search")
 		}
-		recordStep(StageDEXSearch, 4, 38, "dex_search", "ok", fmt.Sprintf("%d match(es)", len(matches)), time.Since(t0))
+		recordStep(StageDEXSearch, 4, 33, "dex_search", "ok", fmt.Sprintf("%d string match(es)", len(matches)), time.Since(t0))
+	}
+
+	// Stage 4B: Pure-Go DEX Bytecode Cross-Reference Attribution (33% -> 38%)
+	emitLive(StageDEXSearch, 4, 34, "attributing DEX bytecode methods, callers & JNI bridges...")
+	tXRef := time.Now()
+	paramTerms := collectParamTerms(flow)
+	if xr, xrErr := AnalyzeDexXRefsContext(ctx, apkPath, searchTerms, paramTerms, 60); xrErr == nil && xr != nil {
+		xrefRes = xr
+		result.DexXRefs = xr.Methods
+		if len(xr.Methods) > 0 || len(xr.NativeClasses) > 0 {
+			result.ToolsUsed = append(result.ToolsUsed, "dex_xref")
+		}
+		recordStep(StageDEXSearch, 4, 38, "dex_xref", "ok",
+			fmt.Sprintf("%d method xref(s), %d native class(es)", len(xr.Methods), len(xr.NativeClasses)),
+			time.Since(tXRef))
+	} else if ctx.Err() != nil {
+		return cancelFinish(StageDEXSearch, 4)
+	} else {
+		detail := "no valid DEX bytecode xrefs"
+		if xrErr != nil {
+			detail = xrErr.Error()
+		}
+		recordStep(StageDEXSearch, 4, 38, "dex_xref", "skip", detail, time.Since(tXRef))
 	}
 
 	// Stage 5 & 6: jadx Decompile (38% -> 78%) & Java Search (78% -> 88%)
@@ -2205,64 +2386,145 @@ func TraceContext(ctx context.Context, flow *types.Flow, opts Options, onProgres
 		tracker.emit(StageJavaSearch, 6, 88, "skip", "skipped (jadx unavailable)", 0, nil)
 	}
 
-	// Stage 7: Native .so Analysis via radare2 (88% -> 96%)
+	// Stage 7: Two-Phase Native .so Analysis (88% -> 96%)
+	// Phase 7A: Pure-Go debug/elf parallel scanner (ALWAYS runs, fast even without r2).
+	// Phase 7B: Optional targeted, strictly-bounded single-invocation r2 disassembly
+	// on at most the top 6 highest-relevance .so files (ZERO global `aa`, ZERO per-function r2 respawn).
 	r2Path := opts.R2Path
 	if r2Path == "" {
 		r2Path = "r2"
 	}
-	emitLive(StageNative, 7, 89, "checking radare2 availability...")
+	emitLive(StageNative, 7, 89, "extracting and deduplicating native .so libraries...")
 	t0 = time.Now()
-	if version, ok := toolVersionContext(ctx, r2Path, defaultToolCheckTimeout, "-v"); ok {
-		recordStep(StageNative, 7, 90, "r2_check", "ok", version, time.Since(t0))
+	libDir := filepath.Join(opts.OutputDir, "lib")
+	rawSOFiles, soErr := extractSOFilesWithSplits(apkPath, splitPaths, libDir)
 
-		t0 = time.Now()
-		libDir := filepath.Join(opts.OutputDir, "lib")
-		soFiles, err := extractSOFilesWithSplits(apkPath, splitPaths, libDir)
-		switch {
-		case err != nil:
-			recordStep(StageNative, 7, 96, "native_analysis", "error", err.Error(), time.Since(t0))
-		case len(soFiles) == 0:
-			recordStep(StageNative, 7, 96, "native_analysis", "skip", "no .so files found in APK", time.Since(t0))
-		default:
-			knownMethods := collectNativeMethodNames(result.JavaTrace)
-			for i, so := range soFiles {
-				if ctx.Err() != nil {
-					return cancelFinish(StageNative, 7)
-				}
-				base := filepath.Base(so)
-				pct := 90 + ((i + 1) * 5 / max(1, len(soFiles)))
-				emitLive(StageNative, 7, pct, fmt.Sprintf("Analyzing %s (%d/%d)...", base, i+1, len(soFiles)))
+	r2Version, r2Avail := toolVersionContext(ctx, r2Path, defaultToolCheckTimeout, "-v")
+	if ctx.Err() != nil {
+		return cancelFinish(StageNative, 7)
+	}
+	if r2Avail {
+		recordStep(StageNative, 7, 90, "r2_check", "ok", r2Version, time.Since(t0))
+	} else {
+		recordStep(StageNative, 7, 90, "r2_check", "skip", "r2 not found (Pure-Go ELF analysis active)", time.Since(t0))
+	}
 
-				t1 := time.Now()
-				refs, err := analyzeNativeContext(ctx, r2Path, so, knownMethods, searchTerms, opts.R2Timeout)
-				if ctx.Err() != nil {
-					return cancelFinish(StageNative, 7)
+	switch {
+	case soErr != nil:
+		recordStep(StageNative, 7, 96, "native_analysis", "error", soErr.Error(), time.Since(t0))
+	case len(rawSOFiles) == 0:
+		recordStep(StageNative, 7, 96, "native_analysis", "skip", "no .so files found in APK", time.Since(t0))
+	default:
+		soFiles := deduplicateSOFiles(rawSOFiles)
+		knownMethods := collectNativeMethodNames(result.JavaTrace)
+		referencedLibs := collectReferencedSOLibs(result.JavaTrace)
+		knownMethods, referencedLibs = mergeDexNativeSignals(knownMethods, referencedLibs, xrefRes)
+
+		// Phase 7A: Fast Pure-Go parallel ELF scan across all deduplicated .so files.
+		tELF := time.Now()
+		emitLive(StageNative, 7, 91, fmt.Sprintf("ELF scanning %d unique .so libraries (deduped from %d)...", len(soFiles), len(rawSOFiles)))
+		scans := scanELFFilesParallel(ctx, soFiles, knownMethods, referencedLibs, searchTerms, func(done, total int, lib string, foundRefs int) {
+			pct := 91 + (done*2)/max(1, total)
+			tracker.setCounts(len(result.DexStrings), len(result.JavaTrace), foundRefs, 0)
+			tracker.emit(StageNative, 7, pct, "running", fmt.Sprintf("ELF scan (%d/%d): %s — %d finding(s)", done, total, lib, foundRefs), 0, nil)
+		})
+		if ctx.Err() != nil {
+			for _, sc := range scans {
+				if sc != nil {
+					result.NativeTrace = append(result.NativeTrace, sc.Refs...)
 				}
-				if err != nil {
-					recordStep(StageNative, 7, pct, "native_analysis", "error", base+": "+err.Error(), time.Since(t1))
-					continue
-				}
-				result.NativeTrace = append(result.NativeTrace, refs...)
-				recordStep(StageNative, 7, pct, "native_analysis", "ok", fmt.Sprintf("%s: %d finding(s)", base, len(refs)), time.Since(t1))
 			}
-			if len(result.NativeTrace) > 0 {
+			return cancelFinish(StageNative, 7)
+		}
+
+		elfRefCount := 0
+		for _, sc := range scans {
+			if sc != nil {
+				elfRefCount += len(sc.Refs)
+			}
+		}
+
+		// Phase 7B: Optional targeted r2 disassembly on top high-relevance .so files under strict stage budget.
+		r2Enriched := 0
+		r2TimedOut := 0
+		if r2Avail {
+			candidates := selectR2Candidates(scans, maxR2SOFiles)
+			if len(candidates) > 0 {
+				stageBudget := opts.R2Budget
+				if stageBudget <= 0 {
+					stageBudget = defaultR2StageBudget
+				}
+				perSOTimeout := defaultR2PerSOTimeout
+				if opts.R2Timeout > 0 && opts.R2Timeout < perSOTimeout {
+					perSOTimeout = opts.R2Timeout
+				}
+				r2Ctx, r2Cancel := context.WithTimeout(ctx, stageBudget)
+				for i, sc := range candidates {
+					if ctx.Err() != nil {
+						r2Cancel()
+						for _, all := range scans {
+							if all != nil {
+								result.NativeTrace = append(result.NativeTrace, all.Refs...)
+							}
+						}
+						return cancelFinish(StageNative, 7)
+					}
+					if r2Ctx.Err() != nil {
+						r2TimedOut += len(candidates) - i
+						break
+					}
+					pct := 93 + ((i + 1) * 3 / max(1, len(candidates)))
+					emitLive(StageNative, 7, pct, fmt.Sprintf("r2 targeted disasm (%d/%d): %s (%d funcs)", i+1, len(candidates), sc.BaseName, len(sc.TargetFuncs)))
+					n, err := enrichWithR2Context(r2Ctx, r2Path, sc, perSOTimeout)
+					if err != nil {
+						if ctx.Err() != nil {
+							r2Cancel()
+							for _, all := range scans {
+								if all != nil {
+									result.NativeTrace = append(result.NativeTrace, all.Refs...)
+								}
+							}
+							return cancelFinish(StageNative, 7)
+						}
+						r2TimedOut++
+						continue
+					}
+					r2Enriched += n
+				}
+				r2Cancel()
+			}
+		}
+
+		for _, sc := range scans {
+			if sc != nil && len(sc.Refs) > 0 {
+				result.NativeTrace = append(result.NativeTrace, sc.Refs...)
+			}
+		}
+		if len(result.NativeTrace) > 0 {
+			result.ToolsUsed = append(result.ToolsUsed, "elf_scan")
+			if r2Enriched > 0 {
 				result.ToolsUsed = append(result.ToolsUsed, "radare2")
 			}
 		}
-	} else {
-		if ctx.Err() != nil {
-			return cancelFinish(StageNative, 7)
+
+		detail := fmt.Sprintf("ELF scanned %d/%d unique .so: %d finding(s)", len(soFiles), len(rawSOFiles), len(result.NativeTrace))
+		if r2Enriched > 0 {
+			detail += fmt.Sprintf(", r2 enriched %d func(s)", r2Enriched)
 		}
-		recordStep(StageNative, 7, 96, "r2_check", "skip", "r2 not found (set Options.R2Path, or install it on PATH)", time.Since(t0))
+		if r2TimedOut > 0 {
+			detail += fmt.Sprintf(" (%d r2 skipped/budgeted)", r2TimedOut)
+		}
+		recordStep(StageNative, 7, 96, "native_analysis", "ok", detail, time.Since(tELF))
 	}
 
-	// Stage 8: Call Graph & Mermaid Synthesis (96% -> 100%)
-	emitLive(StageGraphBuild, 8, 97, "building call graph and Mermaid diagram...")
-	result.CallGraph = buildCallGraph(flow, result.JavaTrace, result.NativeTrace)
+	// Stage 8: Call Graph, Commercial Report & Mermaid Synthesis (96% -> 100%)
+	emitLive(StageGraphBuild, 8, 97, "synthesizing multi-perspective graph and commercial report...")
+	result.CallGraph = buildCallGraphWithXRefs(flow, result.JavaTrace, result.DexXRefs, result.NativeTrace)
 	result.Mermaid = generateMermaid(result.CallGraph)
+	result.Report = SynthesizeReport(flow, result, xrefRes)
 	result.Summary = generateSummary(result)
 	syncCounts()
-	tracker.emit(StageGraphBuild, 8, 99, "ok", fmt.Sprintf("%d edge(s)", len(result.CallGraph)), 0, nil)
+	tracker.emit(StageGraphBuild, 8, 99, "ok", fmt.Sprintf("%d graph node(s), %d edge(s), %d module(s)", len(result.Report.Graph.Nodes), len(result.Report.Graph.Edges), len(result.Report.Modules)), 0, nil)
 	recordStep(StageDone, 8, 100, "done", "ok", "trace complete", 0)
 
 	return result, nil

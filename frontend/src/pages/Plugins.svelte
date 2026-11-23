@@ -1,11 +1,12 @@
 <script>
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import '../lib/locales/tools.js'
   import { t, translate } from '../lib/i18n.js'
   import { MOD_LABEL } from '../lib/shortcuts.js'
   import Icon from '../components/Icon.svelte'
   import Badge from '../components/Badge.svelte'
   import Button from '../components/Button.svelte'
+  import CodeEditor from '../components/CodeEditor.svelte'
   import EmptyState from '../components/EmptyState.svelte'
   import SplitPane from '../components/SplitPane.svelte'
   import { toast } from '../lib/toast.js'
@@ -52,7 +53,7 @@
   let runDurationMs = null
   let runFlowId = ''
   let flowFilterQuery = ''
-  let codeEditorEl
+  let editorRef = null
 
   // Flow Variables & stdin JSON Inspector
   let inspectorMode = 'vars' // 'vars' | 'json' | 'off'
@@ -388,7 +389,7 @@
     if (typeof off === 'function') unsubs.push(off)
   }
 
-  function selectPlugin(p) {
+  async function selectPlugin(p) {
     selectedPlugin = p
     editName = p.name || ''
     editDesc = p.description || ''
@@ -399,7 +400,8 @@
     editHostPattern = p.host_pattern || ''
     editPathPattern = p.path_pattern || ''
     editTimeoutSec = Number(p.timeout_sec) || 10
-    editCode = p.code || ''
+    const nextCode = p.code || ''
+    editCode = nextCode
     editEnabled = Boolean(p.enabled)
     isNew = false
     dirty = false
@@ -407,9 +409,11 @@
     runOutput = ''
     runError = false
     runDurationMs = null
+    await tick()
+    editorRef?.resetHistory(nextCode)
   }
 
-  function newPlugin(defaultType = 'analyzer', defaultRuntime = 'builtin') {
+  async function newPlugin(defaultType = 'analyzer', defaultRuntime = 'builtin') {
     selectedPlugin = null
     editName = ''
     editDesc = ''
@@ -421,13 +425,16 @@
     editPathPattern = ''
     editTimeoutSec = 10
     editEnabled = true
-    editCode = starterCodeFor(defaultType, editRuntime)
+    const nextCode = starterCodeFor(defaultType, editRuntime)
+    editCode = nextCode
     isNew = true
     dirty = true
     confirmDelete = false
     runOutput = ''
     runError = false
     runDurationMs = null
+    await tick()
+    editorRef?.resetHistory(nextCode)
   }
 
   async function loadExample(idx) {
@@ -447,11 +454,14 @@
       editHostPattern = ex.host_pattern || ''
       editPathPattern = ex.path_pattern || ''
       editTimeoutSec = Number(ex.timeout_sec) || 10
-      editCode = ex.code || ''
+      const nextCode = ex.code || ''
+      editCode = nextCode
       editEnabled = true
       isNew = true
       dirty = false
       confirmDelete = false
+      await tick()
+      editorRef?.resetHistory(nextCode)
       await savePlugin(true)
       toast.success(translate('tools.plugins.toast.installedExample', { name: ex.name }))
     } catch (e) {
@@ -640,20 +650,13 @@
 
   function insertSnippetAtCursor(snippet) {
     if (!snippet) return
-    const el = codeEditorEl
-    if (el && typeof el.selectionStart === 'number') {
-      const start = el.selectionStart
-      const end = el.selectionEnd
-      editCode = editCode.slice(0, start) + snippet + editCode.slice(end)
+    if (editorRef?.insertAtCursor) {
+      editorRef.insertAtCursor(snippet)
       dirty = true
-      requestAnimationFrame(() => {
-        el.focus()
-        el.selectionStart = el.selectionEnd = start + snippet.length
-      })
-    } else {
-      editCode = editCode ? `${editCode}\n${snippet}` : snippet
-      dirty = true
+      return
     }
+    editCode = editCode ? `${editCode}\n${snippet}` : snippet
+    dirty = true
   }
 
   function fillTriggerFromFlow() {
@@ -727,32 +730,13 @@
     }
   }
 
-  function handleCodeKeydown(e) {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-      e.preventDefault()
-      savePlugin()
-      return
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault()
-      if (!running) runPlugin()
-      return
-    }
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const el = e.target
-      const start = el.selectionStart
-      const end = el.selectionEnd
-      editCode = editCode.slice(0, start) + '  ' + editCode.slice(end)
-      dirty = true
-      requestAnimationFrame(() => {
-        el.selectionStart = el.selectionEnd = start + 2
-      })
-    }
-  }
-
   function insertRuntimeStarter() {
-    editCode = starterCodeFor(editType, editRuntime)
+    const nextCode = starterCodeFor(editType, editRuntime)
+    if (editorRef?.replaceValue) {
+      editorRef.replaceValue(nextCode, { undoable: true })
+    } else {
+      editCode = nextCode
+    }
     dirty = true
   }
 
@@ -786,7 +770,6 @@
       : execLogs
 
   $: enabledCount = plugins.filter((p) => p.enabled).length
-  $: lineCount = editCode ? editCode.split('\n').length : 0
   $: selectedTestFlow = recentFlows.find((f) => f.id === runFlowId.trim()) || null
   $: filteredTestFlows = recentFlows.filter((f) => {
     const q = flowFilterQuery.trim().toLowerCase()
@@ -1256,26 +1239,18 @@
         <div class="studio-split-wrap">
           <SplitPane direction="vertical" initialSize={58} minPrimary={25} minSecondary={22} storageKey="cap.plugins.drawer">
             <div slot="primary" class="code-pane">
-              <textarea
-                bind:this={codeEditorEl}
-                class="code-editor mono"
+              <CodeEditor
+                bind:this={editorRef}
                 bind:value={editCode}
-                on:input={() => (dirty = true)}
-                on:keydown={handleCodeKeydown}
-                spellcheck="false"
+                runtime={editRuntime}
                 placeholder={$t('tools.plugins.codePlaceholder')}
-              ></textarea>
-              <div class="editor-status mono">
-                <span>{runtimeLabel(editRuntime, $t)}</span>
-                <span>·</span>
-                <span>{getTypeMeta(editType, $t).label}</span>
-                <span>·</span>
-                <span class="tabular-nums">{$t('tools.plugins.linesCount', { count: lineCount })}</span>
-                <span>·</span>
-                <span class="tabular-nums">{$t('tools.plugins.charsCount', { count: editCode.length })}</span>
-                <span class="status-spacer"></span>
-                <span>{$t('tools.plugins.editorHint', { mod: MOD_LABEL })}</span>
-              </div>
+                shortcutHint={$t('tools.plugins.editorHint', { mod: MOD_LABEL })}
+                on:change={() => (dirty = true)}
+                on:save={() => savePlugin()}
+                on:run={() => {
+                  if (!running) runPlugin()
+                }}
+              />
             </div>
 
             <div slot="secondary" class="drawer-pane">
@@ -2022,37 +1997,6 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-  }
-
-  .code-editor {
-    flex: 1;
-    width: 100%;
-    resize: none;
-    border: none;
-    outline: none;
-    background: var(--bg-input);
-    color: var(--text-primary);
-    font-size: 13px;
-    line-height: 1.65;
-    padding: 14px 16px;
-    tab-size: 2;
-  }
-
-  .editor-status {
-    height: 24px;
-    padding: 0 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 10.5px;
-    color: var(--text-faint);
-    background: var(--bg-header);
-    border-top: 1px solid var(--border-subtle);
-    flex-shrink: 0;
-  }
-
-  .status-spacer {
-    flex: 1;
   }
 
   /* Bottom Drawer */

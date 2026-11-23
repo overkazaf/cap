@@ -6,8 +6,9 @@
   import Badge from '../components/Badge.svelte'
   import Button from '../components/Button.svelte'
   import EmptyState from '../components/EmptyState.svelte'
+  import TraceGraph from '../components/TraceGraph.svelte'
   import { toast } from '../lib/toast.js'
-  import { copyToClipboard, formatDuration } from '../lib/format.js'
+  import { copyToClipboard, formatBytes, formatDuration } from '../lib/format.js'
 
   const api = () => window?.go?.wailsgui?.App
   const runtimeApi = () => window?.runtime
@@ -68,12 +69,22 @@
   let elapsedMs = 0
   let timerAnchorMs = 0
   let elapsedTimer = null
+  let nowTick = Date.now()
+  let stageStartedAt = {}
 
-  let activeView = 'steps'
+  let activeView = 'report'
   let filterQuery = ''
+  let dexSubView = 'all' // 'all' | 'xrefs' | 'strings'
   let showPermissions = false
   let showActivities = false
   let showLiveConsole = true
+  let expandedParams = new Set()
+
+  // Graph interactive state
+  let graphPerspective = 'flow'
+  let selectedGraphNodeId = ''
+  let selectedGraphNode = null
+
   let consoleEl
   let unsubs = []
 
@@ -96,13 +107,20 @@
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${tenths}`
   }
 
+  function clipText(str, max = 110) {
+    const s = String(str ?? '')
+    return s.length > max ? `${s.slice(0, max - 1)}…` : s
+  }
+
   function startElapsedTimer(initialElapsed = 0) {
     stopElapsedTimer()
     elapsedMs = Math.max(0, Number(initialElapsed) || 0)
-    timerAnchorMs = Date.now() - elapsedMs
+    nowTick = Date.now()
+    timerAnchorMs = nowTick - elapsedMs
     elapsedTimer = setInterval(() => {
       if (tracing) {
-        elapsedMs = Math.max(0, Date.now() - timerAnchorMs)
+        nowTick = Date.now()
+        elapsedMs = Math.max(0, nowTick - timerAnchorMs)
       }
     }, 100)
   }
@@ -151,14 +169,18 @@
 
   function pickBestResultTab(res) {
     if (!res) return 'steps'
+    if (res.report) return 'report'
     if (res.call_graph?.length > 0) return 'graph'
     if (res.java_trace?.length > 0) return 'java'
-    if (res.dex_strings?.length > 0) return 'dex'
+    if (res.dex_xrefs?.length > 0 || res.dex_strings?.length > 0) return 'dex'
     return 'steps'
   }
 
   function applyStageUpdate(stageName, status, detail, durationMs) {
     if (!stageName || stageName === 'done') return
+    if (status === 'running' && !stageStartedAt[stageName]) {
+      stageStartedAt = { ...stageStartedAt, [stageName]: Date.now() }
+    }
     stages = stages.map((s) => {
       if (s.stage === stageName) {
         return {
@@ -170,6 +192,15 @@
       }
       return s
     })
+  }
+
+  function stageDisplayDuration(st, tickNow) {
+    if (st.status === 'running') {
+      const started = stageStartedAt[st.stage]
+      const liveMs = started ? Math.max(st.duration_ms || 0, tickNow - started) : st.duration_ms || 0
+      return liveMs > 0 ? formatDuration(liveMs) : null
+    }
+    return st.duration_ms > 0 ? formatDuration(st.duration_ms) : null
   }
 
   async function loadFlows(notify = false) {
@@ -237,18 +268,33 @@
 
       if (tracing) {
         showLiveConsole = true
+        const runningStage = stages.find((s) => s.status === 'running')
+        if (runningStage && !stageStartedAt[runningStage.stage]) {
+          const priorMs = stages
+            .filter((s) => s.stage_index < runningStage.stage_index)
+            .reduce((sum, s) => sum + (Number(s.duration_ms) || 0), 0)
+          const approxStageElapsed = Math.max(runningStage.duration_ms || 0, elapsedMs - priorMs)
+          stageStartedAt = { ...stageStartedAt, [runningStage.stage]: Date.now() - approxStageElapsed }
+        }
         startElapsedTimer(elapsedMs)
       } else {
         stopElapsedTimer(elapsedMs)
         if (result) {
           showLiveConsole = false
           activeView = pickBestResultTab(result)
+          autoExpandTopParams(result)
         } else {
           showLiveConsole = true
         }
       }
       await scrollConsoleToBottom()
     } catch (_) {}
+  }
+
+  function autoExpandTopParams(res) {
+    const prov = res?.report?.param_provenance || []
+    const withHits = prov.filter((p) => (p.references?.length || 0) > 0).slice(0, 2)
+    expandedParams = new Set(withHits.map((p) => `${p.location}:${p.name}`))
   }
 
   async function loadSignHints(flowId) {
@@ -346,6 +392,8 @@
     const res = ev.result || null
     result = res
     traceError = ''
+    selectedGraphNode = null
+    selectedGraphNodeId = ''
 
     const dex = ev.counts?.dex_matches ?? res?.dex_strings?.length ?? liveCounts.dex_matches
     const java = ev.counts?.java_matches ?? res?.java_trace?.length ?? liveCounts.java_matches
@@ -353,7 +401,6 @@
     const edges = ev.counts?.graph_edges ?? res?.call_graph?.length ?? liveCounts.graph_edges
     liveCounts = { dex_matches: dex, java_matches: java, native_matches: nat, graph_edges: edges }
 
-    // Mark any stage still shown as running as ok
     stages = stages.map((s) => (s.status === 'running' ? { ...s, status: 'ok' } : s))
 
     appendLog({
@@ -367,6 +414,7 @@
 
     showLiveConsole = false
     activeView = pickBestResultTab(res)
+    autoExpandTopParams(res)
     toast.success(translate('tools.deepTrace.toast.traceComplete', { edges, dex }))
   }
 
@@ -428,7 +476,6 @@
       return
     }
 
-    // Reset UI state for a new run
     runId = ''
     tracing = true
     cancelling = false
@@ -440,15 +487,19 @@
     currentDetail = translate('tools.deepTrace.log.starting')
     stages = makeInitialStages()
     stages[0].status = 'running'
+    stageStartedAt = { preflight: Date.now() }
     traceLogs = []
     liveCounts = { dex_matches: 0, java_matches: 0, native_matches: 0, graph_edges: 0 }
     result = null
     traceError = ''
     filterQuery = ''
+    selectedGraphNode = null
+    selectedGraphNodeId = ''
+    expandedParams = new Set()
     showPermissions = false
     showActivities = false
     showLiveConsole = true
-    activeView = 'steps'
+    activeView = 'report'
     startElapsedTimer(0)
 
     appendLog({
@@ -463,7 +514,6 @@
       }),
     })
 
-    // Prefer streaming StartDeepTrace binding
     if (app.StartDeepTrace) {
       try {
         const startedId = await app.StartDeepTrace(selectedFlowId, pkg, localApk, forceRefresh)
@@ -488,7 +538,6 @@
       return
     }
 
-    // Legacy fallback if StartDeepTrace is unavailable
     try {
       const res = await app.DeepTrace(selectedFlowId, pkg)
       handleDoneEvent({
@@ -536,6 +585,90 @@
     copyToClipboard(text, translate('tools.deepTrace.toast.logCopied'))
   }
 
+  function triggerBlobDownload(filename, content, mimeType) {
+    const blob = new Blob([content], { type: mimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  function safeFileStem() {
+    const pkg = (result?.package || packageName || 'app').replace(/[^a-zA-Z0-9._-]+/g, '_')
+    const fid = (result?.flow_id || selectedFlowId || 'flow').replace(/[^a-zA-Z0-9._-]+/g, '_')
+    return `deeptrace-${pkg}-${fid}`
+  }
+
+  function copyMarkdownReport() {
+    const md = result?.report?.markdown || result?.summary || ''
+    copyToClipboard(md, translate('tools.deepTrace.toast.markdownCopied'))
+  }
+
+  function downloadMarkdownReport() {
+    const md = result?.report?.markdown || result?.summary || ''
+    triggerBlobDownload(`${safeFileStem()}.md`, md, 'text/markdown;charset=utf-8')
+    toast.success(translate('tools.deepTrace.toast.markdownDownloaded'))
+  }
+
+  function downloadJsonReport() {
+    const json = JSON.stringify(result, null, 2)
+    triggerBlobDownload(`${safeFileStem()}.json`, json, 'application/json;charset=utf-8')
+    toast.success(translate('tools.deepTrace.toast.jsonDownloaded'))
+  }
+
+  function toggleParamExpand(key) {
+    const next = new Set(expandedParams)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    expandedParams = next
+  }
+
+  function jumpToEvidence(tabId, query = '') {
+    filterQuery = query || ''
+    activeView = tabId
+  }
+
+  function focusModuleInGraph(mod) {
+    if (!mod) return
+    graphPerspective = 'modules'
+    selectedGraphNodeId = mod.id
+    selectedGraphNode = {
+      id: mod.id,
+      label: mod.name,
+      sublabel: mod.package_prefix || '',
+      layer: mod.layer,
+      module_id: mod.id,
+      kind: 'module',
+      confidence: mod.confidence,
+      evidence_count: mod.evidence_count,
+      details: mod.role ? [mod.role] : [],
+      matched_terms: mod.matched_terms || [],
+      file: '',
+      isModule: true,
+      module: mod,
+    }
+    activeView = 'graph'
+  }
+
+  function handleSelectGraphNode(ev) {
+    const node = ev?.detail?.node || null
+    selectedGraphNode = node
+    selectedGraphNodeId = node?.id || ''
+  }
+
+  function jumpToNeighborNode(nodeId) {
+    const nodes = result?.report?.graph?.nodes || []
+    const found = nodes.find((n) => n.id === nodeId)
+    if (found) {
+      selectedGraphNode = found
+      selectedGraphNodeId = found.id
+    }
+  }
+
   function stepStatusVariant(status) {
     if (status === 'ok') return 'success'
     if (status === 'running') return 'accent'
@@ -564,27 +697,102 @@
     return known ? tr(`tools.deepTrace.stages.${stageName}`) : stageName
   }
 
-  function edgeTypeMeta(type) {
-    switch (type) {
+  function confidenceVariant(level) {
+    if (level === 'high') return 'success'
+    if (level === 'medium') return 'warning'
+    return 'danger'
+  }
+
+  function confidenceColorVar(level) {
+    if (level === 'high') return 'var(--status-success)'
+    if (level === 'medium') return 'var(--status-warning)'
+    return 'var(--status-danger)'
+  }
+
+  function layerVariant(layer) {
+    switch (layer) {
+      case 'entry':
+        return 'info'
+      case 'business':
+        return 'accent'
+      case 'network':
+        return 'accent'
+      case 'crypto':
+        return 'warning'
+      case 'native':
+        return 'danger'
+      case 'sdk':
+        return 'purple'
       case 'http':
-        return { label: 'HTTP', variant: 'success' }
-      case 'jni':
-        return { label: 'JNI', variant: 'warning' }
-      case 'native_call':
-        return { label: 'NATIVE', variant: 'danger' }
+        return 'success'
       default:
-        return { label: 'JAVA', variant: 'accent' }
+        return 'neutral'
     }
   }
 
+  function layerLabel(layer, tr) {
+    const known = ['entry', 'business', 'network', 'crypto', 'native', 'sdk', 'http']
+    return known.includes(layer) ? tr(`tools.deepTrace.report.layers.${layer}`) : layer || '—'
+  }
+
+  function sourceLabel(src, tr) {
+    const known = ['dex_bytecode', 'dex_string', 'java', 'native']
+    return known.includes(src) ? tr(`tools.deepTrace.report.sources.${src}`) : src || '—'
+  }
+
+  function sourceVariant(src) {
+    if (src === 'java') return 'accent'
+    if (src === 'native') return 'danger'
+    if (src === 'dex_bytecode') return 'purple'
+    return 'success'
+  }
+
+  function roleVariant(role) {
+    if (role === 'sign') return 'warning'
+    if (role === 'auth') return 'danger'
+    if (role === 'timestamp') return 'info'
+    if (role === 'identifier') return 'purple'
+    return 'neutral'
+  }
+
+  function roleLabel(role, tr) {
+    const known = ['sign', 'auth', 'timestamp', 'identifier', 'pagination', 'param']
+    return known.includes(role) ? tr(`tools.deepTrace.report.roles.${role}`) : role || '—'
+  }
+
+  function locationLabel(loc, tr) {
+    const known = ['query', 'header', 'body', 'sign']
+    return known.includes(loc) ? tr(`tools.deepTrace.report.locations.${loc}`) : loc || '—'
+  }
+
+  function obfuscationVariant(level) {
+    if (level === 'heavy') return 'danger'
+    if (level === 'moderate') return 'warning'
+    return 'success'
+  }
+
+  function obfuscationLabel(level, tr) {
+    const known = ['none', 'moderate', 'heavy']
+    return known.includes(level) ? tr(`tools.deepTrace.report.obfuscationLevel.${level}`) : level || '—'
+  }
+
+  $: report = result?.report || null
+  $: confidenceScore = Math.max(0, Math.min(100, Number(report?.confidence_score) || 0))
+  $: gaugeCircumference = 2 * Math.PI * 24
+  $: gaugeDashOffset = gaugeCircumference * (1 - confidenceScore / 100)
+
   $: q = filterQuery.trim().toLowerCase()
-  $: filteredEdges = (result?.call_graph || []).filter(
-    (e) =>
+  $: filteredDexXRefs = (result?.dex_xrefs || []).filter(
+    (x) =>
       !q ||
-      (e.from || '').toLowerCase().includes(q) ||
-      (e.to || '').toLowerCase().includes(q) ||
-      (e.label || '').toLowerCase().includes(q) ||
-      (e.type || '').toLowerCase().includes(q)
+      (x.class_name || '').toLowerCase().includes(q) ||
+      (x.method_name || '').toLowerCase().includes(q) ||
+      (x.category || '').toLowerCase().includes(q) ||
+      (x.dex_file || '').toLowerCase().includes(q) ||
+      (x.matched_terms || []).some((m) => m.toLowerCase().includes(q)) ||
+      (x.callers || []).some((c) => c.toLowerCase().includes(q)) ||
+      (x.callees || []).some((c) => c.toLowerCase().includes(q)) ||
+      (x.loads_library || []).some((l) => l.toLowerCase().includes(q))
   )
   $: filteredDex = (result?.dex_strings || []).filter(
     (d) =>
@@ -611,14 +819,34 @@
       (n.strings || []).some((s) => s.toLowerCase().includes(q))
   )
 
+  // Inspector upstream/downstream links for selected graph node
+  $: graphNodesById = new Map((report?.graph?.nodes || []).map((n) => [n.id, n]))
+  $: selectedNodeCallers =
+    selectedGraphNode && !selectedGraphNode.isModule && !selectedGraphNode.sequenceStep
+      ? (report?.graph?.edges || [])
+          .filter((e) => e.to === selectedGraphNode.id)
+          .map((e) => ({ edge: e, node: graphNodesById.get(e.from) }))
+          .filter((item) => item.node)
+      : []
+  $: selectedNodeCallees =
+    selectedGraphNode && !selectedGraphNode.isModule && !selectedGraphNode.sequenceStep
+      ? (report?.graph?.edges || [])
+          .filter((e) => e.from === selectedGraphNode.id)
+          .map((e) => ({ edge: e, node: graphNodesById.get(e.to) }))
+          .filter((item) => item.node)
+      : []
+
+  $: totalDexEvidenceCount = (result?.dex_xrefs?.length || 0) + (result?.dex_strings?.length || 0)
+  $: graphCount = report?.graph?.nodes?.length || result?.call_graph?.length || 0
+
   $: tabs = result
     ? [
-        { id: 'steps', label: $t('tools.deepTrace.tabs.steps'), icon: 'list', count: result.steps?.length || 0 },
-        { id: 'graph', label: $t('tools.deepTrace.tabs.graph'), icon: 'git-branch', count: result.call_graph?.length || 0 },
-        { id: 'dex', label: $t('tools.deepTrace.tabs.dex'), icon: 'database', count: result.dex_strings?.length || 0 },
+        ...(report ? [{ id: 'report', label: $t('tools.deepTrace.tabs.report'), icon: 'sparkles', count: null }] : []),
+        { id: 'graph', label: $t('tools.deepTrace.tabs.graph'), icon: 'git-branch', count: graphCount },
+        { id: 'dex', label: $t('tools.deepTrace.tabs.dex'), icon: 'database', count: totalDexEvidenceCount },
         { id: 'java', label: $t('tools.deepTrace.tabs.java'), icon: 'file-code', count: result.java_trace?.length || 0 },
         { id: 'native', label: $t('tools.deepTrace.tabs.native'), icon: 'cpu', count: result.native_trace?.length || 0 },
-        { id: 'summary', label: $t('tools.deepTrace.tabs.summary'), icon: 'file-text', count: null },
+        { id: 'steps', label: $t('tools.deepTrace.tabs.steps'), icon: 'list', count: result.steps?.length || 0 },
         { id: 'mermaid', label: $t('tools.deepTrace.tabs.mermaid'), icon: 'code', count: null },
       ]
     : []
@@ -730,7 +958,7 @@
           <option value="">{$t('tools.deepTrace.selectFlowPlaceholder')}</option>
           {#each flows as f (f.id)}
             <option value={f.id}>
-              [{f.id}] {f.method} {f.host}{f.path} ({f.status || '—'})
+              [{f.id}] {f.method} {clipText(`${f.host}${f.path}`, 96)} ({f.status || '—'})
             </option>
           {/each}
         </select>
@@ -869,7 +1097,7 @@
         {#if selectedFlow.status}
           <Badge variant="status" status={selectedFlow.status} size="xs" />
         {/if}
-        <span class="preview-url mono truncate" title={selectedFlow.url || `${selectedFlow.host}${selectedFlow.path}`}>
+        <span class="preview-url mono truncate" title={clipText(selectedFlow.url || `${selectedFlow.host}${selectedFlow.path}`, 120)}>
           {selectedFlow.host}{selectedFlow.path}
         </span>
         {#if selectedFlow.latency_ms}
@@ -891,7 +1119,6 @@
   <!-- Real-Time Multi-Stage Progress & Streaming Console -->
   {#if showProgressCard}
     <section class="progress-panel" class:is-error={traceStatus === 'error'} class:is-cancelled={traceStatus === 'cancelled'}>
-      <!-- Progress Header -->
       <div class="progress-head">
         <div class="progress-title-row">
           {#if tracing}
@@ -912,7 +1139,7 @@
             <span class="current-stage-name">{stageLabel(currentStage, $t)}</span>
           {/if}
           {#if currentDetail}
-            <span class="current-detail truncate" title={currentDetail}>{currentDetail}</span>
+            <span class="current-detail truncate" title={clipText(currentDetail, 120)}>{currentDetail}</span>
           {/if}
         </div>
 
@@ -925,7 +1152,6 @@
         </div>
       </div>
 
-      <!-- Progress Track -->
       <div class="progress-track" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
         <div
           class="progress-fill"
@@ -937,12 +1163,12 @@
         ></div>
       </div>
 
-      <!-- 8-Step Horizontal Pipeline Stepper -->
       <div class="stepper-grid">
         {#each stages as st (st.stage)}
+          {@const durLabel = stageDisplayDuration(st, nowTick)}
           <div
             class="stepper-node s-{st.status}"
-            title={`${stageLabel(st.stage, $t)} — ${stepStatusLabel(st.status, $t)}${st.detail ? `: ${st.detail}` : ''}`}
+            title={clipText(`${stageLabel(st.stage, $t)} — ${stepStatusLabel(st.status, $t)}${st.detail ? `: ${st.detail}` : ''}`, 120)}
           >
             <div class="node-top">
               <span class="node-icon" class:spinning={st.status === 'running'}>
@@ -951,17 +1177,12 @@
               <span class="node-label truncate">{stageLabel(st.stage, $t)}</span>
             </div>
             <div class="node-sub mono tabular-nums">
-              {#if st.duration_ms > 0}
-                {formatDuration(st.duration_ms)}
-              {:else}
-                {stepStatusLabel(st.status, $t)}
-              {/if}
+              {durLabel || stepStatusLabel(st.status, $t)}
             </div>
           </div>
         {/each}
       </div>
 
-      <!-- Live Partial Hit Counters (visible while running / cancelled / error) -->
       {#if !result}
         <div class="live-hits-bar">
           <div class="live-hit">
@@ -984,14 +1205,13 @@
           {#if traceStatus === 'cancelled'}
             <span class="state-banner warn">{$t('tools.deepTrace.cancelledBanner')}</span>
           {:else if traceStatus === 'error' && traceError}
-            <span class="state-banner err truncate" title={traceError}>
+            <span class="state-banner err truncate" title={clipText(traceError, 120)}>
               {$t('tools.deepTrace.errorBanner', { error: traceError })}
             </span>
           {/if}
         </div>
       {/if}
 
-      <!-- Streaming Console Log -->
       <div class="console-box">
         <div class="console-head">
           <div class="console-title">
@@ -1035,11 +1255,11 @@
       </div>
       <div class="metric-card">
         <span class="metric-label">{$t('tools.deepTrace.metrics.callEdges')}</span>
-        <span class="metric-val mono tabular-nums accent">{result.call_graph?.length || 0}</span>
+        <span class="metric-val mono tabular-nums accent">{report?.graph?.edges?.length ?? result.call_graph?.length ?? 0}</span>
       </div>
       <div class="metric-card">
         <span class="metric-label">{$t('tools.deepTrace.metrics.dexStrings')}</span>
-        <span class="metric-val mono tabular-nums success">{result.dex_strings?.length || 0}</span>
+        <span class="metric-val mono tabular-nums success">{totalDexEvidenceCount}</span>
       </div>
       <div class="metric-card">
         <span class="metric-label">{$t('tools.deepTrace.metrics.javaRefs')}</span>
@@ -1090,7 +1310,7 @@
         {/each}
       </div>
 
-      {#if activeView === 'graph' || activeView === 'dex' || activeView === 'java' || activeView === 'native'}
+      {#if activeView === 'dex' || activeView === 'java' || activeView === 'native'}
         <div class="filter-box">
           <Icon name="search" size={13} />
           <input
@@ -1108,9 +1328,853 @@
       {/if}
     </div>
 
-    <!-- Tab Body -->
-    <div class="trace-body">
-      {#if activeView === 'steps'}
+    <!-- Main Result Viewport -->
+    <div class="trace-body" class:graph-body={activeView === 'graph'}>
+      <!-- ==================== FLAGSHIP REPORT TAB ==================== -->
+      {#if activeView === 'report' && report}
+        <div class="report-layout">
+          <!-- 1. Executive Intelligence Header Card -->
+          <section class="exec-card cap-card">
+            <div class="exec-top">
+              <div class="gauge-wrap" title={$t('tools.deepTrace.report.confidenceLabel')}>
+                <svg viewBox="0 0 60 60" class="gauge-svg">
+                  <circle cx="30" cy="30" r="24" class="gauge-bg" />
+                  <circle
+                    cx="30"
+                    cy="30"
+                    r="24"
+                    class="gauge-fg"
+                    style="stroke: {confidenceColorVar(report.confidence)}; stroke-dasharray: {gaugeCircumference}; stroke-dashoffset: {gaugeDashOffset};"
+                  />
+                </svg>
+                <div class="gauge-center">
+                  <span class="gauge-num mono tabular-nums">{confidenceScore}</span>
+                  <span class="gauge-den mono">/100</span>
+                </div>
+              </div>
+
+              <div class="exec-main">
+                <div class="exec-head-row">
+                  <Badge variant={confidenceVariant(report.confidence)} size="sm" dot>
+                    {$t(`tools.deepTrace.report.confidence.${report.confidence || 'low'}`)}
+                  </Badge>
+                  <span class="exec-pkg mono">{result.package || packageName}</span>
+                  <div class="exec-exports">
+                    <Button variant="secondary" size="xs" icon="copy" on:click={copyMarkdownReport}>
+                      {$t('tools.deepTrace.report.copyMarkdown')}
+                    </Button>
+                    <Button variant="secondary" size="xs" icon="download" on:click={downloadMarkdownReport}>
+                      {$t('tools.deepTrace.report.downloadMd')}
+                    </Button>
+                    <Button variant="ghost" size="xs" icon="code" on:click={downloadJsonReport}>
+                      {$t('tools.deepTrace.report.downloadJson')}
+                    </Button>
+                  </div>
+                </div>
+
+                {#if report.executive_summary}
+                  <p class="exec-summary">{report.executive_summary}</p>
+                {/if}
+
+                {#if report.highlights?.length > 0}
+                  <div class="chip-wrap">
+                    {#each report.highlights as hl}
+                      <span class="highlight-chip">
+                        <Icon name="sparkles" size={11} />
+                        <span>{hl}</span>
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if report.confidence_reasons?.length > 0}
+                  <div class="reasons-row">
+                    {#each report.confidence_reasons as reason}
+                      <span class="reason-pill">
+                        <Icon name="check" size={10} />
+                        <span>{reason}</span>
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          </section>
+
+          <!-- 2. Request Origin Chain -->
+          <section class="report-section">
+            <div class="section-title-block">
+              <h3>{$t('tools.deepTrace.report.originTitle')}</h3>
+              <p>{$t('tools.deepTrace.report.originSubtitle')}</p>
+            </div>
+
+            {#if report.origin_chain?.length > 0}
+              <div class="origin-timeline">
+                {#each report.origin_chain as hop, i (hop.step + '-' + i)}
+                  <div class="origin-hop">
+                    <div class="hop-rail">
+                      <span class="hop-num mono tabular-nums">{String(hop.step || i + 1).padStart(2, '0')}</span>
+                      {#if i < report.origin_chain.length - 1}
+                        <span class="hop-connector"></span>
+                      {/if}
+                    </div>
+                    <div class="hop-card cap-card">
+                      <div class="hop-head">
+                        <Badge variant={layerVariant(hop.layer)} size="xs">{layerLabel(hop.layer, $t)}</Badge>
+                        <span class="hop-title">{hop.title}</span>
+                        {#if hop.module}
+                          <span class="hop-module mono">{hop.module}</span>
+                        {/if}
+                        <span class="hop-spacer"></span>
+                        <Badge variant={confidenceVariant(hop.confidence)} size="xs">
+                          {$t(`tools.deepTrace.report.confidence.${hop.confidence || 'low'}`)}
+                        </Badge>
+                      </div>
+                      {#if hop.symbol}
+                        <div class="hop-symbol-row">
+                          <button
+                            type="button"
+                            class="symbol-link mono"
+                            on:click={() =>
+                              jumpToEvidence(
+                                hop.layer === 'native' ? 'native' : result.java_trace?.length ? 'java' : 'dex',
+                                hop.symbol.split('.').pop()?.replace(/\(\)$/, '') || hop.symbol
+                              )}
+                          >
+                            {hop.symbol}
+                          </button>
+                          {#if hop.file}
+                            <span class="hop-file mono truncate" title={clipText(hop.file, 120)}>{hop.file}</span>
+                          {/if}
+                        </div>
+                      {/if}
+                      {#if hop.detail}
+                        <div class="hop-detail">{hop.detail}</div>
+                      {/if}
+                      {#if hop.evidence}
+                        <div class="hop-evidence mono">{hop.evidence}</div>
+                      {/if}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <EmptyState icon="git-branch" title={$t('tools.deepTrace.report.originEmpty')} compact />
+            {/if}
+          </section>
+
+          <!-- 3. Involved Modules Matrix -->
+          <section class="report-section">
+            <div class="section-title-block">
+              <h3>{$t('tools.deepTrace.report.modulesTitle')}</h3>
+              <p>{$t('tools.deepTrace.report.modulesSubtitle')}</p>
+            </div>
+
+            {#if report.modules?.length > 0}
+              <div class="modules-grid">
+                {#each report.modules as mod (mod.id)}
+                  <div class="module-card cap-card">
+                    <div class="mod-head">
+                      <Badge variant={layerVariant(mod.layer)} size="xs">{layerLabel(mod.layer, $t)}</Badge>
+                      <span class="mod-name mono truncate" title={clipText(mod.name, 100)}>{mod.name}</span>
+                      <Badge variant={confidenceVariant(mod.confidence)} size="xs" dot />
+                    </div>
+                    {#if mod.role}
+                      <div class="mod-role">{mod.role}</div>
+                    {/if}
+                    <div class="mod-stats mono tabular-nums">
+                      {#if mod.class_count > 0}
+                        <span>{$t('tools.deepTrace.report.moduleClasses', { count: mod.class_count })}</span>
+                      {/if}
+                      {#if mod.method_count > 0}
+                        <span>{$t('tools.deepTrace.report.moduleMethods', { count: mod.method_count })}</span>
+                      {/if}
+                      {#if mod.native_libs?.length > 0}
+                        <span>{mod.native_libs.length} SO</span>
+                      {/if}
+                      <span class="mod-ev">{$t('tools.deepTrace.report.moduleEvidence', { count: mod.evidence_count })}</span>
+                    </div>
+
+                    {#if mod.key_symbols?.length > 0 || mod.native_libs?.length > 0}
+                      <div class="chip-wrap">
+                        {#each (mod.key_symbols || []).slice(0, 4) as sym}
+                          <span class="mono-chip">{sym}</span>
+                        {/each}
+                        {#each (mod.native_libs || []).slice(0, 3) as lib}
+                          <Badge variant="danger" size="xs" mono>{lib}</Badge>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    <div class="mod-actions">
+                      <Button variant="ghost" size="xs" icon="git-branch" on:click={() => focusModuleInGraph(mod)}>
+                        {$t('tools.deepTrace.report.viewInGraph')}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        icon="filter"
+                        on:click={() =>
+                          jumpToEvidence(
+                            mod.layer === 'native' ? 'native' : result.java_trace?.length ? 'java' : 'dex',
+                            mod.package_prefix || mod.name
+                          )}
+                      >
+                        {$t('tools.deepTrace.report.filterEvidence')}
+                      </Button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <EmptyState icon="layers" title={$t('tools.deepTrace.report.modulesEmpty')} compact />
+            {/if}
+          </section>
+
+          <!-- 4. Parameter & Sign Provenance -->
+          <section class="report-section">
+            <div class="section-title-block">
+              <h3>{$t('tools.deepTrace.report.paramsTitle')}</h3>
+              <p>{$t('tools.deepTrace.report.paramsSubtitle')}</p>
+            </div>
+
+            {#if report.param_provenance?.length > 0}
+              <div class="prov-table cap-card">
+                <div class="prov-thead">
+                  <span>{$t('tools.deepTrace.report.colParam')}</span>
+                  <span>{$t('tools.deepTrace.report.colLocation')}</span>
+                  <span>{$t('tools.deepTrace.report.colRole')}</span>
+                  <span>{$t('tools.deepTrace.report.colSample')}</span>
+                  <span class="align-right">{$t('tools.deepTrace.report.colHits')}</span>
+                </div>
+                {#each report.param_provenance as pp (pp.location + ':' + pp.name)}
+                  {@const pKey = `${pp.location}:${pp.name}`}
+                  {@const isOpen = expandedParams.has(pKey)}
+                  <div class="prov-row-group">
+                    <button type="button" class="prov-row" on:click={() => toggleParamExpand(pKey)}>
+                      <span class="prov-name mono">
+                        <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                        <span>{pp.name}</span>
+                      </span>
+                      <span><Badge variant="neutral" size="xs">{locationLabel(pp.location, $t)}</Badge></span>
+                      <span><Badge variant={roleVariant(pp.role)} size="xs">{roleLabel(pp.role, $t)}</Badge></span>
+                      <span class="prov-sample mono truncate" title={clipText(pp.sample_value, 100)}>{pp.sample_value || '—'}</span>
+                      <span class="align-right">
+                        <Badge variant={pp.hit_count > 0 ? 'success' : 'neutral'} size="xs" mono>{pp.hit_count}</Badge>
+                      </span>
+                    </button>
+
+                    {#if isOpen}
+                      <div class="prov-refs">
+                        {#if pp.references?.length > 0}
+                          {#each pp.references as ref}
+                            <div class="prov-ref-item">
+                              <div class="prov-ref-head">
+                                <Badge variant={sourceVariant(ref.source)} size="xs">{sourceLabel(ref.source, $t)}</Badge>
+                                <span class="prov-ref-sym mono">{ref.symbol}</span>
+                                {#if ref.file}
+                                  <span class="prov-ref-file mono truncate">{ref.file}</span>
+                                {/if}
+                                <button
+                                  type="button"
+                                  class="mini-copy"
+                                  title={$t('common.actions.copy')}
+                                  on:click={() => copyToClipboard(ref.snippet || ref.symbol, translate('tools.deepTrace.toast.symbolCopied'))}
+                                >
+                                  <Icon name="copy" size={11} />
+                                </button>
+                              </div>
+                              {#if ref.snippet}
+                                <pre class="prov-ref-snip mono">{ref.snippet}</pre>
+                              {/if}
+                            </div>
+                          {/each}
+                        {:else}
+                          <div class="prov-no-refs">{$t('tools.deepTrace.report.noRefsYet')}</div>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <EmptyState icon="key" title={$t('tools.deepTrace.report.paramsEmpty')} compact />
+            {/if}
+          </section>
+
+          <!-- 5. Request Anatomy & Security Posture Strip -->
+          <section class="two-col-grid">
+            {#if report.request_anatomy}
+              {@const ra = report.request_anatomy}
+              <div class="posture-card cap-card">
+                <div class="card-head-title">
+                  <Icon name="globe" size={14} />
+                  <span>{$t('tools.deepTrace.report.anatomyTitle')}</span>
+                </div>
+                <div class="anatomy-url-bar">
+                  <Badge variant="method" method={ra.method} size="xs" />
+                  {#if ra.status}
+                    <Badge variant="status" status={ra.status} size="xs" />
+                  {/if}
+                  <span class="mono truncate" title={clipText(`${ra.scheme}://${ra.host}${ra.path}`, 120)}>
+                    {ra.scheme ? `${ra.scheme}://` : ''}{ra.host}{ra.path}
+                  </span>
+                </div>
+                <div class="kv-grid-3">
+                  <div class="kv-box">
+                    <span class="kv-k">{$t('tools.deepTrace.report.reqSize')}</span>
+                    <span class="kv-v mono tabular-nums">{formatBytes(ra.req_body_size)}</span>
+                  </div>
+                  <div class="kv-box">
+                    <span class="kv-k">{$t('tools.deepTrace.report.respSize')}</span>
+                    <span class="kv-v mono tabular-nums">{formatBytes(ra.resp_body_size)}</span>
+                  </div>
+                  <div class="kv-box">
+                    <span class="kv-k">{$t('tools.deepTrace.report.contentType')}</span>
+                    <span class="kv-v mono truncate" title={clipText(ra.content_type || '—', 80)}>{ra.content_type || '—'}</span>
+                  </div>
+                </div>
+
+                {#if ra.query_params?.length > 0}
+                  <div class="sub-block">
+                    <div class="sub-k">{$t('tools.deepTrace.report.queryParamsLabel', { count: ra.query_params.length })}</div>
+                    <div class="chip-wrap">
+                      {#each ra.query_params as qp}
+                        <Badge variant={qp.is_sign_param ? 'warning' : 'neutral'} size="xs" mono>
+                          {qp.name}={clipText(qp.sample_value, 18)}
+                        </Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if ra.key_headers?.length > 0}
+                  <div class="sub-block">
+                    <div class="sub-k">{$t('tools.deepTrace.report.keyHeadersLabel', { count: ra.key_headers.length })}</div>
+                    <div class="chip-wrap">
+                      {#each ra.key_headers as kh}
+                        <Badge variant={kh.is_sign_param ? 'danger' : 'info'} size="xs" mono>
+                          {kh.name}: {clipText(kh.sample_value, 22)}
+                        </Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
+            {#if report.security_posture}
+              {@const sp = report.security_posture}
+              <div class="posture-card cap-card">
+                <div class="card-head-title">
+                  <Icon name="shield" size={14} />
+                  <span>{$t('tools.deepTrace.report.postureTitle')}</span>
+                </div>
+                <div class="chip-wrap">
+                  <Badge variant="neutral" size="xs" mono>SDK {sp.min_sdk || '?'}–{sp.target_sdk || '?'}</Badge>
+                  <Badge variant="accent" size="xs" mono>{sp.dex_count} DEX</Badge>
+                  <Badge variant="purple" size="xs" mono>{sp.native_lib_count} SO</Badge>
+                  <Badge variant="neutral" size="xs" mono>{sp.permissions_count} perms</Badge>
+                  <Badge variant={obfuscationVariant(sp.obfuscation_hint)} size="xs">
+                    {$t('tools.deepTrace.report.obfuscation')}: {obfuscationLabel(sp.obfuscation_hint, $t)}
+                  </Badge>
+                  <Badge variant={sp.has_ns_config ? 'warning' : 'neutral'} size="xs">
+                    {sp.has_ns_config ? $t('tools.deepTrace.report.nsConfigPresent') : $t('tools.deepTrace.report.nsConfigAbsent')}
+                  </Badge>
+                </div>
+
+                {#if sp.network_stack?.length > 0}
+                  <div class="sub-block">
+                    <div class="sub-k">{$t('tools.deepTrace.report.networkStack')}</div>
+                    <div class="chip-wrap">
+                      {#each sp.network_stack as ns}
+                        <Badge variant="info" size="xs" mono>{ns}</Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if sp.crypto_indicators?.length > 0}
+                  <div class="sub-block">
+                    <div class="sub-k">{$t('tools.deepTrace.report.cryptoIndicators')}</div>
+                    <div class="chip-wrap">
+                      {#each sp.crypto_indicators as ci}
+                        <Badge variant="warning" size="xs" mono>{ci}</Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if sp.notes?.length > 0}
+                  <div class="sub-block">
+                    <div class="sub-k">{$t('tools.deepTrace.report.securityNotes')}</div>
+                    <ul class="notes-list">
+                      {#each sp.notes as note}
+                        <li>{note}</li>
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </section>
+        </div>
+
+      <!-- ==================== INTERACTIVE VISUAL GRAPH TAB ==================== -->
+      {:else if activeView === 'graph'}
+        <div class="graph-workspace">
+          <div class="graph-canvas-wrap">
+            <TraceGraph
+              graph={report?.graph || null}
+              modules={report?.modules || []}
+              callGraph={result.call_graph || []}
+              bind:selectedNodeId={selectedGraphNodeId}
+              bind:perspective={graphPerspective}
+              on:selectNode={handleSelectGraphNode}
+            />
+          </div>
+
+          <aside class="node-inspector cap-card">
+            <div class="insp-head">
+              <div class="insp-title">
+                <Icon name="radar" size={13} />
+                <span>{$t('tools.deepTrace.graphInspector.title')}</span>
+              </div>
+              {#if selectedGraphNode}
+                <button
+                  type="button"
+                  class="icon-clear"
+                  title={$t('tools.deepTrace.graphInspector.closeTitle')}
+                  on:click={() => {
+                    selectedGraphNode = null
+                    selectedGraphNodeId = ''
+                  }}
+                >
+                  <Icon name="x" size={13} />
+                </button>
+              {/if}
+            </div>
+
+            {#if selectedGraphNode}
+              <div class="insp-body">
+                <div class="insp-badges">
+                  <Badge variant={layerVariant(selectedGraphNode.layer)} size="xs">
+                    {layerLabel(selectedGraphNode.layer, $t)}
+                  </Badge>
+                  {#if selectedGraphNode.kind}
+                    <Badge variant="neutral" size="xs" mono>{selectedGraphNode.kind}</Badge>
+                  {/if}
+                  {#if selectedGraphNode.confidence}
+                    <Badge variant={confidenceVariant(selectedGraphNode.confidence)} size="xs">
+                      {$t(`tools.deepTrace.report.confidence.${selectedGraphNode.confidence}`)}
+                    </Badge>
+                  {/if}
+                </div>
+
+                <div class="insp-symbol-box">
+                  <div class="insp-label mono">{selectedGraphNode.label}</div>
+                  {#if selectedGraphNode.sublabel}
+                    <div class="insp-sublabel mono">{selectedGraphNode.sublabel}</div>
+                  {/if}
+                </div>
+
+                {#if selectedGraphNode.file}
+                  <div class="insp-block">
+                    <div class="sub-k">{$t('tools.deepTrace.graphInspector.file')}</div>
+                    <div class="mono-chip">{selectedGraphNode.file}</div>
+                  </div>
+                {/if}
+
+                {#if selectedGraphNode.isModule && selectedGraphNode.module}
+                  {@const m = selectedGraphNode.module}
+                  {#if m.role}
+                    <div class="insp-block">
+                      <div class="sub-k">{$t('tools.deepTrace.graphInspector.role')}</div>
+                      <div class="insp-text">{m.role}</div>
+                    </div>
+                  {/if}
+                  {#if m.key_symbols?.length > 0}
+                    <div class="insp-block">
+                      <div class="sub-k">{$t('tools.deepTrace.graphInspector.keySymbols')}</div>
+                      <div class="chip-wrap">
+                        {#each m.key_symbols as sym}
+                          <span class="mono-chip">{sym}</span>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                  {#if m.native_libs?.length > 0}
+                    <div class="insp-block">
+                      <div class="sub-k">{$t('tools.deepTrace.graphInspector.nativeLibs')}</div>
+                      <div class="chip-wrap">
+                        {#each m.native_libs as lib}
+                          <Badge variant="danger" size="xs" mono>{lib}</Badge>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                {/if}
+
+                {#if selectedGraphNode.sequenceStep}
+                  {@const seq = selectedGraphNode.sequenceStep}
+                  <div class="insp-block">
+                    <div class="sub-k">{$t('tools.deepTrace.graphInspector.sequenceAction')}</div>
+                    <div class="insp-text">
+                      <strong class="mono">{seq.from}</strong> → <strong class="mono">{seq.to}</strong>
+                    </div>
+                    {#if seq.detail}
+                      <div class="insp-text">{seq.detail}</div>
+                    {/if}
+                    {#if seq.evidence}
+                      <div class="mono-chip">{seq.evidence}</div>
+                    {/if}
+                  </div>
+                {/if}
+
+                {#if selectedGraphNode.matched_terms?.length > 0}
+                  <div class="insp-block">
+                    <div class="sub-k">{$t('tools.deepTrace.graphInspector.matchedTerms')}</div>
+                    <div class="chip-wrap">
+                      {#each selectedGraphNode.matched_terms as mt}
+                        <Badge variant="accent" size="xs" mono>{mt}</Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if selectedGraphNode.details?.length > 0}
+                  <div class="insp-block">
+                    <div class="sub-k">{$t('tools.deepTrace.graphInspector.details')}</div>
+                    <ul class="notes-list mono">
+                      {#each selectedGraphNode.details as d}
+                        <li>{d}</li>
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
+
+                {#if selectedNodeCallers.length > 0}
+                  <div class="insp-block">
+                    <div class="sub-k">{$t('tools.deepTrace.graphInspector.callers', { count: selectedNodeCallers.length })}</div>
+                    <div class="neighbor-list">
+                      {#each selectedNodeCallers as item}
+                        <button type="button" class="neighbor-btn mono" on:click={() => jumpToNeighborNode(item.node.id)}>
+                          <Badge variant={layerVariant(item.node.layer)} size="xs">{layerLabel(item.node.layer, $t)}</Badge>
+                          <span class="truncate">{item.node.label}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if selectedNodeCallees.length > 0}
+                  <div class="insp-block">
+                    <div class="sub-k">{$t('tools.deepTrace.graphInspector.callees', { count: selectedNodeCallees.length })}</div>
+                    <div class="neighbor-list">
+                      {#each selectedNodeCallees as item}
+                        <button type="button" class="neighbor-btn mono" on:click={() => jumpToNeighborNode(item.node.id)}>
+                          <Badge variant={layerVariant(item.node.layer)} size="xs">{layerLabel(item.node.layer, $t)}</Badge>
+                          <span class="truncate">{item.node.label}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                <div class="insp-actions">
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    icon="copy"
+                    on:click={() =>
+                      copyToClipboard(
+                        `${selectedGraphNode.label}${selectedGraphNode.sublabel ? `.${selectedGraphNode.sublabel}` : ''}`,
+                        translate('tools.deepTrace.toast.symbolCopied')
+                      )}
+                  >
+                    {$t('tools.deepTrace.graphInspector.copySymbol')}
+                  </Button>
+                  <Button variant="ghost" size="xs" icon="database" on:click={() => jumpToEvidence('dex', selectedGraphNode.label)}>
+                    {$t('tools.deepTrace.graphInspector.jumpDex')}
+                  </Button>
+                  {#if result.java_trace?.length > 0}
+                    <Button variant="ghost" size="xs" icon="file-code" on:click={() => jumpToEvidence('java', selectedGraphNode.label)}>
+                      {$t('tools.deepTrace.graphInspector.jumpJava')}
+                    </Button>
+                  {/if}
+                  {#if result.native_trace?.length > 0}
+                    <Button variant="ghost" size="xs" icon="cpu" on:click={() => jumpToEvidence('native', selectedGraphNode.label)}>
+                      {$t('tools.deepTrace.graphInspector.jumpNative')}
+                    </Button>
+                  {/if}
+                </div>
+              </div>
+            {:else}
+              <EmptyState
+                icon="git-branch"
+                title={$t('tools.deepTrace.graphInspector.hintTitle')}
+                description={$t('tools.deepTrace.graphInspector.hintDesc')}
+                compact
+              />
+            {/if}
+          </aside>
+        </div>
+
+      <!-- ==================== UPGRADED DEX & XREFS TAB ==================== -->
+      {:else if activeView === 'dex'}
+        <div class="dex-subbar">
+          <button type="button" class="f-pill" class:active={dexSubView === 'all'} on:click={() => (dexSubView = 'all')}>
+            {$t('tools.deepTrace.dexTabs.all')} ({filteredDexXRefs.length + filteredDex.length})
+          </button>
+          <button type="button" class="f-pill" class:active={dexSubView === 'xrefs'} on:click={() => (dexSubView = 'xrefs')}>
+            {$t('tools.deepTrace.dexTabs.xrefs', { count: filteredDexXRefs.length })}
+          </button>
+          <button type="button" class="f-pill" class:active={dexSubView === 'strings'} on:click={() => (dexSubView = 'strings')}>
+            {$t('tools.deepTrace.dexTabs.strings', { count: filteredDex.length })}
+          </button>
+        </div>
+
+        <div class="cards-stack">
+          {#if (dexSubView === 'all' || dexSubView === 'xrefs') && filteredDexXRefs.length > 0}
+            <h3 class="section-heading">{$t('tools.deepTrace.dexTabs.xrefsHeading')} ({filteredDexXRefs.length})</h3>
+            {#each filteredDexXRefs as xr}
+              <div class="evidence-card cap-card">
+                <div class="ev-header">
+                  <div class="ev-meta">
+                    <Badge variant={layerVariant(xr.category)} size="xs">{layerLabel(xr.category, $t)}</Badge>
+                    <Badge variant="neutral" size="xs" mono>{xr.dex_file}</Badge>
+                    {#if xr.is_native}
+                      <Badge variant="danger" size="xs" mono>JNI Native</Badge>
+                    {/if}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon="copy"
+                    on:click={() => copyToClipboard(`${xr.class_name}.${xr.method_name}${xr.descriptor || ''}`, translate('tools.deepTrace.toast.symbolCopied'))}
+                  >
+                    {$t('common.actions.copy')}
+                  </Button>
+                </div>
+                <div class="xref-sig mono">
+                  <span class="xref-class">{xr.class_name}</span>.<span class="xref-method">{xr.method_name}</span><span class="xref-desc">{xr.descriptor || '()'}</span>
+                </div>
+
+                {#if xr.matched_terms?.length > 0}
+                  <div class="xref-row">
+                    <span class="ctx-label">{$t('tools.deepTrace.dexTabs.matched')}</span>
+                    <div class="chip-wrap">
+                      {#each xr.matched_terms as term}
+                        <Badge variant="accent" size="xs" mono>{term}</Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if xr.loads_library?.length > 0}
+                  <div class="xref-row">
+                    <span class="ctx-label">{$t('tools.deepTrace.dexTabs.loadsLib')}</span>
+                    <div class="chip-wrap">
+                      {#each xr.loads_library as lib}
+                        <Badge variant="warning" size="xs" mono>{lib}</Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if xr.callers?.length > 0}
+                  <div class="xref-row">
+                    <span class="ctx-label">{$t('tools.deepTrace.dexTabs.callers')}</span>
+                    <div class="chip-wrap">
+                      {#each xr.callers.slice(0, 6) as c}
+                        <span class="mono-chip">{c}</span>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if xr.callees?.length > 0}
+                  <div class="xref-row">
+                    <span class="ctx-label">{$t('tools.deepTrace.dexTabs.callees')}</span>
+                    <div class="chip-wrap">
+                      {#each xr.callees.slice(0, 8) as c}
+                        <span class="mono-chip">{c}</span>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+
+          {#if (dexSubView === 'all' || dexSubView === 'strings') && filteredDex.length > 0}
+            <h3 class="section-heading">{$t('tools.deepTrace.dexTabs.stringsHeading')} ({filteredDex.length})</h3>
+            {#each filteredDex as dm}
+              <div class="evidence-card cap-card">
+                <div class="ev-header">
+                  <div class="ev-meta">
+                    <Badge variant="success" size="xs" mono>{dm.dex_file}</Badge>
+                    <span class="ev-offset mono tabular-nums">
+                      {$t('tools.deepTrace.offsetLabel', { hex: Number(dm.offset || 0).toString(16), dec: dm.offset })}
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon="copy"
+                    on:click={() => copyToClipboard(dm.string, translate('tools.deepTrace.toast.dexCopied'))}
+                  >
+                    {$t('common.actions.copy')}
+                  </Button>
+                </div>
+                <div class="dex-value mono">{dm.string}</div>
+                {#if dm.context?.length > 0}
+                  <div class="dex-ctx-block">
+                    <span class="ctx-label">{$t('tools.deepTrace.nearbyStrings')}</span>
+                    <div class="chip-wrap">
+                      {#each dm.context.slice(0, 6) as ctx}
+                        <span class="mono-chip">{ctx}</span>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+
+          {#if (dexSubView === 'all' && filteredDexXRefs.length === 0 && filteredDex.length === 0) || (dexSubView === 'xrefs' && filteredDexXRefs.length === 0) || (dexSubView === 'strings' && filteredDex.length === 0)}
+            <EmptyState
+              icon="database"
+              title={filterQuery ? $t('tools.deepTrace.empty.dexFilteredTitle') : $t('tools.deepTrace.empty.dexTitle')}
+              description={$t('tools.deepTrace.empty.dexDesc')}
+              compact
+            />
+          {/if}
+        </div>
+
+      <!-- ==================== JAVA SOURCE TAB ==================== -->
+      {:else if activeView === 'java'}
+        {#if filteredJava.length > 0}
+          <div class="cards-stack">
+            {#each filteredJava as jr}
+              <div class="evidence-card cap-card">
+                <div class="ev-header">
+                  <div class="ev-meta">
+                    <Icon name="file-code" size={14} />
+                    <span class="ref-file mono">{jr.file}<span class="ref-line">:{jr.line}</span></span>
+                    {#if jr.calls_native}
+                      <Badge variant="warning" size="xs" mono>JNI</Badge>
+                    {/if}
+                    {#if jr.annotation}
+                      <Badge variant="success" size="xs" mono>{jr.annotation}</Badge>
+                    {/if}
+                    {#if jr.matched_term}
+                      <Badge variant="accent" size="xs" mono>{jr.matched_term}</Badge>
+                    {/if}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon="copy"
+                    on:click={() =>
+                      copyToClipboard(jr.snippet || `${jr.class}.${jr.method}`, translate('tools.deepTrace.toast.javaCopied'))}
+                  >
+                    {$t('common.actions.copy')}
+                  </Button>
+                </div>
+                <div class="ref-symbol mono">{jr.class}{jr.method ? `.${jr.method}()` : ''}</div>
+                {#if jr.snippet}
+                  <pre class="code-viewer mono">{jr.snippet}</pre>
+                {/if}
+                {#if jr.native_methods?.length > 0}
+                  <div class="native-methods-row">
+                    <span class="ctx-label">{$t('tools.deepTrace.declaredNativeMethods')}</span>
+                    <div class="chip-wrap">
+                      {#each jr.native_methods as nm}
+                        <Badge variant="warning" size="xs" mono>{nm}</Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <EmptyState
+            icon="file-code"
+            title={filterQuery ? $t('tools.deepTrace.empty.javaFilteredTitle') : $t('tools.deepTrace.empty.javaTitle')}
+            description={$t('tools.deepTrace.empty.javaDesc')}
+            compact
+          />
+        {/if}
+
+      <!-- ==================== NATIVE SO TAB ==================== -->
+      {:else if activeView === 'native'}
+        {#if filteredNative.length > 0}
+          <div class="cards-stack">
+            {#each filteredNative as nr}
+              <div class="evidence-card cap-card">
+                <div class="ev-header">
+                  <div class="ev-meta">
+                    <Badge variant="danger" size="xs" mono>{nr.so_file}</Badge>
+                    <span class="nr-func mono">{nr.function}</span>
+                    {#if nr.address}
+                      <Badge variant="neutral" size="xs" mono>{nr.address}</Badge>
+                    {/if}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon="copy"
+                    on:click={() =>
+                      copyToClipboard(`${nr.so_file} :: ${nr.function} (${nr.address || ''})`, translate('tools.deepTrace.toast.symbolCopied'))}
+                  >
+                    {$t('common.actions.copy')}
+                  </Button>
+                </div>
+
+                {#if nr.calls?.length > 0}
+                  <div class="nr-group">
+                    <span class="ctx-label">{$t('tools.deepTrace.calledSymbols', { count: nr.calls.length })}</span>
+                    <div class="chip-wrap">
+                      {#each nr.calls as c}
+                        <Badge variant="accent" size="xs" mono>{c}</Badge>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if nr.imports?.length > 0}
+                  <div class="nr-group">
+                    <span class="ctx-label">{$t('tools.deepTrace.imports', { count: nr.imports.length })}</span>
+                    <div class="chip-wrap">
+                      {#each nr.imports.slice(0, 12) as imp}
+                        <span class="mono-chip">{imp}</span>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if nr.strings?.length > 0}
+                  <div class="nr-group">
+                    <span class="ctx-label">{$t('tools.deepTrace.strings', { count: nr.strings.length })}</span>
+                    <pre class="code-viewer mono">{nr.strings.slice(0, 15).join('\n')}</pre>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <EmptyState
+            icon="cpu"
+            title={filterQuery ? $t('tools.deepTrace.empty.nativeFilteredTitle') : $t('tools.deepTrace.empty.nativeTitle')}
+            description={$t('tools.deepTrace.empty.nativeDesc')}
+            compact
+          />
+        {/if}
+
+      <!-- ==================== PIPELINE & APK TAB ==================== -->
+      {:else if activeView === 'steps'}
         <div class="steps-layout">
           {#if result.steps?.length}
             <div class="section-block">
@@ -1146,7 +2210,7 @@
                     <div>
                       <div class="apk-pkg mono">{result.apk_info.package || result.package}</div>
                       {#if result.apk_path}
-                        <div class="apk-path mono truncate" title={result.apk_path}>{result.apk_path}</div>
+                        <div class="apk-path mono truncate" title={clipText(result.apk_path, 120)}>{result.apk_path}</div>
                       {/if}
                     </div>
                   </div>
@@ -1227,212 +2291,7 @@
           {/if}
         </div>
 
-      {:else if activeView === 'graph'}
-        {#if filteredEdges.length > 0}
-          <div class="cards-stack">
-            {#each filteredEdges as edge}
-              {@const meta = edgeTypeMeta(edge.type)}
-              <div class="edge-card cap-card">
-                <div class="edge-node from mono">{edge.from}</div>
-                <div class="edge-connector">
-                  <Badge variant={meta.variant} size="xs" mono>{meta.label}</Badge>
-                  <Icon name="arrow-right" size={14} />
-                </div>
-                <div class="edge-node to mono">{edge.to}</div>
-                {#if edge.label}
-                  <span class="edge-meta mono">{edge.label}</span>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <EmptyState
-            icon="git-branch"
-            title={filterQuery ? $t('tools.deepTrace.empty.graphFilteredTitle') : $t('tools.deepTrace.empty.graphTitle')}
-            description={filterQuery ? $t('tools.deepTrace.empty.filteredDesc') : $t('tools.deepTrace.empty.graphDesc')}
-            compact
-          />
-        {/if}
-
-      {:else if activeView === 'dex'}
-        {#if filteredDex.length > 0}
-          <div class="cards-stack">
-            {#each filteredDex as dm}
-              <div class="evidence-card cap-card">
-                <div class="ev-header">
-                  <div class="ev-meta">
-                    <Badge variant="success" size="xs" mono>{dm.dex_file}</Badge>
-                    <span class="ev-offset mono tabular-nums">
-                      {$t('tools.deepTrace.offsetLabel', { hex: Number(dm.offset || 0).toString(16), dec: dm.offset })}
-                    </span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    icon="copy"
-                    on:click={() => copyToClipboard(dm.string, translate('tools.deepTrace.toast.dexCopied'))}
-                  >
-                    {$t('common.actions.copy')}
-                  </Button>
-                </div>
-                <div class="dex-value mono">{dm.string}</div>
-                {#if dm.context?.length > 0}
-                  <div class="dex-ctx-block">
-                    <span class="ctx-label">{$t('tools.deepTrace.nearbyStrings')}</span>
-                    <div class="chip-wrap">
-                      {#each dm.context.slice(0, 6) as ctx}
-                        <span class="mono-chip">{ctx}</span>
-                      {/each}
-                    </div>
-                  </div>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <EmptyState
-            icon="database"
-            title={filterQuery ? $t('tools.deepTrace.empty.dexFilteredTitle') : $t('tools.deepTrace.empty.dexTitle')}
-            description={$t('tools.deepTrace.empty.dexDesc')}
-            compact
-          />
-        {/if}
-
-      {:else if activeView === 'java'}
-        {#if filteredJava.length > 0}
-          <div class="cards-stack">
-            {#each filteredJava as jr}
-              <div class="evidence-card cap-card">
-                <div class="ev-header">
-                  <div class="ev-meta">
-                    <Icon name="file-code" size={14} />
-                    <span class="ref-file mono">{jr.file}<span class="ref-line">:{jr.line}</span></span>
-                    {#if jr.calls_native}
-                      <Badge variant="warning" size="xs" mono>JNI</Badge>
-                    {/if}
-                    {#if jr.annotation}
-                      <Badge variant="success" size="xs" mono>{jr.annotation}</Badge>
-                    {/if}
-                    {#if jr.matched_term}
-                      <Badge variant="accent" size="xs" mono>{jr.matched_term}</Badge>
-                    {/if}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    icon="copy"
-                    on:click={() =>
-                      copyToClipboard(jr.snippet || `${jr.class}.${jr.method}`, translate('tools.deepTrace.toast.javaCopied'))}
-                  >
-                    {$t('common.actions.copy')}
-                  </Button>
-                </div>
-                <div class="ref-symbol mono">{jr.class}{jr.method ? `.${jr.method}()` : ''}</div>
-                {#if jr.snippet}
-                  <pre class="code-viewer mono">{jr.snippet}</pre>
-                {/if}
-                {#if jr.native_methods?.length > 0}
-                  <div class="native-methods-row">
-                    <span class="ctx-label">{$t('tools.deepTrace.declaredNativeMethods')}</span>
-                    <div class="chip-wrap">
-                      {#each jr.native_methods as nm}
-                        <Badge variant="warning" size="xs" mono>{nm}</Badge>
-                      {/each}
-                    </div>
-                  </div>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <EmptyState
-            icon="file-code"
-            title={filterQuery ? $t('tools.deepTrace.empty.javaFilteredTitle') : $t('tools.deepTrace.empty.javaTitle')}
-            description={$t('tools.deepTrace.empty.javaDesc')}
-            compact
-          />
-        {/if}
-
-      {:else if activeView === 'native'}
-        {#if filteredNative.length > 0}
-          <div class="cards-stack">
-            {#each filteredNative as nr}
-              <div class="evidence-card cap-card">
-                <div class="ev-header">
-                  <div class="ev-meta">
-                    <Badge variant="danger" size="xs" mono>{nr.so_file}</Badge>
-                    <span class="nr-func mono">{nr.function}</span>
-                    {#if nr.address}
-                      <Badge variant="neutral" size="xs" mono>{nr.address}</Badge>
-                    {/if}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    icon="copy"
-                    on:click={() =>
-                      copyToClipboard(`${nr.so_file} :: ${nr.function} (${nr.address || ''})`, translate('tools.deepTrace.toast.symbolCopied'))}
-                  >
-                    {$t('common.actions.copy')}
-                  </Button>
-                </div>
-
-                {#if nr.calls?.length > 0}
-                  <div class="nr-group">
-                    <span class="ctx-label">{$t('tools.deepTrace.calledSymbols', { count: nr.calls.length })}</span>
-                    <div class="chip-wrap">
-                      {#each nr.calls as c}
-                        <Badge variant="accent" size="xs" mono>{c}</Badge>
-                      {/each}
-                    </div>
-                  </div>
-                {/if}
-
-                {#if nr.imports?.length > 0}
-                  <div class="nr-group">
-                    <span class="ctx-label">{$t('tools.deepTrace.imports', { count: nr.imports.length })}</span>
-                    <div class="chip-wrap">
-                      {#each nr.imports.slice(0, 12) as imp}
-                        <span class="mono-chip">{imp}</span>
-                      {/each}
-                    </div>
-                  </div>
-                {/if}
-
-                {#if nr.strings?.length > 0}
-                  <div class="nr-group">
-                    <span class="ctx-label">{$t('tools.deepTrace.strings', { count: nr.strings.length })}</span>
-                    <pre class="code-viewer mono">{nr.strings.slice(0, 15).join('\n')}</pre>
-                  </div>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <EmptyState
-            icon="cpu"
-            title={filterQuery ? $t('tools.deepTrace.empty.nativeFilteredTitle') : $t('tools.deepTrace.empty.nativeTitle')}
-            description={$t('tools.deepTrace.empty.nativeDesc')}
-            compact
-          />
-        {/if}
-
-      {:else if activeView === 'summary'}
-        <div class="doc-card cap-card">
-          <div class="doc-toolbar">
-            <span class="doc-title">{$t('tools.deepTrace.reportTitle')}</span>
-            <Button
-              variant="secondary"
-              size="xs"
-              icon="copy"
-              on:click={() => copyToClipboard(result.summary || '', translate('tools.deepTrace.toast.summaryCopied'))}
-            >
-              {$t('tools.deepTrace.copySummary')}
-            </Button>
-          </div>
-          <pre class="doc-pre mono">{result.summary || $t('tools.deepTrace.noSummary')}</pre>
-        </div>
-
+      <!-- ==================== MERMAID TAB ==================== -->
       {:else if activeView === 'mermaid'}
         <div class="doc-card cap-card">
           <div class="doc-toolbar">
@@ -1523,7 +2382,6 @@
     flex-shrink: 0;
   }
 
-  /* Toolchain Status Strip */
   .tools-strip {
     display: flex;
     align-items: center;
@@ -1720,7 +2578,6 @@
     color: var(--text-primary);
   }
 
-  /* Options Row (Local APK + Force Refresh) */
   .options-row {
     display: flex;
     align-items: center;
@@ -1807,7 +2664,6 @@
     cursor: pointer;
   }
 
-  /* Selected Flow Preview Strip */
   .flow-preview {
     display: flex;
     align-items: center;
@@ -1847,7 +2703,7 @@
     color: var(--text-muted);
   }
 
-  /* Multi-Stage Live Progress Panel */
+  /* Progress Panel */
   .progress-panel {
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border-default);
@@ -1935,7 +2791,6 @@
     text-align: right;
   }
 
-  /* Animated Progress Bar */
   .progress-track {
     height: 6px;
     border-radius: var(--radius-full);
@@ -1978,7 +2833,6 @@
     }
   }
 
-  /* 8-Step Horizontal Stepper */
   .stepper-grid {
     display: grid;
     grid-template-columns: repeat(8, minmax(0, 1fr));
@@ -2069,7 +2923,6 @@
     color: var(--accent);
   }
 
-  /* Live Partial Hit Counters */
   .live-hits-bar {
     display: flex;
     align-items: center;
@@ -2121,7 +2974,6 @@
     color: var(--status-danger);
   }
 
-  /* Live Streaming Console */
   .console-box {
     border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
@@ -2214,7 +3066,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 16px;
+    padding: 8px 16px;
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border-subtle);
     flex-wrap: wrap;
@@ -2225,7 +3077,7 @@
     display: flex;
     align-items: baseline;
     gap: 6px;
-    padding: 5px 10px;
+    padding: 4px 10px;
     background: var(--bg-elevated);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
@@ -2369,6 +3221,754 @@
     overflow-y: auto;
     padding: 16px;
     min-height: 0;
+  }
+
+  .trace-body.graph-body {
+    overflow: hidden;
+    padding: 12px;
+    display: flex;
+  }
+
+  /* ==================== REPORT TAB STYLES ==================== */
+  .report-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    max-width: 1120px;
+    margin: 0 auto;
+    padding-bottom: 24px;
+  }
+
+  .exec-card {
+    padding: 16px 18px;
+  }
+
+  .exec-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .gauge-wrap {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    flex-shrink: 0;
+  }
+
+  .gauge-svg {
+    width: 64px;
+    height: 64px;
+    transform: rotate(-90deg);
+  }
+
+  .gauge-bg {
+    fill: none;
+    stroke: var(--border-default);
+    stroke-width: 5;
+  }
+
+  .gauge-fg {
+    fill: none;
+    stroke-width: 5;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 400ms ease-out;
+  }
+
+  .gauge-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  .gauge-num {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .gauge-den {
+    font-size: 9px;
+    color: var(--text-faint);
+    margin-top: 2px;
+  }
+
+  .exec-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .exec-head-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .exec-pkg {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .exec-exports {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .exec-summary {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .highlight-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: var(--radius-full);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .reasons-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .reason-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .report-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .section-title-block h3 {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .section-title-block p {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  /* Origin Chain */
+  .origin-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .origin-hop {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .hop-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 28px;
+    flex-shrink: 0;
+  }
+
+  .hop-num {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-full);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .hop-connector {
+    width: 2px;
+    flex: 1;
+    min-height: 14px;
+    background: var(--border-default);
+    margin: 3px 0;
+  }
+
+  .hop-card {
+    flex: 1;
+    min-width: 0;
+    padding: 11px 14px;
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .hop-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .hop-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .hop-module {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+
+  .hop-spacer {
+    flex: 1;
+  }
+
+  .hop-symbol-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .symbol-link {
+    border: none;
+    background: transparent;
+    padding: 0;
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+    word-break: break-all;
+  }
+
+  .symbol-link:hover {
+    text-decoration: underline;
+  }
+
+  .hop-file {
+    font-size: 11px;
+    color: var(--text-faint);
+    max-width: 340px;
+  }
+
+  .hop-detail {
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .hop-evidence {
+    font-size: 11px;
+    color: var(--status-success);
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    padding: 5px 8px;
+    word-break: break-all;
+  }
+
+  /* Modules Matrix */
+  .modules-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+
+  .module-card {
+    padding: 13px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .mod-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .mod-name {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .mod-role {
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+
+  .mod-stats {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+  }
+
+  .mod-ev {
+    color: var(--accent);
+    margin-left: auto;
+  }
+
+  .mod-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: auto;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  /* Parameter Provenance Table */
+  .prov-table {
+    overflow: hidden;
+  }
+
+  .prov-thead,
+  .prov-row {
+    display: grid;
+    grid-template-columns: 1.4fr 86px 96px 1.6fr 84px;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+  }
+
+  .prov-thead {
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border-default);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-faint);
+  }
+
+  .prov-row-group {
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .prov-row-group:last-child {
+    border-bottom: none;
+  }
+
+  .prov-row {
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    font-size: var(--text-xs);
+    transition: background var(--transition-fast);
+  }
+
+  .prov-row:hover {
+    background: var(--bg-hover);
+  }
+
+  .prov-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 0;
+  }
+
+  .prov-sample {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .align-right {
+    text-align: right;
+    justify-self: end;
+  }
+
+  .prov-refs {
+    padding: 10px 14px 12px 32px;
+    background: var(--bg-input);
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .prov-ref-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .prov-ref-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .prov-ref-sym {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--accent);
+    word-break: break-all;
+  }
+
+  .prov-ref-file {
+    font-size: 10.5px;
+    color: var(--text-faint);
+    margin-left: auto;
+    max-width: 260px;
+  }
+
+  .mini-copy {
+    border: none;
+    background: transparent;
+    color: var(--text-faint);
+    cursor: pointer;
+    display: inline-flex;
+    padding: 3px;
+    border-radius: var(--radius-xs);
+  }
+
+  .mini-copy:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .prov-ref-snip {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .prov-no-refs {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+
+  /* Request Anatomy & Security Posture */
+  .two-col-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .posture-card {
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .card-head-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .anatomy-url-bar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 9px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    min-width: 0;
+  }
+
+  .kv-grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .kv-box {
+    padding: 7px 9px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .kv-k {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+  }
+
+  .kv-v {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .sub-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .sub-k {
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+
+  .notes-list {
+    margin: 0;
+    padding-left: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* ==================== INTERACTIVE GRAPH TAB ==================== */
+  .graph-workspace {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .graph-canvas-wrap {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+  }
+
+  .node-inspector {
+    width: 310px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .insp-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 12px;
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+
+  .insp-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .insp-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .insp-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .insp-symbol-box {
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .insp-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+
+  .insp-sublabel {
+    font-size: var(--text-xs);
+    color: var(--accent);
+    margin-top: 2px;
+    word-break: break-all;
+  }
+
+  .insp-block {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .insp-text {
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .neighbor-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .neighbor-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 7px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .neighbor-btn:hover {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    color: var(--text-primary);
+  }
+
+  .insp-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  /* ==================== DEX XREFS & EVIDENCE TABS ==================== */
+  .dex-subbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+
+  .f-pill {
+    padding: 3px 9px;
+    height: 24px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border-default);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .f-pill:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .f-pill.active {
+    background: var(--accent-soft);
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+
+  .xref-sig {
+    font-size: var(--text-sm);
+    word-break: break-all;
+  }
+
+  .xref-class {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .xref-method {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .xref-desc {
+    color: var(--text-faint);
+    font-size: var(--text-xs);
+  }
+
+  .xref-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .steps-layout {
@@ -2575,48 +4175,10 @@
     word-break: break-all;
   }
 
-  /* Call Graph & Evidence Cards */
   .cards-stack {
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-
-  .edge-card {
-    padding: 10px 14px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .edge-node {
-    font-size: var(--text-xs);
-    word-break: break-all;
-  }
-
-  .edge-node.from {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-
-  .edge-node.to {
-    color: var(--accent);
-    font-weight: 500;
-  }
-
-  .edge-connector {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-faint);
-    flex-shrink: 0;
-  }
-
-  .edge-meta {
-    margin-left: auto;
-    font-size: var(--text-2xs);
-    color: var(--text-muted);
   }
 
   .evidence-card {
@@ -2703,7 +4265,6 @@
     margin: 0;
   }
 
-  /* Summary & Mermaid Docs */
   .doc-card {
     overflow: hidden;
     display: flex;
@@ -2739,7 +4300,6 @@
     color: var(--status-success);
   }
 
-  /* Onboarding Empty State */
   .onboarding-wrap {
     flex: 1;
     overflow-y: auto;
@@ -2801,6 +4361,19 @@
     font-size: var(--text-xs);
     color: var(--text-muted);
     line-height: 1.45;
+  }
+
+  @media (max-width: 1060px) {
+    .two-col-grid {
+      grid-template-columns: 1fr;
+    }
+    .graph-workspace {
+      flex-direction: column;
+    }
+    .node-inspector {
+      width: 100%;
+      max-height: 240px;
+    }
   }
 
   @media (max-width: 980px) {

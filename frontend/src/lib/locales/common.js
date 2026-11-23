@@ -184,6 +184,15 @@ registerMessages('common', {
     splitPane: {
       resizeHint: 'Drag to resize · Double-click to reset',
     },
+    editor: {
+      undo: 'Undo',
+      redo: 'Redo',
+      undoTooltip: 'Undo ({mod}Z)',
+      redoTooltip: 'Redo ({mod}⇧Z)',
+      lineCol: 'Ln {line}, Col {col}',
+      shortcutHint: '{mod}Z Undo · {mod}/ Comment · Tab Indent · {mod}↵ Run · {mod}S Save',
+      ariaLabel: 'Code editor',
+    },
   },
 
   'zh-CN': {
@@ -368,6 +377,15 @@ registerMessages('common', {
     },
     splitPane: {
       resizeHint: '拖动调整大小 · 双击恢复默认比例',
+    },
+    editor: {
+      undo: '撤销',
+      redo: '重做',
+      undoTooltip: '撤销 ({mod}Z)',
+      redoTooltip: '重做 ({mod}⇧Z)',
+      lineCol: '行 {line}, 列 {col}',
+      shortcutHint: '{mod}Z 撤销 · {mod}/ 注释 · Tab 缩进 · {mod}↵ 运行 · {mod}S 保存',
+      ariaLabel: '代码编辑器',
     },
   },
 })

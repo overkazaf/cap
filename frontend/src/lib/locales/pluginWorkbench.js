@@ -64,7 +64,7 @@ registerMessages('pluginBench', {
     },
     editor: {
       placeholder: 'Write plugin code here… Flow JSON is provided on stdin.',
-      shortcutHint: '{mod}↵ Run Draft · {mod}S Save · Tab Indent',
+      shortcutHint: '{mod}Z Undo · {mod}/ Comment · Tab Indent · {mod}↵ Run · {mod}S Save',
       lineCol: 'Ln {line}, Col {col}',
       draftReady: 'Draft ready',
     },
@@ -172,7 +172,7 @@ registerMessages('pluginBench', {
     },
     editor: {
       placeholder: '在此编写插件代码… 请求 JSON 数据将通过 stdin 传入。',
-      shortcutHint: '{mod}↵ 运行草稿 · {mod}S 保存 · Tab 缩进',
+      shortcutHint: '{mod}Z 撤销 · {mod}/ 注释 · Tab 缩进 · {mod}↵ 运行 · {mod}S 保存',
       lineCol: '行 {line}, 列 {col}',
       draftReady: '草稿就绪',
     },

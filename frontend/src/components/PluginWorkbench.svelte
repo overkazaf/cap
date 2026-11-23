@@ -1,14 +1,15 @@
 <script>
-  import { onMount, onDestroy, createEventDispatcher, tick } from 'svelte'
+  import { onMount, onDestroy, createEventDispatcher } from 'svelte'
   import '../lib/locales/pluginWorkbench.js'
   import { t, translate } from '../lib/i18n.js'
-  import { hasPrimaryMod, MOD_LABEL } from '../lib/shortcuts.js'
+  import { MOD_LABEL } from '../lib/shortcuts.js'
   import { toast } from '../lib/toast.js'
   import { copyToClipboard, formatBytes, formatDuration, formatTime } from '../lib/format.js'
 
   import Icon from './Icon.svelte'
   import Badge from './Badge.svelte'
   import Button from './Button.svelte'
+  import CodeEditor from './CodeEditor.svelte'
   import EmptyState from './EmptyState.svelte'
   import SplitPane from './SplitPane.svelte'
 
@@ -61,10 +62,10 @@
   let matchCheckSeq = 0
   let matchCheckTimer = null
 
-  // Editor ref & cursor info
-  let editorEl = null
-  let cursorLine = 1
-  let cursorCol = 1
+  // Editor ref & undo/redo state
+  let editorRef = null
+  let canUndo = false
+  let canRedo = false
 
   // Output & Live Logs
   let bottomTab = 'output' // 'output' | 'logs'
@@ -213,6 +214,7 @@
     editPathPattern = p.path_pattern || ''
     editTimeoutSec = p.timeout_sec || 10
     editCode = p.code || ''
+    editorRef?.resetHistory?.(editCode)
     dirty = false
     scheduleMatchCheck()
   }
@@ -243,6 +245,7 @@
       editPathPattern = ''
       editCode = makeStarterCode('python3', null)
     }
+    editorRef?.resetHistory?.(editCode)
     dirty = true
     scheduleMatchCheck()
   }
@@ -275,11 +278,16 @@
   function handleRuntimeChange() {
     dirty = true
     if (isNew && !editCode.trim()) {
-      editCode = makeStarterCode(editRuntime, selectedFlow)
+      const starter = makeStarterCode(editRuntime, selectedFlow)
+      if (editorRef?.replaceValue) {
+        editorRef.replaceValue(starter, { undoable: true })
+      } else {
+        editCode = starter
+      }
     }
   }
 
-  async function loadPlugins(notify = false) {
+  async function loadPlugins(notify = false, { preserveHistory = false } = {}) {
     const app = api()
     if (!app) return
     reloading = true
@@ -290,7 +298,7 @@
       plugins = Array.isArray(list) ? list : []
       if (!isNew) {
         const current = plugins.find((p) => p.name === selectedPluginName)
-        if (current && !dirty) {
+        if (current && !dirty && !preserveHistory) {
           applyPluginToEditor(current)
         } else if (!selectedPluginName && plugins.length > 0) {
           applyPluginToEditor(plugins[0])
@@ -325,7 +333,7 @@
       isNew = false
       selectedPluginName = name
       dirty = false
-      await loadPlugins(false)
+      await loadPlugins(false, { preserveHistory: true })
       toast.success(translate('pluginBench.toast.saved', { name }))
     } catch (e) {
       toast.error(translate('pluginBench.toast.saveFailed', { error: e?.message || e }))
@@ -659,55 +667,13 @@
 
   async function insertVariableChip(item) {
     const snippet = snippetFor(item.kind, item.key, editRuntime)
-    if (!editorEl) {
+    if (editorRef?.insertAtCursor) {
+      await editorRef.insertAtCursor(snippet)
+    } else {
       editCode = editCode ? `${editCode}\n${snippet}` : snippet
       dirty = true
-      toast.info(translate('pluginBench.toast.insertedVar', { name: item.label }))
-      return
     }
-    const start = editorEl.selectionStart ?? editCode.length
-    const end = editorEl.selectionEnd ?? editCode.length
-    editCode = editCode.slice(0, start) + snippet + editCode.slice(end)
-    dirty = true
-    await tick()
-    editorEl.focus()
-    const nextPos = start + snippet.length
-    editorEl.setSelectionRange(nextPos, nextPos)
-    updateCursorPos()
     toast.info(translate('pluginBench.toast.insertedVar', { name: item.label }))
-  }
-
-  function updateCursorPos() {
-    if (!editorEl) return
-    const pos = editorEl.selectionStart ?? 0
-    const before = editCode.slice(0, pos)
-    const lines = before.split('\n')
-    cursorLine = lines.length
-    cursorCol = lines[lines.length - 1].length + 1
-  }
-
-  function handleEditorKeydown(e) {
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const start = editorEl.selectionStart
-      const end = editorEl.selectionEnd
-      editCode = editCode.slice(0, start) + '  ' + editCode.slice(end)
-      dirty = true
-      tick().then(() => {
-        editorEl.setSelectionRange(start + 2, start + 2)
-        updateCursorPos()
-      })
-      return
-    }
-    if (hasPrimaryMod(e) && e.key.toLowerCase() === 's') {
-      e.preventDefault()
-      saveCurrentPlugin()
-      return
-    }
-    if (hasPrimaryMod(e) && e.key === 'Enter') {
-      e.preventDefault()
-      runDraft()
-    }
   }
 
   // ==================== Live Execution Logs ====================
@@ -1069,23 +1035,19 @@
       storageKey="cap.pluginWorkbench.split"
     >
       <div slot="primary" class="editor-pane">
-        <textarea
-          bind:this={editorEl}
+        <CodeEditor
+          bind:this={editorRef}
           bind:value={editCode}
-          class="code-editor mono"
+          bind:canUndo
+          bind:canRedo
+          runtime={editRuntime}
           placeholder={$t('pluginBench.editor.placeholder')}
-          spellcheck="false"
-          autocomplete="off"
-          autocapitalize="off"
-          on:input={() => { markDirty(); updateCursorPos() }}
-          on:click={updateCursorPos}
-          on:keyup={updateCursorPos}
-          on:keydown={handleEditorKeydown}
-        ></textarea>
-        <div class="editor-foot">
-          <span class="foot-hint">{$t('pluginBench.editor.shortcutHint', { mod: MOD_LABEL })}</span>
-          <span class="foot-pos mono tabular-nums">{$t('pluginBench.editor.lineCol', { line: cursorLine, col: cursorCol })}</span>
-        </div>
+          shortcutHint={$t('pluginBench.editor.shortcutHint', { mod: MOD_LABEL })}
+          minHeight="120px"
+          on:change={markDirty}
+          on:save={saveCurrentPlugin}
+          on:run={runDraft}
+        />
       </div>
 
       <div slot="secondary" class="bottom-pane">
@@ -1604,37 +1566,6 @@
     height: 100%;
     min-height: 0;
     background: var(--bg-input);
-  }
-
-  .code-editor {
-    flex: 1;
-    width: 100%;
-    min-height: 0;
-    padding: 10px 12px;
-    border: none;
-    resize: none;
-    background: transparent;
-    color: var(--text-primary);
-    font-size: 12px;
-    line-height: 1.55;
-    tab-size: 2;
-    outline: none;
-  }
-
-  .code-editor:focus-visible {
-    box-shadow: none;
-  }
-
-  .editor-foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 3px 10px;
-    background: var(--bg-header);
-    border-top: 1px solid var(--border-subtle);
-    font-size: 10.5px;
-    color: var(--text-faint);
-    flex-shrink: 0;
   }
 
   .bottom-pane {

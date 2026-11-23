@@ -155,11 +155,17 @@ func TestTraceContextStageProgressionCachingAndPartialJadx(t *testing.T) {
 		{0x64, 0x65, 0x78, 0x0a}, []byte("api.example.com"), []byte("secondary_class"),
 	}, []byte{0x00})
 
+	secELF := buildMinimalELF64(t, []testELFSymbol{
+		{name: "JNI_OnLoad", addr: 0x1040},
+		{name: "Java_com_example_CheckoutApi_nativeSign", addr: 0x1200},
+		{name: "HMAC", imported: true},
+	}, []string{"hmac_secret_key", "/api/v1/checkout"})
+
 	apkPath := writeTestZip(t, filepath.Join(dir, "demo.apk"), map[string][]byte{
-		"AndroidManifest.xml":    manifest,
-		"classes.dex":            dex1,
-		"classes2.dex":           dex2,
-		"lib/arm64-v8a/libsec.so": []byte{0x7f, 'E', 'L', 'F', 0, 0},
+		"AndroidManifest.xml":     manifest,
+		"classes.dex":             dex1,
+		"classes2.dex":            dex2,
+		"lib/arm64-v8a/libsec.so": secELF,
 	})
 
 	countFile := filepath.Join(dir, "jadx-count.txt")
@@ -197,14 +203,8 @@ if [ "$1" = "-v" ]; then
   echo "radare2 5.9.0"
   exit 0
 fi
-case "$3" in
-  *pdfj*)
-    echo '{"ops":[{"type":"call","disasm":"bl sym.hmac_sha256"}]}'
-    ;;
-  *)
-    echo '[{"vaddr":4096,"string":"hmac_secret_key"}][{"offset":8192,"name":"sym.Java_com_example_CheckoutApi_nativeSign"}]'
-    ;;
-esac
+echo '{"ops":[{"type":"call","disasm":"bl sym.hmac_sha256"}]}'
+echo '{"ops":[{"type":"call","disasm":"bl sym.RegisterNatives"}]}'
 `
 	fakeR2 := writeFakeExecScript(t, dir, "fake-r2", fakeR2Script, 0)
 

@@ -79,6 +79,7 @@ Most HTTP proxies (Burp Suite, mitmproxy, HTTP Toolkit) are designed for web sec
 | Sign param auto-detect | ✗ | ✗ | ✗ | **✓** |
 | Sign algorithm inference | ✗ | ✗ | ✗ | **✓ MD5/SHA/HMAC** |
 | Static analysis & DeepTrace | ✗ | ✗ | ✗ | **✓ 8-stage live jadx / DEX / Call Graph** |
+| Frida Studio & live hooking | ✗ | ✗ | ✗ | **✓ Server deploy / live hot-reload / Trace→Hook** |
 | One-cmd Android setup | ✗ | ✗ | △ app-based | **✓ ADB direct + Guard APK** |
 | Auto network restore on disconnect | ✗ | ✗ | △ app-based | **✓ Companion Watchdog (rootless)** |
 | Cert inject (Android 7–15) | ✗ manual | ✗ manual | ✓ | **✓ APEX Conscrypt / mount --bind / Magisk / KeyChain** |
@@ -145,8 +146,8 @@ flowchart TB
         GUARD["Cap Companion Guard APK<br/>(ProxyGuardService Watchdog)"]
     end
 
-    subgraph Unpin["SSL Unpinning Layer"]
-        FRIDA["Frida Hooks<br/>(14+ bypasses)"]
+    subgraph Unpin["Frida Studio & SSL Unpinning Layer"]
+        FRIDA["Frida Studio & Bridge<br/>(server deploy / hot-reload / hooks)"]
         PATCH["APK Patcher<br/>(NSConfig)"]
         CODESHARE["CodeShare<br/>(fingerprint → script)"]
     end
@@ -166,6 +167,7 @@ flowchart TB
     STORE --> SIGN
     STORE --> REPLAY
     TRACE --> STORE
+    TRACE --> FRIDA
     DETECT --> STORE
     ADB --> PROXY
     ADB --> GUARD
@@ -220,15 +222,16 @@ Native Wails v2 + Svelte 4 desktop workbench compiled into a single binary (no E
 - **Workbench Shell & Navigation**:
   - **4 Built-in Themes**: **Obsidian Dark** (default), **Porcelain Light**, **Mocha** (Catppuccin), and **Nord** with crisp 1px borders, layered elevation tokens, and `tabular-nums` monospace telemetry.
   - **Command Palette (`⌘K` / `Ctrl+K`)**: Instant jump across workspaces, proxy start/stop/pause, theme switching, and live `EN ↔ 简体中文` language toggling.
-  - **Collapsible Left Nav Rail (`⌘B`)** with `⌘1–7` workspace shortcuts, live proxy status pill in the top bar, compact `EN / 中文` switcher, and an IDE-style bottom status bar.
-- **7 Integrated Workspaces**:
-  1. **Capture (`⌘1`)**: Live 4-KPI telemetry strip (`req/s` + bandwidth, total flows/bytes, active hosts + avg/P95 latency, error rate + TLS alerts), guided 4-step Android setup (`ADB Device` → `CA Certificate` → `Cap Companion Guard` → `Proxy Route`), domain scope filters, Frida controls, and a tabbed Activity Log / Active Hosts / TLS Alerts console.
+  - **Collapsible Left Nav Rail (`⌘B`)** with `⌘1–8` workspace shortcuts, live proxy & Frida hook status badges, compact `EN / 中文` switcher, and an IDE-style bottom status bar.
+- **8 Integrated Workspaces**:
+  1. **Capture (`⌘1`)**: Live 4-KPI telemetry strip (`req/s` + bandwidth, total flows/bytes, active hosts + avg/P95 latency, error rate + TLS alerts), guided 4-step Android setup (`ADB Device` → `CA Certificate` → `Cap Companion Guard` → `Proxy Route`), domain scope filters, Frida server quick controls (Start/Stop/ABI/version + jump to Frida Studio), and a tabbed Activity Log / Active Hosts / TLS Alerts console.
   2. **Flows (`⌘2`)**: Multi-facet filter toolbar (`/` focus, host suggestions, method/status/content-type pills, Flat vs API Groups), horizontal/vertical draggable `SplitPane`, keyboard navigation (`↑/↓`/`j/k`, `Esc`), tabbed inspector (`Params`, `Req/Resp Headers`, `Req/Resp Body` with JSON / XML / Protobuf / Hex + inline search, `Raw`, `Timing`, `Export` to cURL/Python/Go/Java/JS/Agent JSONL), Replay & Modify-Replay, Side-by-Side Flow Diff, Sign Analysis, HAR/Charles Import, native loopback **MJPEG Device Monitor** (`Fast` / `scrcpy`, live FPS & drag-swipe), and an inline **Plugins** mode (`PluginWorkbench`) for uninterrupted single-page Flow ↔ Plugin debugging.
   3. **Rules (`⌘3`)**: Split-pane intercept rules engine + live **Held Breakpoints** queue (Forward Edited / Mock / Drop 403), 6 action types, priority ordering, and regex/substring path validation.
-  4. **DeepTrace (`⌘4`)**: Live 8-stage cancellable trace pipeline with real-time progress events and APK/JADX caching for near-instant repeat traces, plus APK Manifest Inspector, Call Graph, DEX Strings, Java Source, Native SO analysis, Summary, and Mermaid export.
-  5. **Plugins (`⌘5`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
-  6. **Terminal (`⌘6`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
-  7. **Settings (`⌘7`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android & Capture, Export & Storage, Shortcuts, and About & Diagnostics.
+  4. **DeepTrace (`⌘4`)**: Live 8-stage cancellable trace pipeline with real-time progress events, pure-Go DEX bytecode XRefs, 3-perspective interactive SVG Call Graph, and APK/JADX caching — plus 1-click **Hook in Frida** from the Executive Report, module cards, and Native `.so` findings.
+  5. **Frida (`⌘5`)**: Dedicated **Frida Studio** workbench with full `frida-server` lifecycle (ABI auto-detect, GitHub Release auto-download or local `.xz` push, stealth binary rename, custom port + `adb forward`, host vs device version-match diagnostics), zero-CGO Python Frida Bridge (with automatic `frida-cli` fallback), searchable process/app picker, `Spawn (-f)` / `Attach`, **live script hot-reload (`⌘R`)** without restarting the app, structured `send()` JSON event cards & JSONL export, 7 built-in RE templates + `~/.cap/frida-scripts/` disk hot-reload, CodeShare & app fingerprint browser, and **From Trace** auto-hook generator.
+  6. **Plugins (`⌘6`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
+  7. **Terminal (`⌘7`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
+  8. **Settings (`⌘8`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android / Frida Runtime Paths & Capture, Export & Storage, Shortcuts, and About & Diagnostics.
 
 ### Full-Screen Interactive TUI (`cap tui` & `cap start --tui`)
 
@@ -283,6 +286,24 @@ Connecting a phone to a proxy should **never** leave the device stranded without
   - **Rooted devices**: HTTP Toolkit-style Android 14+ APEX Conscrypt namespace injection (`mount --bind` + `TRUST_STORE_CHANGED` live trust reload), Android 10–13 `mount --bind`, persistent Magisk module, or legacy `/system` remount — plus `cap android cert --check` / `--remove`.
   - **Non-rooted devices**: Built-in `MainActivity` launches Android's `KeyChain` CA installer directly for `/sdcard/Download/cap-ca.crt` with guided verification.
 - **Desktop Auto-Teardown**: `cap start --auto-disconnect`, `cap tui --live --auto-disconnect`, and Desktop GUI `StopProxy()` / `App.Shutdown()` automatically tear down tracked Android devices before stopping the proxy.
+
+### Frida Dynamic Instrumentation Studio (`cap frida` & GUI `⌘5`)
+
+End-to-end Android dynamic instrumentation without CGO bloat or external Frida GUI tools:
+
+```bash
+cap frida status                                           # Check Python Bridge / frida CLI & device frida-server
+cap frida deploy --start --name hluda-srv                  # Auto-download matching ABI/ver, stealth rename & start
+cap frida ps                                               # List apps & running PIDs (Bridge → frida-ps → ADB)
+cap frida scripts                                          # List 7 built-in RE templates + ~/.cap/frida-scripts/
+cap frida run --pkg com.example.app --spawn \
+  --script builtin:crypto-sign-tracer                      # Stream structured send() hook events live
+```
+
+- **Server Lifecycle & Stealth Deploy**: Batched ADB probe detects CPU ABI (`arm64`/`arm`/`x86_64`/`x86`), root, running PID/port, and host-vs-device version compatibility (`match` / `minor_diff` / `major_mismatch`). Deploys from GitHub Releases (cached in `~/.cap/frida-cache/`) or local `.xz`/raw binaries with optional stealth renaming and `adb forward`.
+- **Embedded Python Frida Bridge + CLI Fallback**: Auto-discovers working Python 3 / venv / conda / pipx runtimes (configurable in Frida Studio or Settings) for structured `send()` JSON cards, binary hex previews, Spawn pause/resume, and **live hot-reload (`⌘R`)** without restarting the target app — gracefully falling back to `frida` CLI when needed.
+- **Built-in Script Library & CodeShare**: Ships 7 curated scripts (14+ Universal SSL Unpin, Anti-Root & Anti-Frida Stealth, OkHttp3/URLConnection Tracer, Crypto/Sign Tracer for MD5/SHA/HMAC/AES, JNI `RegisterNatives` & `dlopen` Tracer, SharedPreferences/SQLite Watcher, Dynamic Class Explorer), persistent custom scripts (`~/.cap/frida-scripts/*.json` with disk hot-reload), and integrated CodeShare search + app fingerprinting.
+- **DeepTrace → Frida Closed Loop**: Generate runnable Java, DEX XRef, and delayed `dlopen` Native `.so` hooks directly from any DeepTrace report, module card, or native export in one click.
 
 ### SSL Unpinning
 
@@ -403,6 +424,12 @@ ANDROID_HOME=~/Library/Android/sdk ./android-companion/build.sh
 | `cap android status [--json] [-s serial]` | Inspect device identity, proxy, CA cert, and Companion Guard state |
 | `cap android cert [--check\|--remove] [-s serial]` | Install, verify, or remove cap's CA certificate on device |
 | `cap android disconnect [-s serial]` | Clear proxy, VPN redirect, and stop Companion Guard cleanly |
+| `cap frida status [-s serial] [-p port] [--json]` | Inspect host Python/Frida toolchain & device `frida-server` status |
+| `cap frida deploy [--version v] [--binary path] [--name stealth] [--start]` | Download or push `frida-server` matching device ABI & version |
+| `cap frida start\|stop [-s serial] [-p port]` | Start or stop `frida-server` on device with optional `adb forward` |
+| `cap frida ps [-s serial] [--json]` | List installed apps and running PIDs on Android device |
+| `cap frida scripts [--show <id>] [--json]` | List built-in & custom Frida scripts or print script source |
+| `cap frida run --pkg <pkg> [--spawn] [--script <id\|file>]` | Spawn or attach with live structured `send()` hook output |
 | `cap unpin frida --pkg <pkg> [--spawn]` | Runtime SSL pinning bypass via Frida (14+ hooks) |
 | `cap unpin patch --apk <file>` | Patch APK `network_security_config.xml` to trust user CA |
 | `cap unpin magisk` | Deploy system-wide Magisk CA cert promotion module |
@@ -421,17 +448,18 @@ cmd/cap/                Main entrypoint & embedded frontend/dist assets
 frontend/
 ├── src/App.svelte      Workbench shell (collapsible nav rail, topbar, status bar, ⌘K)
 ├── src/components/     Icon, Badge, Button, SplitPane, CommandPalette, ToastHost, Kbd, EmptyState
-├── src/lib/            tokens.css, theme.js (4 themes), i18n.js, locales/{common,core,tools}.js
-└── src/pages/          Capture, Flows, Rules, DeepTrace, Plugins, Terminal, Settings
+├── src/lib/            tokens.css, theme.js (4 themes), i18n.js, fridaState.js, locales/{common,core,frida,tools}.js
+└── src/pages/          Capture, Flows, Rules, DeepTrace, Frida, Plugins, Terminal, Settings
 internal/
 ├── android/            ADB helpers, 3-strategy cert install/verify, companion.go, bin/cap-companion.apk
 ├── buildinfo/          Version injection metadata
 ├── capture/            WebSocket frame parser, SSE stream parser (experimental)
-├── cli/                Cobra commands (start, tui, gui, flows, export, android, unpin)
+├── cli/                Cobra commands (start, tui, gui, flows, export, android, frida, unpin)
 ├── compare/            Side-by-side flow comparison with structured diff
 ├── config/             Shared path defaults (~/.cap)
 ├── context/            jadx scanner, Retrofit/OkHttp parser, URL-to-source mapper
 ├── export/             codegen/ (5 languages) & agent/ (compact JSONL)
+├── frida/              Frida toolchain probe, server deploy/lifecycle, Python Bridge, script store & Trace→Hook codegen
 ├── grouping/           API auto-grouping by host + path prefix
 ├── i18n/               Zero-dependency EN / zh-CN localization catalog for TUI & CLI
 ├── importer/           HAR and Charles proxy XML import

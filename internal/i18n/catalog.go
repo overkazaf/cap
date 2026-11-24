@@ -273,6 +273,9 @@ var catalogs = map[Locale]map[string]string{
 		"cli.unpin.cs.no_match":     "No matching scripts found on CodeShare.",
 		"cli.unpin.cs.fallback":     "Try cap's built-in unpinning: cap unpin frida --pkg %s",
 		"cli.unpin.cs.top_matches":  "Top %d matching script(s):",
+
+		// CLI Frida
+		"cli.frida.status.title": "Frida Toolchain & Server Status",
 	},
 
 	ZH: {
@@ -547,5 +550,8 @@ var catalogs = map[Locale]map[string]string{
 		"cli.unpin.cs.no_match":     "在 CodeShare 上未找到匹配脚本。",
 		"cli.unpin.cs.fallback":     "可尝试 cap 内置通用绕过: cap unpin frida --pkg %s",
 		"cli.unpin.cs.top_matches":  "最匹配的 %d 个脚本:",
+
+		// CLI Frida
+		"cli.frida.status.title": "Frida 运行环境与服务端状态",
 	},
 }

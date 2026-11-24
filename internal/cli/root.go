@@ -54,6 +54,7 @@ func NewRootCmd() *cobra.Command {
 		newExportCmd(),
 		newAndroidCmd(),
 		newUnpinCmd(),
+		newFridaCmd(),
 		newGUICmd(),
 	)
 
@@ -119,7 +120,7 @@ func renderRootHelp(w io.Writer, root *cobra.Command) {
 	}
 
 	printGroup(i18n.T("cli.root.group.capture"), []string{"start", "tui", "gui", "flows", "export"})
-	printGroup(i18n.T("cli.root.group.device"), []string{"android", "unpin"})
+	printGroup(i18n.T("cli.root.group.device"), []string{"android", "frida", "unpin"})
 
 	var extras []string
 	for _, c := range root.Commands() {

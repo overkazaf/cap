@@ -70,6 +70,7 @@
 | 签名参数自动识别 | ✗ | ✗ | ✗ | **✓** |
 | 签名算法推理 | ✗ | ✗ | ✗ | **✓ MD5/SHA/HMAC** |
 | 静态分析与 DeepTrace | ✗ | ✗ | ✗ | **✓ 8 阶段实时 jadx / DEX / 调用图** |
+| Frida 工作室与实时 Hook | ✗ | ✗ | ✗ | **✓ 服务端一键部署 / 在线热重载 / 追踪生成 Hook** |
 | 一键连接 Android | ✗ | ✗ | △ 需装 App | **✓ ADB 直连 + 守护 APK** |
 | 拔线/断网自动恢复代理 | ✗ | ✗ | △ 依赖 App | **✓ Companion 看门狗（免 Root）** |
 | 证书注入 (Android 7–15) | ✗ 手动 | ✗ 手动 | ✓ | **✓ APEX Conscrypt / mount --bind / Magisk / KeyChain** |
@@ -136,8 +137,8 @@ flowchart TB
         GUARD["Cap 代理守护 APK<br/>(ProxyGuardService 看门狗)"]
     end
 
-    subgraph 脱钉层["SSL Unpinning"]
-        FRIDA["Frida Hooks<br/>(14+ 绕过实现)"]
+    subgraph 脱钉层["Frida 工作室与 SSL Unpinning"]
+        FRIDA["Frida 工作室与 Bridge<br/>(服务端部署 / 热重载 / 动态 Hook)"]
         PATCH["APK 补丁<br/>(NSConfig)"]
         CODESHARE["CodeShare<br/>(指纹 → 脚本)"]
     end
@@ -157,6 +158,7 @@ flowchart TB
     STORE --> SIGN
     STORE --> REPLAY
     TRACE --> STORE
+    TRACE --> FRIDA
     DETECT --> STORE
     ADB --> PROXY
     ADB --> GUARD
@@ -210,16 +212,17 @@ sequenceDiagram
 
 - **桌面工作台外壳与体验**：
   - **4 套精致主题**：**Obsidian 曜石暗黑**（默认）、**Porcelain 陶瓷浅色**、**Mocha** (Catppuccin) 与 **Nord**，配合 1px 精细描边、语义层级表面色与等宽 `tabular-nums` 指标排版。
-  - **全局命令面板（`⌘K` / `Ctrl+K`）**：一键跳转 7 大工作区、启停/暂停代理、切换主题以及实时热切换 `EN ↔ 简体中文`。
-  - **可折叠左侧导航栏（`⌘B`）**：支持 `⌘1–7` 快捷键直达工作区，顶部集成实时代理状态胶囊与 `EN / 中文` 切换按钮，底部配备 IDE 风格状态栏。
-- **7 大核心工作区**：
-  1. **Capture 抓包中心（`⌘1`）**：4 指标 KPI 实时看板（`req/s` + 吞吐带宽、总流量/字节数、活跃主机 + 平均/P95 延迟、错误率 + TLS 告警）、4 步向导式 Android 接入卡片（`ADB 设备` → `CA 证书` → `Cap 代理守护` → `代理路由`）、域名作用域过滤、Frida 脱钉控制，以及活动日志 / 活跃主机 / TLS 告警多标签控制台。
+  - **全局命令面板（`⌘K` / `Ctrl+K`）**：一键跳转 8 大工作区、启停/暂停代理、切换主题以及实时热切换 `EN ↔ 简体中文`。
+  - **可折叠左侧导航栏（`⌘B`）**：支持 `⌘1–8` 快捷键直达工作区，实时展示代理与 Frida 注入活跃标识，顶部集成实时代理状态胶囊与 `EN / 中文` 切换按钮，底部配备 IDE 风格状态栏。
+- **8 大核心工作区**：
+  1. **Capture 抓包中心（`⌘1`）**：4 指标 KPI 实时看板（`req/s` + 吞吐带宽、总流量/字节数、活跃主机 + 平均/P95 延迟、错误率 + TLS 告警）、4 步向导式 Android 接入卡片（`ADB 设备` → `CA 证书` → `Cap 代理守护` → `代理路由`）、域名作用域过滤、Frida 服务端快捷启停与一键跳转 Frida 工作室，以及活动日志 / 活跃主机 / TLS 告警多标签控制台。
   2. **Flows 流量分析器（`⌘2`）**：多维过滤工具栏（`/` 聚焦、主机自动补全、方法/状态码/内容类型胶囊、平铺与 API 分组视图）、可拖拽横向/纵向 `SplitPane`、键盘导航（`↑/↓`/`j/k`、`Esc`）、多标签详情检查器（`Params`、`Req/Resp Headers`、`Req/Resp Body` 支持 JSON / XML / Protobuf / Hex 及内联搜索、`Raw`、`Timing`、`Export` 一键生成 cURL/Python/Go/Java/JS/Agent JSONL）、改参重放、并排 Flow Diff、签名分析、HAR/Charles 导入、原生回环 **MJPEG 设备投屏**（`Fast` / `scrcpy`，实时 FPS 与拖拽滑动），以及右侧内置 **插件调试（`PluginWorkbench`）** 模式实现单页无缝联调。
   3. **Rules 拦截规则与断点（`⌘3`）**：分屏规则管理 + 实时**挂起断点队列**（支持编辑后放行 / Mock 返回 / 丢弃 403），涵盖 6 类动作、优先级排序及正则/路径校验。
-  4. **DeepTrace 深度追踪（`⌘4`）**：8 阶段实时可取消追踪流水线，内置实时进度推送与 APK/JADX 缓存复用（二次分析秒级完成），集成 APK Manifest 检查器、调用图（Call Graph）、DEX 字符串、Java 源码、Native SO 分析、摘要与 Mermaid 导出。
-  5. **Plugins 插件工坊（`⌘5`）**：可脚本化分析插件工作台与单页联调器（本地 `~/.cap/plugins/*.json` 自动热重载），支持 `python3` / `node` / `sh` / `builtin` 运行时、实时解析 `query_params` 与流变量检查器（点击即插代码片段）、实时 `stdin JSON` 预览、`命中当前请求` 实时匹配指示（支持查询字符串与通配符 `*`）、`⌘Enter` 免保存即刻运行草稿、实时流量自动触发及实时执行日志面板。
-  6. **Terminal 内嵌终端（`⌘6`）**：多 Tab 暗色 PTY 终端（`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`），内置 `adb`、`frida`、`curl` 常用诊断快捷指令。
-  7. **Settings 系统设置（`⌘7`）**：分栏配置外观与显示语言（`English` / `简体中文`）、代理与证书、Android 与抓包、导出与存储、快捷键速查及关于/诊断信息。
+  4. **DeepTrace 深度追踪（`⌘4`）**：8 阶段实时可取消追踪流水线，支持纯 Go DEX 字节码交叉引用（XRefs）、3 视角交互式 SVG 调用图与 APK/JADX 缓存复用，并支持从报告、模块卡片与 Native `.so` 符号**一键生成并跳转 Frida Hook**。
+  5. **Frida 动态工作室（`⌘5`）**：全流程 Frida 逆向工作台，覆盖 `frida-server` 全生命周期（自动识别设备 ABI、GitHub Release 一键下载或本地 `.xz` 推送、防检测重命名、自定义端口与 `adb forward`、宿主与设备版本一致性校验）、零额外 CGO 的内置 Python Frida Bridge（自动降级 `frida-cli`）、可搜索进程/应用选择器、`Spawn (-f)` / `Attach` 注入、**无需重启 App 的在线脚本热重载（`⌘R`）**、结构化 `send()` JSON 事件卡片与 JSONL 导出、7 套内置实战模板 + `~/.cap/frida-scripts/` 磁盘热重载、CodeShare 与应用指纹检索，以及 **DeepTrace 一键合成 Hook**。
+  6. **Plugins 插件工坊（`⌘6`）**：可脚本化分析插件工作台与单页联调器（本地 `~/.cap/plugins/*.json` 自动热重载），支持 `python3` / `node` / `sh` / `builtin` 运行时、实时解析 `query_params` 与流变量检查器（点击即插代码片段）、实时 `stdin JSON` 预览、`命中当前请求` 实时匹配指示（支持查询字符串与通配符 `*`）、`⌘Enter` 免保存即刻运行草稿、实时流量自动触发及实时执行日志面板。
+  7. **Terminal 内嵌终端（`⌘7`）**：多 Tab 暗色 PTY 终端（`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`），内置 `adb`、`frida`、`curl` 常用诊断快捷指令。
+  8. **Settings 系统设置（`⌘8`）**：分栏配置外观与显示语言（`English` / `简体中文`）、代理与证书、Android / Frida 运行环境路径与抓包、导出与存储、快捷键速查及关于/诊断信息。
 
 ### 全屏交互式 TUI 与命令行体验（`cap tui` / `cap start --tui`）
 
@@ -272,6 +275,24 @@ cap tui --lang zh                    # 直接以简体中文界面启动
   - **Root 设备**：支持 HTTP Toolkit 方案的 Android 14+ APEX Conscrypt 命名空间注入（`mount --bind` + `TRUST_STORE_CHANGED` 实时重载信任库）、Android 10–13 `mount --bind`、Magisk 持久化模块与 Android 9 及以下 `/system` 重挂，并提供 `cap android cert --check` 验证与 `--remove` 移除。
   - **非 Root 设备**：守护 App 内置 `MainActivity` 一键调起系统 `KeyChain` 安装 `/sdcard/Download/cap-ca.crt`，配合 GUI 状态向导快速校验。
 - **桌面端自动收尾**：`cap start --auto-disconnect`、`cap tui --live --auto-disconnect` 以及桌面 GUI 的 `StopProxy()` / `App.Shutdown()` 都会在停止代理前自动断开并恢复已追踪的 Android 设备。
+
+### Frida 动态逆向工作室（`cap frida` 与桌面端 `⌘5`）
+
+零额外 CGO 依赖的端到端 Android Frida 动态插桩工作流，打通服务端部署、实时热重载与 DeepTrace 动态验证闭环：
+
+```bash
+cap frida status                                           # 检测宿主机 Python Bridge / frida CLI 与设备 frida-server 状态
+cap frida deploy --start --name hluda-srv                  # 自动下载匹配 ABI/版本、防检测重命名并启动
+cap frida ps                                               # 枚举设备应用与运行中 PID（Bridge → frida-ps → ADB）
+cap frida scripts                                          # 查看 7 套内置实战模板与 ~/.cap/frida-scripts/ 自定义脚本
+cap frida run --pkg com.example.app --spawn \
+  --script builtin:crypto-sign-tracer                      # 实时流式输出结构化 send() Hook 事件
+```
+
+- **Server 全生命周期与防检测部署**：单次批量 ADB 探针自动识别 CPU ABI（`arm64`/`arm`/`x86_64`/`x86`）、Root 权限、运行 PID/端口与宿主/设备版本一致性（`match` / `minor_diff` / `major_mismatch`）；支持从 GitHub Releases 自动下载缓存（`~/.cap/frida-cache/`）或推送本地 `.xz`/二进制文件，支持防检测重命名与自动 `adb forward`。
+- **内置 Python Frida Bridge + CLI 自动降级**：自动探测本机 Python 3 / venv / conda / pipx 环境（也可在 Frida 工作室或偏好设置中自定义路径），支持结构化 `send()` JSON 事件卡片、二进制 Hex 预览、Spawn 暂停/继续与**在线脚本热重载（`⌘R`）**，无 Python `frida` 模块时自动降级兼容 `frida` CLI。
+- **内置实战脚本库与 CodeShare**：预置 7 套常用模板（14+ 通用 SSL Unpin、防 Root/防 Frida 隐身绕过、OkHttp3/URLConnection 追踪、MD5/SHA/HMAC/AES 签名加解密追踪、JNI `RegisterNatives` & `dlopen` 追踪、SharedPreferences/SQLite 监控、动态类浏览器），支持 `~/.cap/frida-scripts/*.json` 磁盘热重载、CodeShare 社区检索与应用特征指纹推荐。
+- **DeepTrace → Frida 闭环联动**：在 DeepTrace 报告页、模块卡片或 Native `.so` 列表点击「一键 Frida Hook」，自动合成含安全 Overload 包装与 `dlopen` 延迟注入的 JS 脚本并直达 Frida Studio 运行验证。
 
 ### SSL Unpinning 脱钉
 
@@ -392,6 +413,12 @@ ANDROID_HOME=~/Library/Android/sdk ./android-companion/build.sh
 | `cap android status [--json] [-s serial]` | 查看设备信息、代理配置、CA 证书及守护服务状态 |
 | `cap android cert [--check\|--remove] [-s serial]` | 安装、校验或移除设备上的 cap CA 证书 |
 | `cap android disconnect [-s serial]` | 清理系统代理、VPN 转发并停止守护看门狗 |
+| `cap frida status [-s serial] [-p port] [--json]` | 检测宿主机 Python/Frida 工具链与设备 `frida-server` 状态 |
+| `cap frida deploy [--version v] [--binary path] [--name stealth] [--start]` | 自动下载或推送匹配 ABI/版本的 `frida-server`（支持防检测改名） |
+| `cap frida start\|stop [-s serial] [-p port]` | 启动或停止设备端 `frida-server` 并配置 `adb forward` |
+| `cap frida ps [-s serial] [--json]` | 列出设备上已安装应用与运行中进程 PID |
+| `cap frida scripts [--show <id>] [--json]` | 列出内置与自定义 Frida 脚本或输出指定脚本源码 |
+| `cap frida run --pkg <pkg> [--spawn] [--script <id\|file>]` | 冷启动或附加目标应用并实时流式输出结构化 Hook 日志 |
 | `cap unpin frida --pkg <pkg> [--spawn]` | Frida 运行时 hook 绕过 SSL pinning（14+ 实现） |
 | `cap unpin patch --apk <file>` | 补丁 APK `network_security_config.xml` 信任用户证书 |
 | `cap unpin magisk` | 部署系统级 Magisk 证书提权模块 |
@@ -410,17 +437,18 @@ cmd/cap/                主入口与内嵌的 frontend/dist 前端构建产物
 frontend/
 ├── src/App.svelte      桌面工作台外壳（折叠导航栏、顶栏、底栏、⌘K 命令面板）
 ├── src/components/     Icon、Badge、Button、SplitPane、CommandPalette、ToastHost、Kbd、EmptyState
-├── src/lib/            tokens.css、theme.js（4 套主题）、i18n.js、locales/{common,core,tools}.js
-└── src/pages/          Capture、Flows、Rules、DeepTrace、Plugins、Terminal、Settings
+├── src/lib/            tokens.css、theme.js（4 套主题）、i18n.js、fridaState.js、locales/{common,core,frida,tools}.js
+└── src/pages/          Capture、Flows、Rules、DeepTrace、Frida、Plugins、Terminal、Settings
 internal/
 ├── android/            ADB 工具、三策略证书安装/校验、companion.go、bin/cap-companion.apk
 ├── buildinfo/          版本构建信息注入
 ├── capture/            WebSocket 帧解析、SSE 流解析（实验性）
-├── cli/                Cobra 命令集（start、tui、gui、flows、export、android、unpin）
+├── cli/                Cobra 命令集（start、tui、gui、flows、export、android、frida、unpin）
 ├── compare/            并排流量对比与结构化 Diff
 ├── config/             共享默认路径配置（~/.cap）
 ├── context/            jadx 扫描器、Retrofit/OkHttp 解析与 URL 源码映射
 ├── export/             codegen/（5 种语言）与 agent/（精简 JSONL）
+├── frida/              Frida 工具链探测、服务端部署/启停、Python Bridge、脚本库与 DeepTrace→Hook 生成器
 ├── grouping/           按域名与路径前缀自动分组 API
 ├── i18n/               零依赖 TUI / CLI 中英双语本地化词库
 ├── importer/           HAR 与 Charles XML 导入

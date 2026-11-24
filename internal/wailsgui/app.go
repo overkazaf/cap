@@ -13,6 +13,7 @@ import (
 
 	"github.com/overkazaf/cap/internal/buildinfo"
 	"github.com/overkazaf/cap/internal/config"
+	"github.com/overkazaf/cap/internal/frida"
 	"github.com/overkazaf/cap/internal/plugin"
 	"github.com/overkazaf/cap/internal/proxy"
 	"github.com/overkazaf/cap/internal/rules"
@@ -70,6 +71,8 @@ type App struct {
 	pluginSem    chan struct{}
 	pluginCtx    context.Context
 	pluginCancel context.CancelFunc
+
+	fridaMgr *frida.Manager
 }
 
 const maxConcurrentAutoPlugins = 4
@@ -77,15 +80,31 @@ const maxConcurrentAutoPlugins = 4
 func NewApp(st store.Store) *App {
 	capDir := config.DefaultDir()
 	pluginEngine, _ := plugin.NewEngine(filepath.Join(capDir, "plugins"))
+	fridaMgr, _ := frida.NewManager(capDir)
 	settingsFile := filepath.Join(capDir, "settings.json")
 	settings := loadSettings(settingsFile)
 	pCtx, pCancel := context.WithCancel(context.Background())
+	events := NewEventBus()
+	if fridaMgr != nil {
+		fridaMgr.SetToolchainConfig(frida.ToolchainConfig{
+			PythonPath: settings["frida_python_path"],
+			FridaPath:  settings["frida_cli_path"],
+		})
+		fridaMgr.SetCallbacks(
+			func(ev frida.LogEvent) {
+				events.Emit(EventFridaLog, ev)
+			},
+			func(st *frida.SessionState) {
+				events.Emit(EventFridaStatus, st)
+			},
+		)
+	}
 	return &App{
 		store:            st,
 		certDir:          capDir,
 		plugins:          pluginEngine,
 		rulesEngine:      rules.NewEngine(),
-		events:           NewEventBus(),
+		events:           events,
 		settings:         settings,
 		tlsErrors:        make(map[string]int),
 		connectedDevices: make(map[string]*connectedDeviceSession),
@@ -93,6 +112,7 @@ func NewApp(st store.Store) *App {
 		pluginSem:        make(chan struct{}, maxConcurrentAutoPlugins),
 		pluginCtx:        pCtx,
 		pluginCancel:     pCancel,
+		fridaMgr:         fridaMgr,
 	}
 }
 
@@ -105,8 +125,11 @@ func (a *App) Startup(ctx context.Context) {
 }
 
 func (a *App) Shutdown(ctx context.Context) {
-	// Cancel any active DeepTrace run and auto-run plugin scripts cleanly.
+	// Cancel any active DeepTrace run, Frida session, and auto-run plugin scripts cleanly.
 	_ = a.CancelDeepTrace()
+	if a.fridaMgr != nil {
+		a.fridaMgr.Shutdown()
+	}
 	if a.pluginCancel != nil {
 		a.pluginCancel()
 	}
@@ -376,7 +399,21 @@ func (a *App) GetSettings() map[string]string {
 }
 
 func (a *App) SetSetting(key string, value interface{}) error {
-	a.settings[key] = fmt.Sprintf("%v", value)
+	strVal := fmt.Sprintf("%v", value)
+	a.mu.Lock()
+	if a.settings == nil {
+		a.settings = make(map[string]string)
+	}
+	a.settings[key] = strVal
+	pyPath := a.settings["frida_python_path"]
+	cliPath := a.settings["frida_cli_path"]
+	a.mu.Unlock()
+	if (key == "frida_python_path" || key == "frida_cli_path") && a.fridaMgr != nil {
+		a.fridaMgr.SetToolchainConfig(frida.ToolchainConfig{
+			PythonPath: pyPath,
+			FridaPath:  cliPath,
+		})
+	}
 	return saveSettings(filepath.Join(a.certDir, "settings.json"), a.settings)
 }
 
@@ -386,13 +423,16 @@ func (a *App) GetSetting(key string) string {
 
 func loadSettings(path string) map[string]string {
 	settings := map[string]string{
-		"theme":         "dark",
-		"proxy_addr":    "0.0.0.0:8080",
-		"proxy_port":    "8080",
-		"auto_detect":   "true",
-		"install_cert":  "true",
-		"max_body_size": "4096",
-		"font_size":     "13",
+		"theme":              "dark",
+		"proxy_addr":         "0.0.0.0:8080",
+		"proxy_port":         "8080",
+		"auto_detect":        "true",
+		"install_cert":       "true",
+		"max_body_size":      "4096",
+		"font_size":          "13",
+		"frida_python_path":  "",
+		"frida_cli_path":     "",
+		"frida_default_port": "27042",
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

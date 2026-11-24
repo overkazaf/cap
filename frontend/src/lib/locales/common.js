@@ -30,7 +30,12 @@ registerMessages('common', {
         trace: {
           label: 'DeepTrace',
           title: 'Deep Trace',
-          subtitle: 'Call-graph correlation & Frida reverse analysis',
+          subtitle: 'Call-graph correlation & static/native reverse analysis',
+        },
+        frida: {
+          label: 'Frida',
+          title: 'Frida Studio',
+          subtitle: 'Dynamic hooking, server lifecycle, CodeShare & live trace bridge',
         },
         plugins: {
           label: 'Plugins',
@@ -58,6 +63,7 @@ registerMessages('common', {
       expandTooltip: 'Expand sidebar ({mod}B)',
       liveBadge: 'LIVE',
       pausedBadge: 'PAUSED',
+      hookBadge: 'HOOK',
     },
     topbar: {
       paletteTrigger: 'Quick jump or command…',
@@ -87,7 +93,7 @@ registerMessages('common', {
       devicesTooltip: 'Connected Android devices',
       breakpointsOne: '1 breakpoint held',
       breakpointsMany: '{count} breakpoints held',
-      hintSwitch: '{mod}1–7 Switch',
+      hintSwitch: '{mod}1–8 Switch',
       hintPalette: '{mod}K Palette',
       switchThemeTooltip: 'Switch theme',
       switchLangTooltip: 'Switch language',
@@ -224,7 +230,12 @@ registerMessages('common', {
         trace: {
           label: '深度追踪',
           title: '深度调用追踪',
-          subtitle: '调用链关联分析与 Frida 逆向溯源',
+          subtitle: '调用链关联分析与静态/Native 逆向溯源',
+        },
+        frida: {
+          label: 'Frida',
+          title: 'Frida 动态工作室',
+          subtitle: '动态 Hook 注入、服务端全生命周期、CodeShare 与追踪联动',
         },
         plugins: {
           label: '分析插件',
@@ -252,6 +263,7 @@ registerMessages('common', {
       expandTooltip: '展开侧边栏 ({mod}B)',
       liveBadge: '运行中',
       pausedBadge: '已暂停',
+      hookBadge: '注入中',
     },
     topbar: {
       paletteTrigger: '快速跳转或执行命令…',
@@ -281,7 +293,7 @@ registerMessages('common', {
       devicesTooltip: '已连接的 Android 设备',
       breakpointsOne: '1 个断点挂起',
       breakpointsMany: '{count} 个断点挂起',
-      hintSwitch: '{mod}1–7 切换页面',
+      hintSwitch: '{mod}1–8 切换页面',
       hintPalette: '{mod}K 命令面板',
       switchThemeTooltip: '切换主题',
       switchLangTooltip: '切换界面语言',

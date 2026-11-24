@@ -997,35 +997,6 @@ func (a *App) PullAPK(serial, pkg string) (string, error) {
 	return localPath, nil
 }
 
-func (a *App) CheckFrida(serial string) map[string]string {
-	result := map[string]string{"status": "not running"}
-
-	psOut, _ := android.AdbShell(serial, "ps -A 2>/dev/null | grep frida || ps | grep frida")
-	if strings.Contains(psOut, "frida") {
-		result["status"] = "running"
-		for _, line := range strings.Split(psOut, "\n") {
-			if strings.Contains(line, "frida") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					result["pid"] = fields[1]
-				}
-				break
-			}
-		}
-	}
-
-	binOut, _ := android.AdbShell(serial, "ls /data/local/tmp/frida-server* 2>/dev/null")
-	if binOut != "" && !strings.Contains(binOut, "No such") {
-		result["binary"] = binOut
-	}
-
-	return result
-}
-
-func (a *App) StartFrida(serial string) (string, error) {
-	return android.SuShell(serial, "nohup /data/local/tmp/frida-server -D > /dev/null 2>&1 &")
-}
-
 func (a *App) RunLogcat(serial, filter string, lines int) (string, error) {
 	if lines <= 0 {
 		lines = 100

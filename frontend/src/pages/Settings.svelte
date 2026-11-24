@@ -22,6 +22,9 @@
     auto_detect: 'true',
     install_cert: 'true',
     max_body_size: '4096',
+    frida_python_path: '',
+    frida_cli_path: '',
+    frida_default_port: '27042',
   }
 
   let version = 'v0.2.0'
@@ -67,15 +70,17 @@
         { label: $t('tools.settings.shortcuts.items.flows'), keys: ['Mod', '2'] },
         { label: $t('tools.settings.shortcuts.items.rules'), keys: ['Mod', '3'] },
         { label: $t('tools.settings.shortcuts.items.trace'), keys: ['Mod', '4'] },
-        { label: $t('tools.settings.shortcuts.items.plugins'), keys: ['Mod', '5'] },
-        { label: $t('tools.settings.shortcuts.items.terminal'), keys: ['Mod', '6'] },
-        { label: $t('tools.settings.shortcuts.items.settings'), keys: ['Mod', '7'] },
+        { label: $t('tools.settings.shortcuts.items.frida'), keys: ['Mod', '5'] },
+        { label: $t('tools.settings.shortcuts.items.plugins'), keys: ['Mod', '6'] },
+        { label: $t('tools.settings.shortcuts.items.terminal'), keys: ['Mod', '7'] },
+        { label: $t('tools.settings.shortcuts.items.settings'), keys: ['Mod', '8'] },
       ],
     },
     {
       title: $t('tools.settings.shortcuts.groupTools'),
       items: [
         { label: $t('tools.settings.shortcuts.items.savePlugin'), keys: ['Mod', 'S'] },
+        { label: $t('tools.settings.shortcuts.items.hotReloadFrida'), keys: ['Mod', 'R'] },
         { label: $t('tools.settings.shortcuts.items.newTermTab'), keys: ['Mod', 'T'] },
         { label: $t('tools.settings.shortcuts.items.closeTermTab'), keys: ['Mod', 'W'] },
         { label: $t('tools.settings.shortcuts.items.cycleTermTabs'), keys: ['Ctrl', 'Tab'] },
@@ -497,6 +502,62 @@
               />
               <span class="switch-track"></span>
             </label>
+          </div>
+        </div>
+
+        <div class="pref-card cap-card">
+          <div class="pref-card-head">
+            <div>
+              <div class="pref-title">{$t('tools.settings.android.fridaTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.android.fridaDesc')}</div>
+            </div>
+            <Badge variant="accent" size="xs" mono>Frida</Badge>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.android.fridaPythonTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.android.fridaPythonDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.frida_python_path}
+              placeholder="auto"
+              on:change={() => setSetting('frida_python_path', settings.frida_python_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.android.fridaCliTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.android.fridaCliDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.frida_cli_path}
+              placeholder="auto"
+              on:change={() => setSetting('frida_cli_path', settings.frida_cli_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.android.fridaPortTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.android.fridaPortDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono port-input tabular-nums"
+              bind:value={settings.frida_default_port}
+              placeholder="27042"
+              on:change={() => setSetting('frida_default_port', settings.frida_default_port)}
+            />
           </div>
         </div>
 

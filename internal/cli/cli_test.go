@@ -404,3 +404,48 @@ func TestAndroidCLIFlagsAndStatusRendering(t *testing.T) {
 		}
 	}
 }
+
+func TestFridaCLICommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Verify `cap frida --help` lists all expected subcommands
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"frida", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap frida --help failed: %v", err)
+	}
+	for _, sub := range []string{"status", "deploy", "start", "stop", "ps", "scripts", "run"} {
+		if !strings.Contains(out.String(), sub) {
+			t.Errorf("cap frida --help missing subcommand %q", sub)
+		}
+	}
+
+	// Verify `cap frida scripts --json` emits valid machine-readable JSON without ANSI
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"frida", "scripts", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap frida scripts --json failed: %v", err)
+	}
+	if strings.Contains(out.String(), "\x1b[") {
+		t.Fatal("cap frida scripts --json must not contain ANSI escapes")
+	}
+	if !strings.Contains(out.String(), "builtin:ssl-unpin-universal") {
+		t.Fatalf("expected built-in SSL unpin script in JSON output:\n%s", out.String())
+	}
+
+	// Verify `cap frida scripts --show builtin:crypto-sign-tracer` prints raw JS
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"frida", "scripts", "--show", "builtin:crypto-sign-tracer"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap frida scripts --show failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "MessageDigest") {
+		t.Fatalf("expected MessageDigest hook in crypto-sign-tracer output")
+	}
+}

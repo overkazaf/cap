@@ -8,6 +8,7 @@
   import EmptyState from '../components/EmptyState.svelte'
   import TraceGraph from '../components/TraceGraph.svelte'
   import { toast } from '../lib/toast.js'
+  import { openFridaStudio } from '../lib/fridaState.js'
   import { copyToClipboard, formatBytes, formatDuration } from '../lib/format.js'
 
   const api = () => window?.go?.wailsgui?.App
@@ -618,6 +619,92 @@
     const json = JSON.stringify(result, null, 2)
     triggerBlobDownload(`${safeFileStem()}.json`, json, 'application/json;charset=utf-8')
     toast.success(translate('tools.deepTrace.toast.jsonDownloaded'))
+  }
+
+  async function hookTraceInFrida() {
+    const app = api()
+    if (!app?.GenerateFridaHookFromTrace) return
+    try {
+      const gen = await app.GenerateFridaHookFromTrace({
+        target_package: result?.package || packageName.trim(),
+        include_java: true,
+        include_dex_xrefs: true,
+        include_native: true,
+        include_crypto: true,
+        include_ssl_unpin: false,
+        include_backtrace: true,
+        max_hooks: 18,
+      })
+      openFridaStudio({
+        target: gen.target_package || result?.package || packageName.trim(),
+        scriptName: gen.script_name || 'DeepTrace Hook',
+        scriptCategory: 'trace',
+        scriptDescription: gen.summary || '',
+        scriptCode: gen.code || '',
+        leftTab: 'trace',
+        generatedHook: gen,
+      })
+      toast.success(translate('tools.deepTrace.toast.fridaHookReady', { summary: gen.summary }))
+    } catch (e) {
+      toast.error(translate('tools.deepTrace.toast.fridaHookFailed', { error: e?.message || e }))
+    }
+  }
+
+  async function hookModuleInFrida(mod) {
+    const app = api()
+    if (!app?.GenerateFridaHookFromTrace || !mod) return
+    try {
+      const gen = await app.GenerateFridaHookFromTrace({
+        target_package: result?.package || packageName.trim(),
+        include_java: mod.layer !== 'native',
+        include_dex_xrefs: mod.layer !== 'native',
+        include_native: mod.layer === 'native' || (mod.native_libs?.length || 0) > 0,
+        include_crypto: mod.layer === 'crypto',
+        include_ssl_unpin: false,
+        include_backtrace: true,
+        selected_classes: mod.package_prefix ? [mod.package_prefix] : [],
+        selected_native_sos: mod.native_libs || [],
+        max_hooks: 16,
+      })
+      openFridaStudio({
+        target: gen.target_package || result?.package || packageName.trim(),
+        scriptName: `Hook · ${mod.name}`,
+        scriptCategory: mod.layer === 'native' ? 'native' : 'trace',
+        scriptDescription: gen.summary || mod.role || '',
+        scriptCode: gen.code || '',
+        leftTab: 'trace',
+        generatedHook: gen,
+      })
+      toast.success(translate('tools.deepTrace.toast.fridaHookReady', { summary: gen.summary }))
+    } catch (e) {
+      toast.error(translate('tools.deepTrace.toast.fridaHookFailed', { error: e?.message || e }))
+    }
+  }
+
+  async function hookNativeRefInFrida(nr) {
+    const app = api()
+    if (!app?.GenerateFridaHookForTargets || !nr) return
+    const soBase = String(nr.so_file || '').split('/').pop() || nr.so_file
+    try {
+      const gen = await app.GenerateFridaHookForTargets(
+        result?.package || packageName.trim(),
+        `Native · ${soBase}!${nr.function}`,
+        [{ kind: 'native', so_file: soBase, symbol: nr.function, source: 'native_trace', reason: nr.address || '' }],
+        true
+      )
+      openFridaStudio({
+        target: gen.target_package || result?.package || packageName.trim(),
+        scriptName: gen.script_name,
+        scriptCategory: 'native',
+        scriptDescription: gen.summary || '',
+        scriptCode: gen.code || '',
+        leftTab: 'trace',
+        generatedHook: gen,
+      })
+      toast.success(translate('tools.deepTrace.toast.fridaHookReady', { summary: gen.summary }))
+    } catch (e) {
+      toast.error(translate('tools.deepTrace.toast.fridaHookFailed', { error: e?.message || e }))
+    }
   }
 
   function toggleParamExpand(key) {
@@ -1360,6 +1447,9 @@
                   </Badge>
                   <span class="exec-pkg mono">{result.package || packageName}</span>
                   <div class="exec-exports">
+                    <Button variant="primary" size="xs" icon="zap" on:click={hookTraceInFrida}>
+                      {$t('tools.deepTrace.report.hookInFrida')}
+                    </Button>
                     <Button variant="secondary" size="xs" icon="copy" on:click={copyMarkdownReport}>
                       {$t('tools.deepTrace.report.copyMarkdown')}
                     </Button>
@@ -1521,6 +1611,9 @@
                           )}
                       >
                         {$t('tools.deepTrace.report.filterEvidence')}
+                      </Button>
+                      <Button variant="ghost" size="xs" icon="zap" on:click={() => hookModuleInFrida(mod)}>
+                        {$t('tools.deepTrace.report.hookModule')}
                       </Button>
                     </div>
                   </div>
@@ -2122,15 +2215,20 @@
                       <Badge variant="neutral" size="xs" mono>{nr.address}</Badge>
                     {/if}
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    icon="copy"
-                    on:click={() =>
-                      copyToClipboard(`${nr.so_file} :: ${nr.function} (${nr.address || ''})`, translate('tools.deepTrace.toast.symbolCopied'))}
-                  >
-                    {$t('common.actions.copy')}
-                  </Button>
+                  <div class="ev-actions">
+                    <Button variant="secondary" size="xs" icon="zap" on:click={() => hookNativeRefInFrida(nr)}>
+                      {$t('tools.deepTrace.report.hookModule')}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      icon="copy"
+                      on:click={() =>
+                        copyToClipboard(`${nr.so_file} :: ${nr.function} (${nr.address || ''})`, translate('tools.deepTrace.toast.symbolCopied'))}
+                    >
+                      {$t('common.actions.copy')}
+                    </Button>
+                  </div>
                 </div>
 
                 {#if nr.calls?.length > 0}
@@ -4202,6 +4300,13 @@
     gap: 7px;
     flex-wrap: wrap;
     color: var(--text-muted);
+  }
+
+  .ev-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
   }
 
   .ev-offset {

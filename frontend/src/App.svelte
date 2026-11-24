@@ -28,6 +28,7 @@
   import Plugins from './pages/Plugins.svelte'
   import Rules from './pages/Rules.svelte'
   import DeepTrace from './pages/DeepTrace.svelte'
+  import Frida from './pages/Frida.svelte'
   import Settings from './pages/Settings.svelte'
 
   const SIDEBAR_KEY = 'cap.ui.sidebarExpanded'
@@ -46,6 +47,7 @@
   let pendingBreakpoints = 0
   let activeRuleCount = 0
   let deviceCount = 0
+  let fridaRunning = false
 
   let pollTimer = null
   let unsubs = []
@@ -115,11 +117,15 @@
         rate = { req_per_sec: 0, byte_per_sec: 0, total_reqs: rate.total_reqs || 0, total_bytes: rate.total_bytes || 0 }
       }
 
-      const [stats, rulesList, bps] = await Promise.all([
+      const [stats, rulesList, bps, fridaSess] = await Promise.all([
         api.GetTrafficStats?.().catch(() => null),
         api.ListRules?.().catch(() => []),
         api.GetPendingBreakpoints?.().catch(() => []),
+        api.GetFridaSessionState?.().catch(() => null),
       ])
+      if (fridaSess && typeof fridaSess.running === 'boolean') {
+        fridaRunning = fridaSess.running
+      }
       if (stats && typeof stats.total_flows === 'number') {
         flowCount = stats.total_flows
       } else if (stats && typeof stats.TotalFlows === 'number') {
@@ -216,7 +222,7 @@
         toggleSidebar()
         return
       }
-      if (!e.shiftKey && !e.altKey && key >= '1' && key <= '7') {
+      if (!e.shiftKey && !e.altKey && key >= '1' && key <= '8') {
         const target = PAGES.find((p) => p.shortcut === key)
         if (target) {
           e.preventDefault()
@@ -256,6 +262,11 @@
     })
     on('proxy:error', (ev) => {
       if (ev?.error) toast.error(ev.error)
+    })
+    on('frida:status', (st) => {
+      if (st && typeof st.running === 'boolean') {
+        fridaRunning = st.running
+      }
     })
   }
 
@@ -459,6 +470,9 @@
               {#if page.id === 'rules' && pendingBreakpoints > 0 && !sidebarExpanded}
                 <span class="nav-dot warn"></span>
               {/if}
+              {#if page.id === 'frida' && fridaRunning && !sidebarExpanded}
+                <span class="nav-dot"></span>
+              {/if}
             </span>
 
             {#if sidebarExpanded}
@@ -468,6 +482,8 @@
                   <span class="pill-live" class:paused={proxyPaused}>
                     {proxyPaused ? $t('common.sidebar.pausedBadge') : $t('common.sidebar.liveBadge')}
                   </span>
+                {:else if page.id === 'frida' && fridaRunning}
+                  <span class="pill-live">{$t('common.sidebar.hookBadge')}</span>
                 {:else if page.id === 'flows' && flowCount > 0}
                   <span class="pill-count mono tabular-nums">{formatCount(flowCount)}</span>
                 {:else if page.id === 'rules' && pendingBreakpoints > 0}
@@ -619,6 +635,8 @@
         <Rules />
       {:else if $currentPage === 'trace'}
         <DeepTrace />
+      {:else if $currentPage === 'frida'}
+        <Frida />
       {:else if $currentPage === 'plugins'}
         <Plugins />
       {:else if $currentPage === 'terminal'}

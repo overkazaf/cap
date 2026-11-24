@@ -5,6 +5,7 @@
   import { state as S, flowsState as FS, appendCaptureLog } from '../lib/captureState.js'
   import { formatBytes, formatDuration, formatCount, copyToClipboard } from '../lib/format.js'
   import { navigate } from '../lib/navigation.js'
+  import { openFridaStudio } from '../lib/fridaState.js'
   import { toast } from '../lib/toast.js'
   import { registerCommands } from '../lib/commandPalette.js'
 
@@ -626,6 +627,29 @@
       toast.error(translate('core.capture.toast.fridaFailed', { err: e }))
     }
     fridaBusy = false
+  }
+
+  async function stopFridaServer() {
+    const api = appApi()
+    if (!api?.StopFridaServer || !selectedDevice) return
+    fridaBusy = true
+    try {
+      await api.StopFridaServer(selectedDevice, '', Number(fridaStatus?.port) || 27042)
+      fridaStatus = await api.CheckFrida?.(selectedDevice).catch(() => ({ status: 'not running' }))
+      addLog(translate('core.capture.logs.fridaStopped'), 'info')
+      toast.info(translate('core.capture.toast.fridaStopped'))
+    } catch (e) {
+      addLog(translate('core.capture.logs.fridaFailed', { err: e }), 'error')
+      toast.error(translate('core.capture.toast.fridaFailed', { err: e }))
+    }
+    fridaBusy = false
+  }
+
+  function jumpToFridaStudio() {
+    openFridaStudio({
+      serial: selectedDevice,
+      target: selectedApp || '',
+    })
   }
 
   async function connectWifi() {
@@ -1367,7 +1391,7 @@
             <!-- Frida Unpin Server Control -->
             <div class="frida-bar">
               <div class="frida-info">
-                <Icon name="shield" size={14} />
+                <Icon name="zap" size={14} />
                 <span class="frida-label">{$t('core.capture.profile.fridaServer')}</span>
                 {#if fridaStatus?.status === 'running'}
                   <Badge variant="success" size="xs" dot pulse>
@@ -1378,12 +1402,27 @@
                 {:else}
                   <Badge variant="neutral" size="xs">{$t('core.capture.profile.fridaNotFound')}</Badge>
                 {/if}
+                {#if fridaStatus?.version}
+                  <Badge variant="info" size="xs" mono>v{fridaStatus.version}</Badge>
+                {/if}
+                {#if fridaStatus?.arch}
+                  <Badge variant="neutral" size="xs" mono>{fridaStatus.arch}</Badge>
+                {/if}
               </div>
-              {#if fridaStatus?.status !== 'running' && fridaStatus?.binary}
-                <Button variant="subtle" size="xs" icon="play" loading={fridaBusy} on:click={startFridaServer}>
-                  {$t('core.capture.profile.startFrida')}
+              <div class="frida-actions">
+                {#if fridaStatus?.status === 'running'}
+                  <Button variant="danger" size="xs" icon="square" loading={fridaBusy} on:click={stopFridaServer}>
+                    {$t('core.capture.profile.stopFrida')}
+                  </Button>
+                {:else if fridaStatus?.binary}
+                  <Button variant="subtle" size="xs" icon="play" loading={fridaBusy} on:click={startFridaServer}>
+                    {$t('core.capture.profile.startFrida')}
+                  </Button>
+                {/if}
+                <Button variant="secondary" size="xs" icon="zap" on:click={jumpToFridaStudio}>
+                  {$t('core.capture.profile.openFridaStudio')}
                 </Button>
-              {/if}
+              </div>
             </div>
 
             <!-- Quick App Launcher -->
@@ -2290,8 +2329,16 @@
     display: flex;
     align-items: center;
     gap: 7px;
+    flex-wrap: wrap;
     color: var(--text-secondary);
     font-size: var(--text-xs);
+  }
+
+  .frida-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
   }
 
   .frida-label {

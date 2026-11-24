@@ -41,13 +41,25 @@ export const PAGES = [
     id: 'trace',
     label: 'DeepTrace',
     title: 'Deep Trace',
-    subtitle: 'Call-graph correlation & Frida reverse analysis',
+    subtitle: 'Call-graph correlation & static/native reverse analysis',
     labelKey: 'common.nav.pages.trace.label',
     titleKey: 'common.nav.pages.trace.title',
     subtitleKey: 'common.nav.pages.trace.subtitle',
     icon: 'git-branch',
     group: 'inspect',
     shortcut: '4',
+  },
+  {
+    id: 'frida',
+    label: 'Frida',
+    title: 'Frida Studio',
+    subtitle: 'Dynamic hooking, server lifecycle, CodeShare & live trace bridge',
+    labelKey: 'common.nav.pages.frida.label',
+    titleKey: 'common.nav.pages.frida.title',
+    subtitleKey: 'common.nav.pages.frida.subtitle',
+    icon: 'zap',
+    group: 'inspect',
+    shortcut: '5',
   },
   {
     id: 'plugins',
@@ -59,7 +71,7 @@ export const PAGES = [
     subtitleKey: 'common.nav.pages.plugins.subtitle',
     icon: 'puzzle',
     group: 'inspect',
-    shortcut: '5',
+    shortcut: '6',
   },
   {
     id: 'terminal',
@@ -71,7 +83,7 @@ export const PAGES = [
     subtitleKey: 'common.nav.pages.terminal.subtitle',
     icon: 'terminal',
     group: 'tools',
-    shortcut: '6',
+    shortcut: '7',
   },
   {
     id: 'settings',
@@ -83,7 +95,7 @@ export const PAGES = [
     subtitleKey: 'common.nav.pages.settings.subtitle',
     icon: 'settings',
     group: 'tools',
-    shortcut: '7',
+    shortcut: '8',
   },
 ]
 

@@ -274,10 +274,13 @@ import java.net.InetSocketAddress;
         this.vm.setJni(this);
 
         File soFile = new File(SO_PATH);
-        if (!soFile.isFile()) {
-            throw new IllegalStateException("Native library not found: " + SO_PATH);
+        if (soFile.isFile()) {
+            this.dm = this.vm.loadLibrary(soFile, true);
+        } else if (apkFile.isFile()) {
+            this.dm = this.vm.loadLibrary(deriveLibName(SO_PATH), true);
+        } else {
+            throw new IllegalStateException("Native library not found: " + SO_PATH + " (and APK not found: " + APK_PATH + ")");
         }
-        this.dm = this.vm.loadLibrary(soFile, true);
         this.dm.callJNI_OnLoad(emulator);
         this.targetClass = this.vm.resolveClass(TARGET_CLASS);
     }
@@ -285,8 +288,7 @@ import java.net.InetSocketAddress;
     public synchronized String invokeTarget(String input) {
         DvmObject<?> ret = targetClass.callStaticJniMethodObject(
                 emulator,
-                TARGET_METHOD_SIG,
-                ` + p.InvokeArgsExpr + `
+                TARGET_METHOD_SIG` + formatInvokeArgsSuffix(p.InvokeArgsExpr) + `
         );
         if (ret == null || ret.getValue() == null) {
             return "";
@@ -329,6 +331,16 @@ import java.net.InetSocketAddress;
     private static String envOr(String key, String fallback) {
         String v = System.getenv(key);
         return (v != null && !v.trim().isEmpty()) ? v.trim() : fallback;
+    }
+
+    private static String deriveLibName(String path) {
+        if (path == null || path.isEmpty()) return "";
+        String norm = path.replace('\\', '/');
+        int slash = norm.lastIndexOf('/');
+        String base = slash >= 0 ? norm.substring(slash + 1) : norm;
+        if (base.startsWith("lib")) base = base.substring(3);
+        if (base.endsWith(".so")) base = base.substring(0, base.length() - 3);
+        return base;
     }
 
     private static String bytesToHex(byte[] data) {
@@ -415,12 +427,23 @@ import java.net.InetSocketAddress;
 	return b.String()
 }
 
+func formatInvokeArgsSuffix(invokeArgsExpr string) string {
+	if strings.TrimSpace(invokeArgsExpr) == "" {
+		return ""
+	}
+	return ",\n                " + invokeArgsExpr
+}
+
 func buildUnidbgCallArgs(sig, sampleArg string) string {
 	// Parse JVM parameter descriptors between '(' and ')'.
 	openIdx := strings.IndexByte(sig, '(')
 	closeIdx := strings.IndexByte(sig, ')')
-	if openIdx < 0 || closeIdx <= openIdx+1 {
-		return "new StringObject(vm, input)"
+	if openIdx < 0 || closeIdx < 0 || closeIdx <= openIdx {
+		return fmt.Sprintf("new StringObject(vm, %s)", javaQuote(sampleArg))
+	}
+	// Explicit zero-argument descriptor e.g. ()Ljava/lang/String; -> no extra args
+	if closeIdx == openIdx+1 {
+		return ""
 	}
 	params := sig[openIdx+1 : closeIdx]
 	var args []string
@@ -440,21 +463,31 @@ func buildUnidbgCallArgs(sig, sampleArg string) string {
 				args = append(args, "vm.resolveClass("+javaQuote(strings.TrimSuffix(strings.TrimPrefix(desc, "L"), ";"))+").newObject(null)")
 			}
 		case '[':
-			if i+1 < len(params) && params[i+1] == 'B' {
+			dims := 0
+			for i < len(params) && params[i] == '[' {
+				dims++
+				i++
+			}
+			if i >= len(params) {
+				args = append(args, "null")
+				continue
+			}
+			if dims == 1 && params[i] == 'B' {
 				args = append(args, "new ByteArray(vm, input.getBytes(StandardCharsets.UTF_8))")
-				i += 2
-			} else if i+1 < len(params) && params[i+1] == 'L' {
+				i++
+				continue
+			}
+			if params[i] == 'L' {
 				semi := strings.IndexByte(params[i:], ';')
 				if semi < 0 {
 					i = len(params)
 				} else {
 					i += semi + 1
 				}
-				args = append(args, "null")
 			} else {
-				i += 2
-				args = append(args, "null")
+				i++
 			}
+			args = append(args, "null")
 		case 'J':
 			args = append(args, "System.currentTimeMillis() / 1000L")
 			i++
@@ -475,7 +508,7 @@ func buildUnidbgCallArgs(sig, sampleArg string) string {
 		}
 	}
 	if len(args) == 0 {
-		return fmt.Sprintf("new StringObject(vm, %s)", javaQuote(sampleArg))
+		return ""
 	}
 	return strings.Join(args, ",\n                ")
 }

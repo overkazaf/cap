@@ -264,21 +264,22 @@ type JobState struct {
 
 // RunJobRequest configures launching an asynchronous RE execution job.
 type RunJobRequest struct {
-	ProjectID   string            `json:"project_id,omitempty"`
-	ProjectName string            `json:"project_name,omitempty"`
-	Engine      string            `json:"engine"` // "unidbg" | "qiling" | "angr" | "radare2"
-	Code        string            `json:"code,omitempty"`
-	BinaryPath  string            `json:"binary_path,omitempty"`
-	APKPath     string            `json:"apk_path,omitempty"`
-	RootFS      string            `json:"rootfs,omitempty"`
-	TargetAddr  string            `json:"target_addr,omitempty"`
-	FindAddr    string            `json:"find_addr,omitempty"`
-	AvoidAddr   string            `json:"avoid_addr,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	TimeoutSec  int               `json:"timeout_sec,omitempty"`
-	R2Command   string            `json:"r2_command,omitempty"`
-	WorkDir     string            `json:"work_dir,omitempty"`
+	ProjectID    string            `json:"project_id,omitempty"`
+	ProjectName  string            `json:"project_name,omitempty"`
+	Engine       string            `json:"engine"` // "unidbg" | "qiling" | "angr" | "radare2"
+	Code         string            `json:"code,omitempty"`
+	BinaryPath   string            `json:"binary_path,omitempty"`
+	APKPath      string            `json:"apk_path,omitempty"`
+	RootFS       string            `json:"rootfs,omitempty"`
+	TargetSymbol string            `json:"target_symbol,omitempty"`
+	TargetAddr   string            `json:"target_addr,omitempty"`
+	FindAddr     string            `json:"find_addr,omitempty"`
+	AvoidAddr    string            `json:"avoid_addr,omitempty"`
+	Args         []string          `json:"args,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	TimeoutSec   int               `json:"timeout_sec,omitempty"`
+	R2Command    string            `json:"r2_command,omitempty"`
+	WorkDir      string            `json:"work_dir,omitempty"`
 }
 
 // GenerateOptions controls parameterized harness generation and

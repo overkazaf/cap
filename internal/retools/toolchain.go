@@ -111,7 +111,25 @@ func DetectToolchain(cfg ToolchainConfig) ToolchainInfo {
 
 	// 7. Compute aggregate engine readiness flags & collect actionable issues.
 	info.R2Ready = info.R2.Ready
-	info.UnidbgReady = info.Java.Ready && info.Unidbg.Ready
+
+	unidbgHasJars := len(info.UnidbgJars) > 0
+	unidbgHasPom := false
+	if info.Unidbg.Ready && info.Unidbg.Path != "" {
+		if fi, err := os.Stat(info.Unidbg.Path); err == nil && fi.IsDir() {
+			_, unidbgHasPom = detectUnidbgPom(info.Unidbg.Path)
+		}
+	}
+	unidbgCanBuild := info.JavacPath != "" && (unidbgHasJars || (unidbgHasPom && info.Mvn.Ready))
+	info.UnidbgReady = info.Java.Ready && info.Unidbg.Ready && unidbgCanBuild
+
+	if info.Java.Ready && info.Unidbg.Ready && !unidbgCanBuild {
+		if info.JavacPath == "" {
+			info.Issues = append(info.Issues, "JDK `javac` compiler not found (required to compile Unidbg harnesses) — install a full JDK (e.g. brew install openjdk@17)")
+		} else if !unidbgHasJars && (!unidbgHasPom || !info.Mvn.Ready) {
+			info.Issues = append(info.Issues, "Unidbg requires either pre-built JARs or a Maven pom.xml with `mvn` installed")
+		}
+	}
+
 	info.QilingReady = info.Python.Ready && info.Qiling.Ready
 	info.AngrReady = info.Python.Ready && info.Angr.Ready
 
@@ -360,6 +378,7 @@ func probeBinaryVersion(bin string, flag string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), toolchainProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, flag)
+	configureProcGroup(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", false
@@ -380,6 +399,7 @@ func probeJavaVersion(bin string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), toolchainProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "-version")
+	configureProcGroup(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", false
@@ -408,6 +428,7 @@ for mod, key in (("qiling", "QILING"), ("angr", "ANGR")):
         print(key + "=")
 `
 	cmd := exec.CommandContext(ctx, py, "-c", snippet)
+	configureProcGroup(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", "", "", false

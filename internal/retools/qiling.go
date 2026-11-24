@@ -147,10 +147,14 @@ func renderQilingPythonSource(p qilingTemplateParams) string {
 		regSetup = `    ql.arch.regs.rdi = in_addr
     ql.arch.regs.rsi = len(payload)
     ql.arch.regs.rdx = out_addr
-    ql.arch.regs.rcx = 0x100`
+    ql.arch.regs.rcx = 0x100
+    ql.stack_push(stop_addr)`
 		retReg = "ql.arch.regs.rax"
 	case "x86":
-		regSetup = `    ql.arch.regs.eax = in_addr`
+		regSetup = `    ql.stack_push(len(payload))
+    ql.stack_push(in_addr)
+    ql.stack_push(stop_addr)
+    ql.arch.regs.eax = in_addr`
 		retReg = "ql.arch.regs.eax"
 	}
 
@@ -166,12 +170,12 @@ import json
 import os
 import sys
 from qiling import Qiling
-from qiling.const import QL_VERBOSE
+from qiling.const import QL_INTERCEPT, QL_VERBOSE
 
 BINARY_PATH = os.environ.get("CAP_RE_BINARY") or %s
 ROOTFS = os.environ.get("CAP_RE_ROOTFS") or %s
 TARGET_SYMBOL = os.environ.get("CAP_RE_SYMBOL") or %s
-TARGET_ADDR_STR = os.environ.get("CAP_RE_ADDR") or %s
+TARGET_ADDR_STR = os.environ.get("CAP_RE_TARGET_ADDR") or os.environ.get("CAP_RE_ADDR") or %s
 SAMPLE_INPUT = sys.argv[1] if len(sys.argv) > 1 else %s
 EXTRA_ARGS = %s
 
@@ -201,15 +205,15 @@ def main():
     argv = [BINARY_PATH] + list(EXTRA_ARGS)
     ql = Qiling(argv, ROOTFS, verbose=QL_VERBOSE.OFF)
 
-    # Lightweight syscall & code tracing hooks
+    # Lightweight syscall (ENTER intercept so original syscall executes) & code hooks
     try:
-        ql.os.set_syscall("openat", trace_syscall_enter)
+        ql.os.set_syscall("openat", trace_syscall_enter, QL_INTERCEPT.ENTER)
     except Exception:
         pass
     ql.hook_code(hook_first_instructions)
 
     base = ql.loader.load_address
-    target_addr = int(TARGET_ADDR_STR, 16) if TARGET_ADDR_STR else 0
+    target_addr = int(TARGET_ADDR_STR, 0) if TARGET_ADDR_STR else 0
 
     if target_addr > 0:
         begin = base + target_addr if target_addr < base else target_addr
@@ -294,7 +298,7 @@ const qilingCryptoTracerTemplate = `#!/usr/bin/env python3
 import json
 import os
 from qiling import Qiling
-from qiling.const import QL_VERBOSE
+from qiling.const import QL_INTERCEPT, QL_VERBOSE
 
 BINARY_PATH = os.environ.get("CAP_RE_BINARY") or "/path/to/libcrypto_target.so"
 ROOTFS = os.environ.get("CAP_RE_ROOTFS") or "/path/to/qiling/rootfs/arm64_linux"
@@ -315,7 +319,7 @@ def main():
             pass
 
     try:
-        ql.os.set_syscall("write", on_write)
+        ql.os.set_syscall("write", on_write, QL_INTERCEPT.ENTER)
     except Exception:
         pass
 

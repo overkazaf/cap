@@ -111,6 +111,9 @@ func InspectFunction(ctx context.Context, binaryPath, funcNameOrAddr, r2Path str
 	if fi, err := os.Stat(binaryPath); err != nil || fi.IsDir() {
 		return nil, fmt.Errorf("binary file not accessible: %s", binaryPath)
 	}
+	if abs, err := filepath.Abs(binaryPath); err == nil {
+		binaryPath = abs
+	}
 
 	target := strings.TrimSpace(funcNameOrAddr)
 	if target == "" {
@@ -169,62 +172,116 @@ func InspectFunction(ctx context.Context, binaryPath, funcNameOrAddr, r2Path str
 	return parseInspectFunctionOutput(target, string(out)), nil
 }
 
-// ValidateR2Command enforces read-only safety on an r2 command string,
-// rejecting shell escapes (`!`), piping (`|`), redirection (`>`/`<`),
-// backticks, command substitution (`$(`), write/patch families (`w*`), and
-// sandbox/IO reconfiguration commands.
+// allowedR2ReadOnlyCmds is an explicit allowlist of safe read-only radare2
+// analysis, print, seek, search, flag-list, and query commands.
+var allowedR2ReadOnlyCmds = map[string]bool{
+	// Analysis & cross-references (in-memory only)
+	"aa": true, "aaa": true, "aaaa": true,
+	"af": true, "afl": true, "aflj": true, "afll": true,
+	"afi": true, "afij": true, "afb": true, "afbj": true,
+	"afv": true, "afvj": true, "afc": true, "afcj": true,
+	"ax": true, "axj": true, "axt": true, "axtj": true, "axf": true, "axfj": true,
+	"agj": true, "agfj": true, "agcj": true,
+	"ao": true, "aoj": true, "ab": true, "abj": true,
+
+	// Print / disassembly / decompilation
+	"pd": true, "pdj": true, "pdf": true, "pdfj": true,
+	"pdi": true, "pda": true, "pdc": true, "pdg": true, "pdgj": true,
+	"pdr": true, "pdrj": true,
+	"px": true, "pxj": true, "pxw": true, "pxq": true, "pxb": true, "pxr": true,
+	"ps": true, "psj": true, "psz": true, "psw": true,
+	"p8": true, "pc": true, "pi": true, "pij": true, "pif": true,
+	"pr": true, "pt": true, "pm": true, "ph": true,
+
+	// Seek
+	"s": true, "s+": true, "s-": true, "sf": true, "sr": true, "sp": true, "sn": true, "s.": true, "sj": true,
+
+	// Read-only flag listing
+	"f": true, "fj": true, "fl": true, "fs": true, "fsj": true, "fd": true, "fdj": true,
+
+	// Hex dump
+	"x": true, "xj": true, "xw": true, "xq": true,
+
+	// Read-only search
+	"/": true, "/j": true, "/x": true, "/xj": true, "/c": true, "/cj": true,
+	"/i": true, "/ij": true, "/r": true, "/s": true, "/z": true, "/w": true,
+
+	// Read-only eval / echo
+	"?": true, "?j": true, "?v": true, "?e": true, "?p": true, "?s": true,
+
+	// Read-only config query (mutations blocked by '=' rejection) & quit
+	"e": true, "q": true,
+}
+
+func isAllowedReadOnlyR2Cmd(cmd string) bool {
+	if allowedR2ReadOnlyCmds[cmd] {
+		return true
+	}
+	// Binary info family (`i`, `ij`, `iEj`, `iij`, `izzj`, `iS`, `isj`, ...):
+	// strictly read-only rabin2 info queries.
+	if strings.HasPrefix(cmd, "i") {
+		for i := 1; i < len(cmd); i++ {
+			c := cmd[i]
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// ValidateR2Command enforces strict read-only safety on an r2 command string.
+// It blocks shell/pipe/redirection/quoting/alias/env metacharacters, repeat
+// prefixes, dot-interpret scripts, config mutations, plugin loads, debugger
+// commands, and file/write operations via an explicit read-only allowlist.
 func ValidateR2Command(r2Cmd string) error {
 	trimmed := strings.TrimSpace(r2Cmd)
 	if trimmed == "" {
 		return fmt.Errorf("r2 command is required")
 	}
-	if strings.ContainsAny(trimmed, "\r\n\x00") {
-		return fmt.Errorf("r2 command must be a single line without control characters")
+	for _, r := range trimmed {
+		if (r < 0x20 && r != ' ' && r != '\t') || r == 0x7f {
+			return fmt.Errorf("r2 command must be a single line without control characters")
+		}
 	}
-	for _, forbidden := range []string{"!", "`", "|", ">", "<", "$("} {
+	for _, forbidden := range []string{"!", "`", "|", ">", "<", "\"", "'", "&", "$", "%", "\\", "(", ")", "{", "}", "="} {
 		if strings.Contains(trimmed, forbidden) {
 			return fmt.Errorf("unsafe r2 command rejected: contains forbidden token %q", forbidden)
 		}
 	}
 
 	segments := strings.Split(trimmed, ";")
+	validCount := 0
 	for _, seg := range segments {
 		s := strings.TrimSpace(seg)
 		if s == "" {
 			continue
 		}
+		if s[0] >= '0' && s[0] <= '9' {
+			return fmt.Errorf("unsafe r2 repeat prefix rejected: %q", s)
+		}
+		if s[0] == '.' {
+			return fmt.Errorf("unsafe r2 interpret command rejected: %q", s)
+		}
+
 		fields := strings.Fields(s)
 		if len(fields) == 0 {
 			continue
 		}
 		head := fields[0]
-		lowHead := strings.ToLower(head)
-
-		// Reject write/patch commands (r2's `w*` family), script/lang loaders,
-		// remote/macro commands, and file-reopen write commands.
-		if strings.HasPrefix(lowHead, "w") {
-			return fmt.Errorf("unsafe r2 write command rejected: %q", head)
+		// Strip inline `@addr` seek or `~filter` suffix attached to the command token.
+		baseCmd := head
+		if idx := strings.IndexAny(baseCmd, "@~"); idx >= 0 {
+			baseCmd = baseCmd[:idx]
 		}
-		if strings.HasPrefix(head, "#") || strings.HasPrefix(head, "(") || strings.HasPrefix(head, "=") {
-			return fmt.Errorf("unsafe r2 command prefix rejected: %q", head)
+		if baseCmd == "" || !isAllowedReadOnlyR2Cmd(baseCmd) {
+			return fmt.Errorf("unsafe or non-read-only r2 command rejected: %q", head)
 		}
-		if strings.HasPrefix(head, ".") && head != "." {
-			return fmt.Errorf("unsafe r2 interpret command rejected: %q", head)
-		}
-		if strings.HasPrefix(lowHead, "oo+") || lowHead == "o+" || lowHead == "rm" || lowHead == "mv" || lowHead == "cp" || lowHead == "chmod" {
-			return fmt.Errorf("unsafe r2 filesystem/io command rejected: %q", head)
-		}
-		if strings.HasPrefix(head, "P") && len(head) >= 2 && (head[1] == 's' || head[1] == 'd') {
-			return fmt.Errorf("unsafe r2 project write command rejected: %q", head)
-		}
-		if head == "e" || strings.HasPrefix(head, "e ") {
-			lowSeg := strings.ToLower(s)
-			for _, badKey := range []string{"cfg.sandbox", "io.cache", "io.write", "cmd.", "file."} {
-				if strings.Contains(lowSeg, badKey) {
-					return fmt.Errorf("unsafe r2 config mutation rejected: %q", s)
-				}
-			}
-		}
+		validCount++
+	}
+	if validCount == 0 {
+		return fmt.Errorf("r2 command is required")
 	}
 	return nil
 }
@@ -248,6 +305,9 @@ func RunR2Command(ctx context.Context, binaryPath, r2Cmd, r2Path string) (*R2Com
 	}
 	if fi, err := os.Stat(binaryPath); err != nil || fi.IsDir() {
 		return nil, fmt.Errorf("binary file not accessible: %s", binaryPath)
+	}
+	if abs, err := filepath.Abs(binaryPath); err == nil {
+		binaryPath = abs
 	}
 
 	resolvedR2 := resolveR2Binary(r2Path)
@@ -305,10 +365,25 @@ func analyzeBinaryWithR2(ctx context.Context, binaryPath string, fileSize int64,
 	runCtx, cancel := withDefaultTimeout(ctx, defaultR2AnalyzeTimeout)
 	defer cancel()
 
+	r2Cmd := strings.Join([]string{
+		"aaa",
+		"?e __CAP_IJ__",
+		"ij",
+		"?e __CAP_AFLJ__",
+		"aflj",
+		"?e __CAP_IEJ__",
+		"iEj",
+		"?e __CAP_IIJ__",
+		"iij",
+		"?e __CAP_IZZJ__",
+		"izzj",
+	}, "; ")
+
 	cmd := exec.CommandContext(runCtx, r2Bin,
 		"-q",
+		"-e", "cfg.sandbox=true",
 		"-e", "scr.color=0",
-		"-c", "aaa;ij;aflj;iEj;iij;izzj",
+		"-c", r2Cmd,
 		binaryPath,
 	)
 	configureProcGroup(cmd)
@@ -320,14 +395,9 @@ func analyzeBinaryWithR2(ctx context.Context, binaryPath string, fileSize int64,
 	return parseR2AnalyzeOutput(binaryPath, fileSize, out)
 }
 
-// parseR2AnalyzeOutput parses the sequential JSON documents produced by
-// `r2 -q -e scr.color=0 -c "aaa;ij;aflj;iEj;iij;izzj" <bin>`.
+// parseR2AnalyzeOutput parses the marked sections (or legacy sequential JSON
+// documents) produced by radare2's `aaa;ij;aflj;iEj;iij;izzj` pipeline.
 func parseR2AnalyzeOutput(binaryPath string, fileSize int64, raw []byte) (*BinaryAnalysis, error) {
-	docs := decodeR2JSONSequence(raw)
-	if len(docs) == 0 {
-		return nil, fmt.Errorf("r2 returned no parseable JSON output")
-	}
-
 	analysis := &BinaryAnalysis{
 		FilePath:    binaryPath,
 		FileName:    filepath.Base(binaryPath),
@@ -342,23 +412,60 @@ func parseR2AnalyzeOutput(binaryPath string, fileSize int64, raw []byte) (*Binar
 		AnalyzedAt:  nowRFC3339(),
 	}
 
-	// Document 0: ij
+	rawStr := string(raw)
+	if strings.Contains(rawStr, "__CAP_IJ__") {
+		sections := splitMarkedSections(rawStr, []string{
+			"__CAP_IJ__",
+			"__CAP_AFLJ__",
+			"__CAP_IEJ__",
+			"__CAP_IIJ__",
+			"__CAP_IZZJ__",
+		})
+		parsedAny := false
+		if docs := decodeR2JSONSequence([]byte(sections["__CAP_IJ__"])); len(docs) > 0 {
+			parseR2IJ(docs[0], analysis)
+			parsedAny = true
+		}
+		if docs := decodeR2JSONSequence([]byte(sections["__CAP_AFLJ__"])); len(docs) > 0 {
+			parseR2AFLJ(docs[0], analysis)
+			parsedAny = true
+		}
+		if docs := decodeR2JSONSequence([]byte(sections["__CAP_IEJ__"])); len(docs) > 0 {
+			parseR2ExportsJSON(docs[0], analysis)
+			parsedAny = true
+		}
+		if docs := decodeR2JSONSequence([]byte(sections["__CAP_IIJ__"])); len(docs) > 0 {
+			parseR2ImportsJSON(docs[0], analysis)
+			parsedAny = true
+		}
+		if docs := decodeR2JSONSequence([]byte(sections["__CAP_IZZJ__"])); len(docs) > 0 {
+			parseR2StringsJSON(docs[0], analysis)
+			parsedAny = true
+		}
+		if !parsedAny {
+			return nil, fmt.Errorf("r2 returned no parseable JSON output")
+		}
+		return analysis, nil
+	}
+
+	docs := decodeR2JSONSequence(raw)
+	if len(docs) == 0 {
+		return nil, fmt.Errorf("r2 returned no parseable JSON output")
+	}
+
+	// Fallback positional decoding for raw unmarked output
 	if len(docs) >= 1 {
 		parseR2IJ(docs[0], analysis)
 	}
-	// Document 1: aflj
 	if len(docs) >= 2 {
 		parseR2AFLJ(docs[1], analysis)
 	}
-	// Document 2: iEj
 	if len(docs) >= 3 {
 		parseR2ExportsJSON(docs[2], analysis)
 	}
-	// Document 3: iij
 	if len(docs) >= 4 {
 		parseR2ImportsJSON(docs[3], analysis)
 	}
-	// Document 4: izzj
 	if len(docs) >= 5 {
 		parseR2StringsJSON(docs[4], analysis)
 	}
@@ -1212,20 +1319,23 @@ func inspectFunctionPureGoELF(binaryPath, target string) (*FunctionDetail, error
 		detail.Size = matched.Size
 		if int(matched.Section) > 0 && int(matched.Section) < len(ef.Sections) {
 			sec := ef.Sections[matched.Section]
-			if sec != nil && matched.Value >= sec.Addr {
+			if sec != nil && sec.Type != elf.SHT_NOBITS && matched.Value >= sec.Addr {
 				relOff := matched.Value - sec.Addr
-				readLen := matched.Size
-				if readLen == 0 || readLen > 128 {
-					readLen = 64
-				}
-				if data, err := sec.Data(); err == nil && relOff < uint64(len(data)) {
-					end := relOff + readLen
-					if end > uint64(len(data)) {
-						end = uint64(len(data))
+				if relOff < sec.Size {
+					readLen := matched.Size
+					if readLen == 0 || readLen > 128 {
+						readLen = 64
 					}
-					rawBytes := data[relOff:end]
-					detail.Disasm = fmt.Sprintf("; raw bytes @ 0x%x (%d bytes, install r2 to disassemble)\n%s",
-						matched.Value, len(rawBytes), hex.Dump(rawBytes))
+					if relOff+readLen > sec.Size {
+						readLen = sec.Size - relOff
+					}
+					buf := make([]byte, readLen)
+					n, readErr := sec.ReadAt(buf, int64(relOff))
+					if n > 0 && (readErr == nil || errors.Is(readErr, io.EOF)) {
+						rawBytes := buf[:n]
+						detail.Disasm = fmt.Sprintf("; raw bytes @ 0x%x (%d bytes, install r2 to disassemble)\n%s",
+							matched.Value, len(rawBytes), hex.Dump(rawBytes))
+					}
 				}
 			}
 		}
@@ -1258,6 +1368,9 @@ func BuiltinR2Projects() []REProject {
 func GenerateR2Harness(opts GenerateOptions) *GeneratedHarness {
 	binPath := firstNonEmpty(opts.BinaryPath, opts.SOFile, "/path/to/libnative.so")
 	target := firstNonEmpty(opts.TargetAddr, opts.TargetSymbol, "JNI_OnLoad")
+	if !safeFuncTargetRe.MatchString(target) {
+		target = "JNI_OnLoad"
+	}
 
 	var cmds []string
 	cmds = append(cmds, "ij", "iEj", "iij")

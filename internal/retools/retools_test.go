@@ -303,6 +303,34 @@ echo "ANGR="
 	if len(missInfo.Issues) < 5 {
 		t.Errorf("expected >= 5 actionable issues, got %d: %v", len(missInfo.Issues), missInfo.Issues)
 	}
+
+	// Verify UnidbgReady is false when java + unidbg exist but javac is missing (JRE-only)
+	jreDir := filepath.Join(dir, "jre-only")
+	if err := os.MkdirAll(jreDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	jreJava := writeFakeExec(t, jreDir, "java", `echo 'openjdk version "17.0.10"' >&2`)
+	// Ensure PATH does not accidentally resolve a host javac during this sub-check
+	t.Setenv("PATH", jreDir)
+	jreInfo := DetectToolchain(ToolchainConfig{
+		R2Path:     fakeR2,
+		JavaPath:   jreJava,
+		MvnPath:    filepath.Join(dir, "no-mvn"),
+		UnidbgDir:  unidbgDir,
+		PythonPath: fakePy,
+	})
+	if jreInfo.UnidbgReady {
+		t.Errorf("expected UnidbgReady=false when javac is missing; got %+v", jreInfo)
+	}
+	hasJavacIssue := false
+	for _, iss := range jreInfo.Issues {
+		if strings.Contains(iss, "javac") {
+			hasJavacIssue = true
+		}
+	}
+	if !hasJavacIssue {
+		t.Errorf("expected actionable javac issue in %v", jreInfo.Issues)
+	}
 }
 
 // --- 2. Pure-Go ELF Fallback & Host Binary Tests ---------------------------
@@ -423,12 +451,18 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$cmd" in
-  "aaa;ij;aflj;iEj;iij;izzj")
-    echo "WARN: harmless r2 diagnostic line"
+  *"__CAP_IJ__"*)
+    echo "[x] Analyze all flags starting with sym. and entry0 (aa)"
+    echo "[0] noisy bracket text from aaa"
+    echo "__CAP_IJ__"
     echo '{"core":{"format":"elf64","size":4096},"bin":{"arch":"arm","bits":64,"endian":"little","bintype":"elf","class":"ELF64","os":"linux","pic":true,"nx":true,"canary":true,"relro":"full","stripped":false,"baddr":4096}}'
+    echo "__CAP_AFLJ__"
     echo '[{"name":"sym.Java_com_demo_Sign_sign","offset":4608,"size":128,"signature":"int sign(void)","callrefs":[{"addr":4864,"type":"CALL","at":4620}]}]'
+    echo "__CAP_IEJ__"
     echo '[{"name":"Java_com_demo_Sign_sign","vaddr":4608,"size":128,"type":"FUNC","bind":"GLOBAL"}]'
+    echo "__CAP_IIJ__"
     echo '[{"name":"EVP_MD_CTX_new","plt":4200,"type":"FUNC","bind":"GLOBAL","libname":"libcrypto.so"}]'
+    echo "__CAP_IZZJ__"
     echo '[{"vaddr":8192,"length":13,"section":".rodata","type":"ascii","string":"sign_salt_123"}]'
     ;;
   *"__CAP_PDFJ__"*)
@@ -518,15 +552,17 @@ esac
 	}
 
 	// 5. RunR2Command allows safe read-only commands
-	res, err := RunR2Command(context.Background(), dummyBin, "ij; iEj; iz~sign", fakeR2)
-	if err != nil {
-		t.Fatalf("RunR2Command safe failed: %v", err)
-	}
-	if !strings.Contains(res.Output, "R2_OK: ij; iEj; iz~sign") {
-		t.Errorf("unexpected RunR2Command output: %q", res.Output)
+	for _, safe := range []string{"ij; iEj; iz~sign", "pdf @ 0x1000", "e asm.arch", "aaa; aflj", "px 32 @ 0x2000"} {
+		res, err := RunR2Command(context.Background(), dummyBin, safe, fakeR2)
+		if err != nil {
+			t.Fatalf("RunR2Command safe (%q) failed: %v", safe, err)
+		}
+		if !strings.Contains(res.Output, "R2_OK:") {
+			t.Errorf("unexpected RunR2Command output for %q: %q", safe, res.Output)
+		}
 	}
 
-	// 6. RunR2Command rejects shell escapes & write/config mutations
+	// 6. RunR2Command rejects shell escapes, bypasses, plugin loads, debug, & write/config mutations
 	unsafeCmds := []string{
 		"!id",
 		"!!ls -la",
@@ -538,16 +574,49 @@ esac
 		"wx 9090",
 		"wa nop",
 		"oo+",
+		"o+/tmp/x",
+		"o /etc/passwd",
+		"on /etc/passwd",
 		"#!python",
 		"e cfg.sandbox=false; ij",
+		"e scr.pager=/bin/sh",
+		"e cfg.editor=/bin/sh",
+		"e dir.plugins=/tmp",
+		"e-",
 		"ij\n!id",
 		".evil.r2",
+		". /tmp/evil.r2",
+		". ?e wx 90",
+		"1 wx 9090",
+		"1 oo+",
+		"1 =h 8080",
+		`"wx 9090"`,
+		`'oo+'`,
+		"& wx 9090",
+		"L /tmp/evil.so",
+		"do",
+		"doo",
+		"dc",
+		"ds",
+		"r+10",
+		"%ENV=val",
+		"$alias=wx",
 		"=h 8080",
 	}
 	for _, bad := range unsafeCmds {
 		if _, err := RunR2Command(context.Background(), dummyBin, bad, fakeR2); err == nil {
 			t.Errorf("expected RunR2Command to reject unsafe command %q", bad)
 		}
+	}
+
+	// 7. Verify marked AnalyzeBinary parsing does NOT shift when aflj/iEj are empty and aaa prints [0] noise
+	strippedRaw := []byte("[0] aaa noise\n__CAP_IJ__\n{\"bin\":{\"arch\":\"arm\",\"bits\":64,\"endian\":\"little\"}}\n__CAP_AFLJ__\n\n__CAP_IEJ__\n\n__CAP_IIJ__\n[{\"name\":\"malloc\"}]\n__CAP_IZZJ__\n[{\"vaddr\":4096,\"string\":\"hello_world\"}]\n")
+	parsedStripped, err := parseR2AnalyzeOutput(dummyBin, 1024, strippedRaw)
+	if err != nil {
+		t.Fatalf("parseR2AnalyzeOutput(stripped): %v", err)
+	}
+	if len(parsedStripped.Functions) != 0 || len(parsedStripped.Exports) != 0 || len(parsedStripped.Imports) != 1 || parsedStripped.Imports[0].Name != "malloc" || len(parsedStripped.Strings) != 1 || parsedStripped.Strings[0].Value != "hello_world" {
+		t.Errorf("marked section parsing shifted on empty sections: %+v", parsedStripped)
 	}
 }
 
@@ -603,6 +672,13 @@ func TestHarnessGeneratorsAndDeepTraceCodegen(t *testing.T) {
 		DexXRefs: []captrace.DexMethodRef{
 			{
 				ClassName:    "com.example.shop.sec.NativeSigner",
+				MethodName:   "<clinit>",
+				Descriptor:   "()V",
+				IsNative:     false,
+				LoadsLibrary: []string{"signer"},
+			},
+			{
+				ClassName:    "com.example.shop.sec.NativeSigner",
 				MethodName:   "nativeSign",
 				Descriptor:   "(Ljava/lang/String;J)Ljava/lang/String;",
 				IsNative:     true,
@@ -634,6 +710,7 @@ func TestHarnessGeneratorsAndDeepTraceCodegen(t *testing.T) {
 		"DalvikModule",
 		"AbstractJni",
 		"callStaticJniMethodObject",
+		"deriveLibName(SO_PATH)",
 		"com/example/shop/sec/NativeSigner",
 		"nativeSign(Ljava/lang/String;J)Ljava/lang/String;",
 		"/tmp/shop.apk",
@@ -648,6 +725,15 @@ func TestHarnessGeneratorsAndDeepTraceCodegen(t *testing.T) {
 		t.Errorf("expected 2 SignParams, got %v", uStd.SignParams)
 	}
 
+	// Verify 0-arg descriptor omits extra arg and multi-dim array ([[B) is handled cleanly
+	uZero := GenerateUnidbgHarness(GenerateOptions{TargetMethod: "getToken", MethodSignature: "()Ljava/lang/String;"})
+	if strings.Contains(uZero.Code, "TARGET_METHOD_SIG,") {
+		t.Errorf("0-arg Unidbg harness should not emit trailing comma/arg:\n%s", uZero.Code)
+	}
+	if got := buildUnidbgCallArgs("([[B[[Ljava/lang/String;[B)V", "abc"); !strings.Contains(got, "null") || !strings.Contains(got, "ByteArray") {
+		t.Errorf("multi-dim array buildUnidbgCallArgs unexpected: %q", got)
+	}
+
 	uHTTP, err := GenerateFromTrace(tr, EngineUnidbg, GenerateOptions{HTTPServerMode: true, HTTPPort: 9123, Arch: "arm"})
 	if err != nil {
 		t.Fatalf("GenerateFromTrace(unidbg http): %v", err)
@@ -658,13 +744,16 @@ func TestHarnessGeneratorsAndDeepTraceCodegen(t *testing.T) {
 		}
 	}
 
-	// 2. DeepTrace -> Qiling
+	// 2. DeepTrace -> Qiling (ARM64 + x86_64 stack_push + QL_INTERCEPT.ENTER)
 	ql, err := GenerateFromTrace(tr, EngineQiling, GenerateOptions{RootFS: "/opt/rootfs/arm64_linux"})
 	if err != nil {
 		t.Fatalf("GenerateFromTrace(qiling): %v", err)
 	}
 	for _, want := range []string{
 		"from qiling import Qiling",
+		"QL_INTERCEPT.ENTER",
+		"CAP_RE_TARGET_ADDR",
+		"int(TARGET_ADDR_STR, 0)",
 		"/opt/rootfs/arm64_linux",
 		"0x14a8",
 		"ql.arch.regs.x0",
@@ -674,6 +763,10 @@ func TestHarnessGeneratorsAndDeepTraceCodegen(t *testing.T) {
 		if !strings.Contains(ql.Code, want) {
 			t.Errorf("Qiling harness missing %q", want)
 		}
+	}
+	qlX64 := GenerateQilingHarness(GenerateOptions{BinaryPath: "/tmp/libx64.so", Arch: "x86_64", TargetAddr: "0x1200"})
+	if !strings.Contains(qlX64.Code, "ql.stack_push(stop_addr)") {
+		t.Errorf("x86_64 Qiling harness missing ql.stack_push(stop_addr)")
 	}
 
 	// 3. DeepTrace -> angr
@@ -696,13 +789,17 @@ func TestHarnessGeneratorsAndDeepTraceCodegen(t *testing.T) {
 		}
 	}
 
-	// 4. DeepTrace -> radare2
+	// 4. DeepTrace -> radare2 (and sanitize unsafe target in GenerateR2Harness)
 	r2h, err := GenerateFromTrace(tr, EngineRadare2, GenerateOptions{})
 	if err != nil {
 		t.Fatalf("GenerateFromTrace(radare2): %v", err)
 	}
 	if err := ValidateR2Command(r2h.Code); err != nil {
 		t.Errorf("generated r2 harness failed safety validation: %v", err)
+	}
+	r2Unsafe := GenerateR2Harness(GenerateOptions{BinaryPath: "/tmp/lib.so", TargetSymbol: "main; !id"})
+	if err := ValidateR2Command(r2Unsafe.Code); err != nil {
+		t.Errorf("GenerateR2Harness failed to sanitize unsafe target: %q (%v)", r2Unsafe.Code, err)
 	}
 
 	// 5. Unknown engine rejected
@@ -728,6 +825,12 @@ func TestProjectStoreCRUDHotReloadAndReadOnly(t *testing.T) {
 		if len(store.ListByEngine(eng)) == 0 {
 			t.Errorf("expected built-in projects for engine %q", eng)
 		}
+	}
+	if len(store.ListByEngine("")) != len(all) {
+		t.Errorf("ListByEngine(\"\") should return all projects (%d), got %d", len(all), len(store.ListByEngine("")))
+	}
+	if gotUnknown := store.ListByEngine("unknown"); gotUnknown == nil || len(gotUnknown) != 0 {
+		t.Errorf("ListByEngine(unknown) should return non-nil empty slice, got %#v", gotUnknown)
 	}
 
 	// Save custom project
@@ -1024,5 +1127,85 @@ exit 0
 	ringSt := mgr.GetJobState()
 	if len(ringSt.Events) != MaxJobEvents || ringSt.EventCount != MaxJobEvents+50 {
 		t.Errorf("ring buffer mismatch: len=%d eventCount=%d", len(ringSt.Events), ringSt.EventCount)
+	}
+
+	// 8. Verify StartJob rejects empty engine & exports CAP_RE_SYMBOL / CAP_RE_ADDR / CAP_RE_TARGET_ADDR
+	if _, err := mgr.StartJob(RunJobRequest{Code: "print(1)"}); err == nil {
+		t.Errorf("expected StartJob to reject empty engine")
+	}
+	envSlice := buildJobEnv(RunJobRequest{
+		TargetSymbol: "Java_demo_sign",
+		TargetAddr:   "0x14a8",
+	}, ToolchainInfo{})
+	envJoined := strings.Join(envSlice, "\n")
+	for _, want := range []string{"CAP_RE_SYMBOL=Java_demo_sign", "CAP_RE_TARGET_ADDR=0x14a8", "CAP_RE_ADDR=0x14a8"} {
+		if !strings.Contains(envJoined, want) {
+			t.Errorf("buildJobEnv missing %q", want)
+		}
+	}
+
+	// 9. Verify Unidbg Maven mode (mvn dependency:build-classpath -> javac -> java)
+	mvnProjDir := filepath.Join(dir, "unidbg-mvn-proj")
+	if err := os.MkdirAll(mvnProjDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mvnProjDir, "pom.xml"), []byte(`<project><artifactId>unidbg-android</artifactId><version>0.9.8</version></project>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fakeMvnCP := writeFakeExec(t, binDir, "mvn-cp", `
+if [ "$1" = "-v" ]; then
+  echo "Apache Maven 3.9.6"
+  exit 0
+fi
+for arg in "$@"; do
+  case "$arg" in
+    -Dmdep.outputFile=*)
+      out="${arg#-Dmdep.outputFile=}"
+      printf "%s" "/fake/unidbg-dep.jar" > "$out"
+      ;;
+  esac
+done
+exit 0
+`)
+	mgr.SetToolchainConfig(ToolchainConfig{
+		R2Path:     fakeR2,
+		MvnPath:    fakeMvnCP,
+		PythonPath: fakePy,
+		JavaPath:   fakeJava,
+		UnidbgDir:  mvnProjDir,
+	})
+	if gotCfg := mgr.GetToolchainConfig(); gotCfg.UnidbgDir != mvnProjDir {
+		t.Errorf("GetToolchainConfig mismatch: %+v", gotCfg)
+	}
+	if _, err := mgr.StartJob(RunJobRequest{
+		Engine: EngineUnidbg,
+		Code:   "public class MavenSigner { public static void main(String[] a) {} }",
+	}); err != nil {
+		t.Fatalf("StartJob(unidbg maven mode) failed: %v", err)
+	}
+	mvnFinal, err := mgr.WaitJob(waitCtx)
+	if err != nil || mvnFinal.Status != StatusDone || len(mvnFinal.Results) != 1 || mvnFinal.Results[0].Payload["sign"] != "deadbeef1234" {
+		t.Fatalf("Unidbg Maven mode failed: status=%q err=%q results=%+v", mvnFinal.Status, mvnFinal.Error, mvnFinal.Results)
+	}
+
+	// 10. Concurrent StartJob calls must serialize cleanly without orphaning subprocesses
+	var startWG sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		startWG.Add(1)
+		go func(idx int) {
+			defer startWG.Done()
+			_, _ = mgr.StartJob(RunJobRequest{
+				Engine:      EngineQiling,
+				ProjectName: fmt.Sprintf("concurrent-%d", idx),
+				Code:        "# MODE_SLEEP\n",
+			})
+		}(i)
+	}
+	startWG.Wait()
+	if err := mgr.CancelJob(); err != nil {
+		t.Fatalf("CancelJob after concurrent starts: %v", err)
+	}
+	if st := mgr.GetJobState(); st.Running {
+		t.Errorf("expected no running job after CancelJob, got %+v", st)
 	}
 }

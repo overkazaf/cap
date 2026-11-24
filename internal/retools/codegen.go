@@ -19,6 +19,9 @@ var codegenSecurityKeywords = []string{
 // DeepTrace TraceResult and synthesizes a tailored Unidbg, Qiling, angr, or
 // radare2 harness.
 func GenerateFromTrace(res *captrace.TraceResult, engine string, opts GenerateOptions) (*GeneratedHarness, error) {
+	if strings.TrimSpace(engine) == "" {
+		engine = EngineUnidbg
+	}
 	eng := normalizeEngineName(engine)
 	if eng == "" {
 		return nil, fmt.Errorf("unsupported RE engine %q (expected unidbg, qiling, angr, or radare2)", engine)
@@ -370,7 +373,7 @@ func extractNativeTargetFromTrace(res *captrace.TraceResult, opts GenerateOption
 		if out.methodName == "" && dx.IsNative && dx.MethodName != "" {
 			out.methodName = dx.MethodName
 		}
-		if dx.Descriptor != "" && (out.descriptor == "" || (dx.MethodName == out.methodName && cls == out.className)) {
+		if dx.IsNative && dx.Descriptor != "" && (out.descriptor == "" || (dx.MethodName == out.methodName && cls == out.className)) {
 			out.descriptor = dx.Descriptor
 		}
 		if out.soPath == "" && len(dx.LoadsLibrary) > 0 {
@@ -472,7 +475,7 @@ func hasSecurityKeyword(s string) bool {
 
 func normalizeEngineName(engine string) string {
 	switch strings.ToLower(strings.TrimSpace(engine)) {
-	case "", EngineUnidbg:
+	case EngineUnidbg:
 		return EngineUnidbg
 	case EngineQiling:
 		return EngineQiling

@@ -3,6 +3,7 @@
 package retools
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 	"time"
@@ -20,8 +21,9 @@ func killProcGroup(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-		return cmd.Process.Kill()
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if err == nil || errors.Is(err, syscall.ESRCH) {
+		return nil
 	}
-	return nil
+	return cmd.Process.Kill()
 }

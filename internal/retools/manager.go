@@ -111,13 +111,17 @@ func (s *ProjectStore) List() []REProject {
 }
 
 // ListByEngine filters projects by engine ("unidbg" | "qiling" | "angr" | "radare2").
+// An empty engine string returns all projects.
 func (s *ProjectStore) ListByEngine(engine string) []REProject {
+	if strings.TrimSpace(engine) == "" {
+		return s.List()
+	}
 	eng := normalizeEngineName(engine)
 	if eng == "" {
 		return []REProject{}
 	}
 	all := s.List()
-	var out []REProject
+	out := []REProject{}
 	for _, p := range all {
 		if p.Engine == eng {
 			out = append(out, p)
@@ -277,7 +281,9 @@ type Manager struct {
 	tcMu   sync.RWMutex
 	tcCfg  ToolchainConfig
 	tcInfo *ToolchainInfo
+	tcGen  uint64
 
+	jobOpMu  sync.Mutex // serializes StartJob / CancelJob / Shutdown transitions
 	mu       sync.Mutex
 	active   *activeJob
 	state    *JobState
@@ -291,26 +297,9 @@ type activeJob struct {
 	engine    string
 	ctx       context.Context
 	cancel    context.CancelFunc
-	cmdMu     sync.Mutex
-	cmd       *exec.Cmd
 	tempPaths []string
 	cancelled atomic.Bool
 	doneCh    chan struct{}
-}
-
-func (j *activeJob) setCmd(cmd *exec.Cmd) {
-	j.cmdMu.Lock()
-	j.cmd = cmd
-	j.cmdMu.Unlock()
-}
-
-func (j *activeJob) killActiveCmd() {
-	j.cmdMu.Lock()
-	cmd := j.cmd
-	j.cmdMu.Unlock()
-	if cmd != nil {
-		_ = killProcGroup(cmd)
-	}
 }
 
 // NewManager creates an RE Manager backed by capDir (defaulting to ~/.cap).
@@ -346,7 +335,13 @@ func (m *Manager) SetToolchainConfig(cfg ToolchainConfig) {
 	m.tcMu.Lock()
 	m.tcCfg = cfg
 	m.tcInfo = nil
+	m.tcGen++
 	m.tcMu.Unlock()
+}
+
+// GetToolchainConfig returns the currently configured custom toolchain paths.
+func (m *Manager) GetToolchainConfig() ToolchainConfig {
+	return m.currentToolchainConfig()
 }
 
 // GetToolchain returns host toolchain readiness (re-probing if forceRefresh is true).
@@ -354,13 +349,16 @@ func (m *Manager) GetToolchain(forceRefresh bool) ToolchainInfo {
 	m.tcMu.RLock()
 	cached := m.tcInfo
 	cfg := m.tcCfg
+	gen := m.tcGen
 	m.tcMu.RUnlock()
 	if cached != nil && !forceRefresh {
 		return *cached
 	}
 	info := DetectToolchain(cfg)
 	m.tcMu.Lock()
-	m.tcInfo = &info
+	if m.tcGen == gen {
+		m.tcInfo = &info
+	}
 	m.tcMu.Unlock()
 	return info
 }
@@ -460,6 +458,9 @@ func (m *Manager) StartJob(req RunJobRequest) (*JobState, error) {
 			if req.RootFS == "" {
 				req.RootFS = proj.RootFS
 			}
+			if req.TargetSymbol == "" {
+				req.TargetSymbol = proj.TargetSymbol
+			}
 			if req.TargetAddr == "" {
 				req.TargetAddr = proj.TargetAddr
 			}
@@ -475,6 +476,9 @@ func (m *Manager) StartJob(req RunJobRequest) (*JobState, error) {
 		}
 	}
 
+	if strings.TrimSpace(req.Engine) == "" {
+		return nil, fmt.Errorf("RE engine is required (unidbg, qiling, angr, or radare2)")
+	}
 	eng := normalizeEngineName(req.Engine)
 	if eng == "" {
 		return nil, fmt.Errorf("unsupported RE engine %q", req.Engine)
@@ -495,8 +499,12 @@ func (m *Manager) StartJob(req RunJobRequest) (*JobState, error) {
 		return nil, err
 	}
 
-	// Cancel any currently running job cleanly before starting the new one.
-	_ = m.CancelJob()
+	// Serialize job start/cancel transitions so concurrent StartJob calls never
+	// race or orphan subprocesses.
+	m.jobOpMu.Lock()
+	defer m.jobOpMu.Unlock()
+
+	m.cancelJobLocked()
 
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -555,22 +563,29 @@ func (m *Manager) StartJob(req RunJobRequest) (*JobState, error) {
 
 // CancelJob terminates the currently running job and its child process group.
 func (m *Manager) CancelJob() error {
+	m.jobOpMu.Lock()
+	defer m.jobOpMu.Unlock()
+	m.cancelJobLocked()
+	return nil
+}
+
+func (m *Manager) cancelJobLocked() {
 	m.mu.Lock()
 	job := m.active
 	m.mu.Unlock()
 
 	if job == nil {
-		return nil
+		return
 	}
 	job.cancelled.Store(true)
+	// Cancelling job.ctx triggers exec.CommandContext's synchronized cmd.Cancel
+	// (killProcGroup) without ever racing against cmd.Wait() reaping the PID.
 	job.cancel()
-	job.killActiveCmd()
 
 	select {
 	case <-job.doneCh:
 	case <-time.After(2 * time.Second):
 	}
-	return nil
 }
 
 // WaitJob blocks until the active job finishes (or ctx is cancelled) and
@@ -601,11 +616,12 @@ func (m *Manager) Shutdown() {
 // --- Execution Plan Builder & Runner ---------------------------------------
 
 type jobStep struct {
-	label string
-	bin   string
-	args  []string
-	dir   string
-	env   []string
+	label       string
+	bin         string
+	args        []string
+	resolveArgs func() ([]string, error)
+	dir         string
+	env         []string
 }
 
 type jobPlan struct {
@@ -663,6 +679,9 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 		if fi, err := os.Stat(binPath); err != nil || fi.IsDir() {
 			return nil, fmt.Errorf("binary file not accessible: %s", binPath)
 		}
+		if abs, err := filepath.Abs(binPath); err == nil {
+			binPath = abs
+		}
 		if !tc.R2.Ready || tc.R2.Path == "" {
 			return nil, fmt.Errorf("radare2 (r2) not available (%s)", tc.R2.Issue)
 		}
@@ -689,6 +708,9 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 		}
 		if !tc.Unidbg.Ready {
 			return nil, fmt.Errorf("Unidbg not configured (%s)", tc.Unidbg.Issue)
+		}
+		if tc.JavacPath == "" {
+			return nil, fmt.Errorf("JDK javac compiler not found (required to compile Unidbg harnesses)")
 		}
 
 		tmpDir, err := os.MkdirTemp(os.TempDir(), "cap-unidbg-*")
@@ -724,7 +746,7 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 		}
 
 		// Mode 1: Direct javac + java using discovered Unidbg JARs
-		if len(tc.UnidbgJars) > 0 && tc.JavacPath != "" {
+		if len(tc.UnidbgJars) > 0 {
 			cpJars := strings.Join(tc.UnidbgJars, string(os.PathListSeparator))
 			runCP := outDir + string(os.PathListSeparator) + cpJars
 			javaArgs := append([]string{"-cp", runCP, fqcn}, req.Args...)
@@ -750,38 +772,98 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 			}, nil
 		}
 
-		// Mode 2: Maven project directory execution
-		if tc.Mvn.Ready && tc.Mvn.Path != "" {
-			mvnArgs := []string{
-				"-q",
-				"compile",
-				"exec:java",
-				"-Dexec.mainClass=" + fqcn,
+		// Mode 2: Maven project directory — resolve classpath via
+		// `mvn dependency:build-classpath`, then compile & run the staged
+		// temp Java source with javac + java.
+		pomPath := resolveUnidbgPomPath(tc.Unidbg.Path)
+		if tc.Mvn.Ready && tc.Mvn.Path != "" && pomPath != "" {
+			cpFile := filepath.Join(tmpDir, "unidbg-classpath.txt")
+			pomDir := filepath.Dir(pomPath)
+			readCP := func() (string, error) {
+				raw, err := os.ReadFile(cpFile)
+				if err != nil {
+					return "", fmt.Errorf("read maven classpath %s: %w", cpFile, err)
+				}
+				var entries []string
+				if s := strings.TrimSpace(string(raw)); s != "" {
+					entries = append(entries, s)
+				}
+				for _, clsDir := range []string{
+					filepath.Join(pomDir, "target", "classes"),
+					filepath.Join(tc.Unidbg.Path, "unidbg-android", "target", "classes"),
+					filepath.Join(tc.Unidbg.Path, "target", "classes"),
+				} {
+					if fi, err := os.Stat(clsDir); err == nil && fi.IsDir() {
+						entries = append(entries, clsDir)
+					}
+				}
+				if len(entries) == 0 {
+					return "", fmt.Errorf("maven dependency:build-classpath produced empty classpath")
+				}
+				return strings.Join(entries, string(os.PathListSeparator)), nil
 			}
-			if len(req.Args) > 0 {
-				mvnArgs = append(mvnArgs, "-Dexec.args="+strings.Join(req.Args, " "))
-			}
+			extraArgs := append([]string(nil), req.Args...)
 			return &jobPlan{
 				steps: []jobStep{
 					{
-						label: "mvn",
+						label: "mvn-classpath",
 						bin:   tc.Mvn.Path,
-						args:  mvnArgs,
-						dir:   tc.Unidbg.Path,
+						args:  []string{"-q", "-f", pomPath, "dependency:build-classpath", "-Dmdep.outputFile=" + cpFile},
+						dir:   pomDir,
 						env:   env,
 					},
+					{
+						label: "javac",
+						bin:   tc.JavacPath,
+						resolveArgs: func() ([]string, error) {
+							cp, err := readCP()
+							if err != nil {
+								return nil, err
+							}
+							return []string{"-encoding", "UTF-8", "-cp", cp, "-d", outDir, javaFile}, nil
+						},
+						dir: tmpDir,
+						env: env,
+					},
+					{
+						label: "java",
+						bin:   tc.Java.Path,
+						resolveArgs: func() ([]string, error) {
+							cp, err := readCP()
+							if err != nil {
+								return nil, err
+							}
+							runCP := outDir + string(os.PathListSeparator) + cp
+							return append([]string{"-cp", runCP, fqcn}, extraArgs...), nil
+						},
+						dir: firstNonEmpty(req.WorkDir, tmpDir),
+						env: env,
+					},
 				},
-				displayCmd: fmt.Sprintf("%s exec:java -Dexec.mainClass=%s", filepath.Base(tc.Mvn.Path), fqcn),
-				tempPaths:  []string{tmpDir},
+				displayCmd: fmt.Sprintf("%s classpath && %s && %s %s",
+					filepath.Base(tc.Mvn.Path), filepath.Base(tc.JavacPath), filepath.Base(tc.Java.Path), fqcn),
+				tempPaths: []string{tmpDir},
 			}, nil
 		}
 
 		_ = os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("Unidbg requires either pre-built JARs + javac or Maven (mvn) to compile and run")
+		return nil, fmt.Errorf("Unidbg requires either pre-built JARs + javac or a Maven pom.xml with mvn + javac")
 
 	default:
 		return nil, fmt.Errorf("unsupported RE engine %q", req.Engine)
 	}
+}
+
+func resolveUnidbgPomPath(unidbgPath string) string {
+	for _, cand := range []string{
+		filepath.Join(unidbgPath, "unidbg-android", "pom.xml"),
+		filepath.Join(unidbgPath, "pom.xml"),
+	} {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand
+		}
+	}
+	return ""
 }
 
 func buildJobEnv(req RunJobRequest, tc ToolchainInfo) []string {
@@ -791,10 +873,20 @@ func buildJobEnv(req RunJobRequest, tc ToolchainInfo) []string {
 			env = append(env, k+"="+v)
 		}
 	}
-	add("CAP_RE_BINARY", req.BinaryPath)
+	binPath := strings.TrimSpace(req.BinaryPath)
+	if binPath != "" {
+		if _, err := os.Stat(binPath); err == nil {
+			if abs, err := filepath.Abs(binPath); err == nil {
+				binPath = abs
+			}
+		}
+	}
+	add("CAP_RE_BINARY", binPath)
 	add("CAP_RE_APK", req.APKPath)
 	add("CAP_RE_ROOTFS", firstNonEmpty(req.RootFS, tc.QilingRootFS))
+	add("CAP_RE_SYMBOL", req.TargetSymbol)
 	add("CAP_RE_TARGET_ADDR", req.TargetAddr)
+	add("CAP_RE_ADDR", req.TargetAddr)
 	add("CAP_RE_FIND_ADDR", req.FindAddr)
 	add("CAP_RE_AVOID_ADDR", req.AvoidAddr)
 	for k, v := range req.Env {
@@ -902,7 +994,15 @@ func (m *Manager) runJobPlan(job *activeJob, plan *jobPlan) {
 }
 
 func (m *Manager) runSingleStep(job *activeJob, step jobStep) (int, error) {
-	cmd := exec.CommandContext(job.ctx, step.bin, step.args...)
+	args := step.args
+	if step.resolveArgs != nil {
+		resolved, err := step.resolveArgs()
+		if err != nil {
+			return -1, err
+		}
+		args = resolved
+	}
+	cmd := exec.CommandContext(job.ctx, step.bin, args...)
 	if step.dir != "" {
 		cmd.Dir = step.dir
 	}
@@ -921,7 +1021,6 @@ func (m *Manager) runSingleStep(job *activeJob, step jobStep) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return -1, fmt.Errorf("start %s: %w", step.label, err)
 	}
-	job.setCmd(cmd)
 
 	// Record live PID
 	m.mu.Lock()
@@ -943,7 +1042,6 @@ func (m *Manager) runSingleStep(job *activeJob, step jobStep) (int, error) {
 
 	wg.Wait()
 	waitErr := cmd.Wait()
-	job.setCmd(nil)
 
 	if waitErr != nil {
 		var exitErr *exec.ExitError

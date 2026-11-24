@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/overkazaf/cap/internal/config"
@@ -30,7 +31,8 @@ var safeSessionIDRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 // read-only filesystems).
 type Manager struct {
 	dir      string
-	mu       sync.RWMutex
+	diskMu   sync.Mutex   // serializes SaveSession / DeleteSession / Reload disk + map mutations
+	mu       sync.RWMutex // guards in-memory sessions map for fast concurrent reads
 	sessions map[string]*ExecTraceSession
 }
 
@@ -59,9 +61,12 @@ func (m *Manager) Dir() string {
 
 // Reload loads all persisted *.json trace sessions from disk into memory.
 func (m *Manager) Reload() error {
+	m.diskMu.Lock()
+	defer m.diskMu.Unlock()
+
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
-		if os.IsNotExist(err) || os.IsPermission(err) {
+		if os.IsNotExist(err) || os.IsPermission(err) || errors.Is(err, syscall.EROFS) {
 			return nil
 		}
 		return err
@@ -114,17 +119,19 @@ func (m *Manager) SaveSession(sess *ExecTraceSession) (*ExecTraceSession, error)
 	if sess == nil {
 		return nil, errors.New("exectrace: session is nil")
 	}
-	if strings.TrimSpace(sess.ID) == "" {
-		sess.ID = generateSessionID(sess.Name)
+	stored := cloneSession(sess, true)
+	if strings.TrimSpace(stored.ID) == "" {
+		stored.ID = generateSessionID(stored.Name)
 	}
-	if sess.CreatedAt == "" {
-		sess.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	if stored.CreatedAt == "" {
+		stored.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if sess.Summary == nil && len(sess.Events) > 0 {
-		sess.Summary = AnalyzeSession(sess)
+	if stored.Summary == nil && len(stored.Events) > 0 {
+		stored.Summary = AnalyzeSession(stored)
 	}
 
-	stored := cloneSession(sess, true)
+	m.diskMu.Lock()
+	defer m.diskMu.Unlock()
 
 	m.mu.Lock()
 	m.sessions[stored.ID] = stored
@@ -158,34 +165,35 @@ func (m *Manager) ListSessions() []ExecTraceSession {
 	return out
 }
 
-// GetSession retrieves a full ExecTraceSession (including Events) by ID.
+// GetSession retrieves a deep copy of a full ExecTraceSession (including Events) by ID.
 func (m *Manager) GetSession(id string) (*ExecTraceSession, bool) {
 	id = strings.TrimSpace(id)
 	m.mu.RLock()
 	s, ok := m.sessions[id]
-	m.mu.RUnlock()
 	if !ok {
+		m.mu.RUnlock()
 		return nil, false
 	}
-	return cloneSession(s, true), true
+	cp := cloneSession(s, true)
+	m.mu.RUnlock()
+	return cp, true
 }
 
-// QueryEvents returns a filtered, paginated window of TraceEvents for sessionID.
+// QueryEvents returns a filtered, paginated window of deep-cloned TraceEvents for sessionID.
 func (m *Manager) QueryEvents(sessionID string, filter EventFilter) (*EventPage, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	s, ok := m.sessions[sessionID]
 	if !ok {
-		m.mu.RUnlock()
 		return nil, fmt.Errorf("exectrace: session %q not found", sessionID)
 	}
-	events := s.Events
-	m.mu.RUnlock()
-
-	return QuerySessionEvents(sessionID, events, filter), nil
+	return QuerySessionEvents(sessionID, s.Events, filter), nil
 }
 
-// QuerySessionEvents filters and paginates an event slice directly.
+// QuerySessionEvents filters and paginates an event slice directly, returning
+// deep-cloned TraceEvents safe for caller mutation.
 func QuerySessionEvents(sessionID string, events []TraceEvent, filter EventFilter) *EventPage {
 	limit := filter.Limit
 	if limit <= 0 {
@@ -223,10 +231,7 @@ func QuerySessionEvents(sessionID string, events []TraceEvent, filter EventFilte
 		if filter.Address != 0 && ev.Address != filter.Address && ev.Offset != filter.Address && ev.MemAddr != filter.Address {
 			continue
 		}
-		if filter.MinAddr != 0 && ev.Address < filter.MinAddr && ev.Offset < filter.MinAddr {
-			continue
-		}
-		if filter.MaxAddr != 0 && ev.Address > filter.MaxAddr && ev.Offset > filter.MaxAddr {
+		if (filter.MinAddr != 0 || filter.MaxAddr != 0) && !matchesAddrRange(ev, filter.MinAddr, filter.MaxAddr) {
 			continue
 		}
 		if searchFilter != "" && !eventMatchesSearch(ev, searchFilter) {
@@ -251,7 +256,9 @@ func QuerySessionEvents(sessionID string, events []TraceEvent, filter EventFilte
 		end = total
 	}
 	pageEvents := make([]TraceEvent, end-offset)
-	copy(pageEvents, matched[offset:end])
+	for i := range pageEvents {
+		pageEvents[i] = cloneEvent(matched[offset+i])
+	}
 
 	return &EventPage{
 		SessionID: sessionID,
@@ -263,9 +270,48 @@ func QuerySessionEvents(sessionID string, events []TraceEvent, filter EventFilte
 	}
 }
 
+func matchesAddrRange(ev TraceEvent, minAddr, maxAddr uint64) bool {
+	inRange := func(v uint64) bool {
+		if v == 0 {
+			return false
+		}
+		if minAddr != 0 && v < minAddr {
+			return false
+		}
+		if maxAddr != 0 && v > maxAddr {
+			return false
+		}
+		return true
+	}
+
+	if ev.Address != 0 && ev.Offset != 0 && ev.Address > ev.Offset {
+		base := ev.Address - ev.Offset
+		// Disambiguate whether the caller's range targets absolute Address or relative Offset.
+		if (minAddr != 0 && minAddr >= base) || (maxAddr != 0 && maxAddr >= base) {
+			return inRange(ev.Address)
+		}
+		return inRange(ev.Offset)
+	}
+
+	if ev.Address != 0 {
+		return inRange(ev.Address)
+	}
+	if ev.Offset != 0 {
+		return inRange(ev.Offset)
+	}
+	if ev.MemAddr != 0 {
+		return inRange(ev.MemAddr)
+	}
+	return false
+}
+
 // DeleteSession removes a trace session from memory and disk.
 func (m *Manager) DeleteSession(id string) error {
 	id = strings.TrimSpace(id)
+
+	m.diskMu.Lock()
+	defer m.diskMu.Unlock()
+
 	m.mu.Lock()
 	_, exists := m.sessions[id]
 	delete(m.sessions, id)
@@ -274,7 +320,8 @@ func (m *Manager) DeleteSession(id string) error {
 	if !exists {
 		return fmt.Errorf("exectrace: session %q not found", id)
 	}
-	if err := os.Remove(m.sessionFilePath(id)); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
+	if err := os.Remove(m.sessionFilePath(id)); err != nil &&
+		!os.IsNotExist(err) && !os.IsPermission(err) && !errors.Is(err, syscall.EROFS) {
 		return err
 	}
 	return nil
@@ -516,6 +563,7 @@ func exportMarkdown(s *ExecTraceSession) string {
 
 func (m *Manager) sessionFilePath(id string) string {
 	safe := safeSessionIDRe.ReplaceAllString(id, "_")
+	safe = strings.TrimLeft(safe, ".")
 	if safe == "" {
 		safe = "trace"
 	}
@@ -564,14 +612,76 @@ func eventMatchesSearch(ev TraceEvent, needle string) bool {
 	return false
 }
 
+func cloneEvent(ev TraceEvent) TraceEvent {
+	cp := ev
+	cp.RegsBefore = cloneRegMap(ev.RegsBefore)
+	cp.RegsAfter = cloneRegMap(ev.RegsAfter)
+	if len(ev.Args) > 0 {
+		cp.Args = make([]string, len(ev.Args))
+		copy(cp.Args, ev.Args)
+	}
+	return cp
+}
+
+func cloneCallNodes(nodes []CallNode) []CallNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]CallNode, len(nodes))
+	for i, n := range nodes {
+		cp := n
+		if len(n.Args) > 0 {
+			cp.Args = make([]string, len(n.Args))
+			copy(cp.Args, n.Args)
+		}
+		cp.Children = cloneCallNodes(n.Children)
+		out[i] = cp
+	}
+	return out
+}
+
+func cloneAnalysis(a *TraceAnalysis) *TraceAnalysis {
+	if a == nil {
+		return nil
+	}
+	cp := &TraceAnalysis{
+		SummaryText: a.SummaryText,
+		CallTree:    cloneCallNodes(a.CallTree),
+	}
+	if len(a.HotFunctions) > 0 {
+		cp.HotFunctions = make([]FunctionStat, len(a.HotFunctions))
+		copy(cp.HotFunctions, a.HotFunctions)
+	}
+	if len(a.CryptoHits) > 0 {
+		cp.CryptoHits = make([]CryptoPatternHit, len(a.CryptoHits))
+		copy(cp.CryptoHits, a.CryptoHits)
+	}
+	if len(a.MemoryRegions) > 0 {
+		cp.MemoryRegions = make([]MemoryRegionStat, len(a.MemoryRegions))
+		copy(cp.MemoryRegions, a.MemoryRegions)
+	}
+	if len(a.HotLoops) > 0 {
+		cp.HotLoops = make([]LoopStat, len(a.HotLoops))
+		copy(cp.HotLoops, a.HotLoops)
+	}
+	if len(a.Syscalls) > 0 {
+		cp.Syscalls = make([]SyscallStat, len(a.Syscalls))
+		copy(cp.Syscalls, a.Syscalls)
+	}
+	return cp
+}
+
 func cloneSession(s *ExecTraceSession, includeEvents bool) *ExecTraceSession {
 	if s == nil {
 		return nil
 	}
 	cp := *s
+	cp.Summary = cloneAnalysis(s.Summary)
 	if includeEvents && len(s.Events) > 0 {
 		cp.Events = make([]TraceEvent, len(s.Events))
-		copy(cp.Events, s.Events)
+		for i, ev := range s.Events {
+			cp.Events[i] = cloneEvent(ev)
+		}
 	} else {
 		cp.Events = nil
 	}

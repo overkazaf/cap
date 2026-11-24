@@ -1,8 +1,8 @@
 package exectrace
 
 import (
+	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -86,6 +86,31 @@ func fillCollectorDefaults(cfg CollectorConfig) CollectorConfig {
 	return cfg
 }
 
+// jsonQuote encodes s as a double-quoted string literal valid in JavaScript,
+// Java, and Python (using RFC 8259 / \uXXXX escapes, never Go-only \U/\x/\a).
+func jsonQuote(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	out := string(b)
+	// Escape JS line separators U+2028 / U+2029 so embedded JS literals never split lines.
+	out = strings.ReplaceAll(out, "\u2028", `\u2028`)
+	out = strings.ReplaceAll(out, "\u2029", `\u2029`)
+	return out
+}
+
+// sanitizeComment strips newlines and block-comment terminators from strings
+// interpolated inside single-line or block comments.
+func sanitizeComment(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\u2028", " ")
+	s = strings.ReplaceAll(s, "\u2029", " ")
+	s = strings.ReplaceAll(s, "*/", "* /")
+	return strings.TrimSpace(s)
+}
+
 func generateStalkerCollector(cfg CollectorConfig) *GeneratedCollector {
 	targetExpr := ""
 	if strings.TrimSpace(cfg.TargetOffset) != "" {
@@ -93,9 +118,9 @@ func generateStalkerCollector(cfg CollectorConfig) *GeneratedCollector {
 		if !strings.HasPrefix(off, "0x") && !strings.HasPrefix(off, "0X") {
 			off = "0x" + off
 		}
-		targetExpr = fmt.Sprintf("mod.base.add(ptr(%q))", off)
+		targetExpr = fmt.Sprintf("mod.base.add(ptr(%s))", jsonQuote(off))
 	} else if strings.TrimSpace(cfg.TargetSymbol) != "" {
-		targetExpr = fmt.Sprintf("Module.findExportByName(TARGET_MODULE, %q)", cfg.TargetSymbol)
+		targetExpr = fmt.Sprintf("Module.findExportByName(TARGET_MODULE, %s)", jsonQuote(cfg.TargetSymbol))
 	} else {
 		targetExpr = "mod.base"
 	}
@@ -124,11 +149,14 @@ func generateStalkerCollector(cfg CollectorConfig) *GeneratedCollector {
 		}
 	}
 
+	pkgComment := sanitizeComment(nonEmpty(cfg.TargetPackage, "com.example.app"))
+	symName := nonEmpty(cfg.TargetSymbol, "target_entry")
+
 	code := fmt.Sprintf(`// cap ExecTrace — Frida Stalker Module-Bounded Instruction & Call Collector
 // Paste directly into cap Frida Studio or run via: frida -U -f %s -l cap_stalker_trace.js
 'use strict';
 
-const TARGET_MODULE = %q;
+const TARGET_MODULE = %s;
 const MAX_EVENTS = %d;
 const INCLUDE_REGS = %t;
 const INCLUDE_CALLS = %t;
@@ -161,7 +189,9 @@ function attachStalker() {
 
   Interceptor.attach(targetPtr, {
     onEnter(args) {
+      this.stalking = false;
       if (activeTid !== -1) return;
+      this.stalking = true;
       activeTid = this.threadId;
       const tid = this.threadId;
 
@@ -169,13 +199,13 @@ function attachStalker() {
         emit({
           kind: 'call',
           source: 'stalker',
-          arch: %q,
+          arch: %s,
           thread_id: tid,
           module: TARGET_MODULE,
           module_base: modStart.toString(),
           address: targetPtr.toString(),
           offset: targetPtr.sub(modStart).toString(),
-          symbol: %q,
+          symbol: %s,
           args: [args[0].toString(), args[1].toString(), args[2].toString(), args[3].toString()]
         });
       }
@@ -200,7 +230,7 @@ function attachStalker() {
                 emit({
                   kind: kind,
                   source: 'stalker',
-                  arch: %q,
+                  arch: %s,
                   thread_id: tid,
                   module: TARGET_MODULE,
                   module_base: modStart.toString(),
@@ -219,7 +249,7 @@ function attachStalker() {
       });
     },
     onLeave(retval) {
-      if (this.threadId !== activeTid) return;
+      if (!this.stalking) return;
       Stalker.unfollow(this.threadId);
       Stalker.flush();
       if (INCLUDE_CALLS) {
@@ -230,10 +260,11 @@ function attachStalker() {
           module: TARGET_MODULE,
           address: targetPtr.toString(),
           offset: targetPtr.sub(modStart).toString(),
-          symbol: %q,
+          symbol: %s,
           ret_val: retval.toString()
         });
       }
+      this.stalking = false;
       activeTid = -1;
     }
   });
@@ -256,17 +287,17 @@ if (!attachStalker()) {
   }
 }
 `,
-		nonEmpty(cfg.TargetPackage, "com.example.app"),
-		cfg.TargetModule,
+		pkgComment,
+		jsonQuote(cfg.TargetModule),
 		cfg.MaxEvents,
 		cfg.IncludeRegs,
 		cfg.IncludeCalls,
 		targetExpr,
-		cfg.Arch,
-		nonEmpty(cfg.TargetSymbol, "target_entry"),
+		jsonQuote(cfg.Arch),
+		jsonQuote(symName),
 		regSnippet,
-		cfg.Arch,
-		nonEmpty(cfg.TargetSymbol, "target_entry"),
+		jsonQuote(cfg.Arch),
+		jsonQuote(symName),
 	)
 
 	return &GeneratedCollector{
@@ -293,8 +324,8 @@ func generateJavaCallCollector(cfg CollectorConfig) *GeneratedCollector {
 // Emits [CAP_TRACE] JSONL events with thread-local call depth, timing, args, and return values.
 'use strict';
 
-const CLASS_PATTERN = new RegExp(%q);
-const METHOD_PATTERN = new RegExp(%q);
+const CLASS_PATTERN = new RegExp(%s);
+const METHOD_PATTERN = new RegExp(%s);
 const MAX_EVENTS = %d;
 
 let seq = 0;
@@ -379,8 +410,8 @@ Java.perform(function () {
   });
 });
 `,
-		classRegex,
-		methodRegex,
+		jsonQuote(classRegex),
+		jsonQuote(methodRegex),
 		cfg.MaxEvents,
 	)
 
@@ -427,7 +458,6 @@ import com.github.unidbg.linux.android.AndroidResolver;
 import com.github.unidbg.linux.android.dvm.AbstractJni;
 import com.github.unidbg.linux.android.dvm.DalvikModule;
 import com.github.unidbg.linux.android.dvm.DvmObject;
-import com.github.unidbg.linux.android.dvm.StringObject;
 import com.github.unidbg.linux.android.dvm.VM;
 import com.github.unidbg.linux.android.dvm.VaList;
 import com.github.unidbg.memory.Memory;
@@ -435,6 +465,7 @@ import com.github.unidbg.memory.Memory;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
+import java.util.Arrays;
 
 /**
  * cap ExecTrace — Unidbg Code, Memory & JNI Trace Collector.
@@ -449,16 +480,16 @@ public class CapUnidbgTracer extends AbstractJni {
     public CapUnidbgTracer() throws Exception {
         this.traceOut = new PrintStream(new FileOutputStream("cap_unidbg_trace.log"), true, "UTF-8");
         this.emulator = %s
-                .setProcessName(%q)
+                .setProcessName(%s)
                 .build();
         Memory memory = emulator.getMemory();
         memory.setLibraryResolver(new AndroidResolver(23));
 
-        this.vm = emulator.createDalvikVM(new File(%q));
+        this.vm = emulator.createDalvikVM(new File(%s));
         this.vm.setJni(this);
         this.vm.setVerbose(true);
 
-        DalvikModule dm = vm.loadLibrary(new File(%q), true);
+        DalvikModule dm = vm.loadLibrary(new File(%s), true);
         dm.callJNI_OnLoad(emulator);
         this.module = dm.getModule();
     }
@@ -470,8 +501,8 @@ public class CapUnidbgTracer extends AbstractJni {
 %s
 
         // Invoke exported native function (adjust arguments as needed for %s)
-        Number ret = module.callFunction(emulator, %q);
-        traceOut.printf("[CAP_UNIDBG_DONE] base=0x%%x ret=%%s%%n", module.base, ret);
+        Number[] ret = module.callFunction(emulator, %s);
+        traceOut.printf("[CAP_UNIDBG_DONE] base=0x%%x ret=%%s%%n", module.base, Arrays.toString(ret));
         traceOut.flush();
     }
 
@@ -498,12 +529,12 @@ public class CapUnidbgTracer extends AbstractJni {
 }
 `,
 		builderCall,
-		pkg,
-		apkPath,
-		soPath,
+		jsonQuote(pkg),
+		jsonQuote(apkPath),
+		jsonQuote(soPath),
 		memTraceLines,
-		targetSym,
-		targetSym,
+		sanitizeComment(targetSym),
+		jsonQuote(targetSym),
 	)
 
 	return &GeneratedCollector{
@@ -543,7 +574,7 @@ func generateQilingCollector(cfg CollectorConfig) *GeneratedCollector {
 	argv = append(argv, cfg.Args...)
 	argvQuoted := make([]string, len(argv))
 	for i, a := range argv {
-		argvQuoted[i] = strconv.Quote(a)
+		argvQuoted[i] = jsonQuote(a)
 	}
 
 	memHookSnippet := ""
@@ -551,7 +582,10 @@ func generateQilingCollector(cfg CollectorConfig) *GeneratedCollector {
 		memHookSnippet = `def on_mem_read(ql, access, address, size, value):
     if event_count[0] >= MAX_EVENTS:
         return
-    data = ql.mem.read(address, min(size, 16)).hex()
+    try:
+        data = bytes(ql.mem.read(address, min(size, 16))).hex()
+    except Exception:
+        data = ""
     emit({
         "kind": "mem_read",
         "source": "qiling",
@@ -588,10 +622,10 @@ Emits [CAP_TRACE] JSONL directly importable by cap ExecTrace.
 import json
 import time
 from qiling import Qiling
-from qiling.const import QL_VERBOSE
+from qiling.const import QL_INTERCEPT, QL_VERBOSE
 
-TARGET_MODULE = %q
-ARCH = %q
+TARGET_MODULE = %s
+ARCH = %s
 MAX_EVENTS = %d
 INCLUDE_REGS = %s
 WATCH_REGS = %s
@@ -610,7 +644,7 @@ def emit(ev):
     out_file.write("[CAP_TRACE] " + json.dumps(ev) + "\n")
 
 
-ql = Qiling([%s], %q, verbose=QL_VERBOSE.OFF)
+ql = Qiling([%s], %s, verbose=QL_VERBOSE.OFF)
 md = ql.arch.disassembler
 
 
@@ -618,12 +652,16 @@ def on_code(ql, address, size):
     if event_count[0] >= MAX_EVENTS:
         ql.emu_stop()
         return
-    raw = bytes(ql.mem.read(address, size))
+    try:
+        raw = bytes(ql.mem.read(address, size))
+    except Exception:
+        raw = b""
     mnem, ops = "", ""
-    for insn in md.disasm(raw, address):
-        mnem = insn.mnemonic
-        ops = insn.op_str
-        break
+    if raw:
+        for insn in md.disasm(raw, address):
+            mnem = insn.mnemonic
+            ops = insn.op_str
+            break
     regs = {}
     if INCLUDE_REGS:
         for r in WATCH_REGS:
@@ -644,6 +682,29 @@ def on_code(ql, address, size):
     })
 
 
+def make_syscall_hook(name):
+    def _on_syscall(ql, *args):
+        if event_count[0] >= MAX_EVENTS:
+            return
+        emit({
+            "kind": "syscall",
+            "source": "qiling",
+            "arch": ARCH,
+            "module": TARGET_MODULE,
+            "address": hex(ql.arch.regs.arch_pc),
+            "symbol": name,
+            "args": [hex(a) if isinstance(a, int) else str(a) for a in args[:6]],
+        })
+    return _on_syscall
+
+
+for _sc_name in ("openat", "open", "read", "write", "close", "ioctl", "mmap", "mprotect", "socket", "connect"):
+    try:
+        ql.os.set_syscall(_sc_name, make_syscall_hook(_sc_name), QL_INTERCEPT.ENTER)
+    except Exception:
+        pass
+
+
 ql.hook_code(on_code)
 %s
 
@@ -653,13 +714,13 @@ finally:
     out_file.close()
     print(f"[cap_qiling] wrote {event_count[0]} events to {OUT_PATH}")
 `,
-		cfg.TargetModule,
-		cfg.Arch,
+		jsonQuote(cfg.TargetModule),
+		jsonQuote(cfg.Arch),
 		cfg.MaxEvents,
 		pyBool(cfg.IncludeRegs),
 		regList,
 		strings.Join(argvQuoted, ", "),
-		rootfs,
+		jsonQuote(rootfs),
 		memHookSnippet,
 	)
 

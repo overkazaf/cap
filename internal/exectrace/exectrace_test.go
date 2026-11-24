@@ -1,10 +1,14 @@
 package exectrace
 
 import (
+	"fmt"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -701,4 +705,397 @@ func TestTaintPairAndX86AndAdditionalCrypto(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestParserHugeLinesMalformedHexAndSources(t *testing.T) {
+	t.Run("huge_line_over_4mb", func(t *testing.T) {
+		padding := strings.Repeat("a", 5*1024*1024)
+		raw := "[CAP_TRACE] {\"seq\":1,\"kind\":\"insn\",\"source\":\"qiling\",\"module\":\"libbig.so\",\"address\":\"0x40001000\",\"mnemonic\":\"eor\",\"operands\":\"x0, x1, x2\",\"raw\":\"" + padding + "\"}\n" +
+			"[CAP_TRACE] {\"seq\":2,\"kind\":\"insn\",\"source\":\"qiling\",\"module\":\"libbig.so\",\"address\":\"0x40001004\",\"mnemonic\":\"ret\"}\n"
+
+		sess, err := ParseTrace("huge-line", "auto", raw, 0x40000000)
+		if err != nil {
+			t.Fatalf("ParseTrace failed on >4 MiB line: %v", err)
+		}
+		if sess.TotalEvents != 2 {
+			t.Fatalf("expected 2 events across >4 MiB line, got %d", sess.TotalEvents)
+		}
+		if sess.Source != SourceQiling {
+			t.Fatalf("expected [CAP_TRACE] qiling source preserved, got %q", sess.Source)
+		}
+	})
+
+	t.Run("malformed_hex_and_uint64_clamp", func(t *testing.T) {
+		raw := `
+Memory READ at 0xffffffffffffffffffff, size=4, value=deadbeef
+Memory READ at 0xfffffffffffffffe, size=16, value=11223344
+[12:00:00 001][libfoo.so 0x1000] 0x40001000: "nop"
+[12:00:00 002][libfoo.so 0x1004] 0xffffffffffffffffffffffff: "nop"
+`
+		sess, err := ParseTrace("malformed-hex", "unidbg", raw, 0)
+		if err != nil {
+			t.Fatalf("ParseTrace failed on malformed hex trace: %v", err)
+		}
+		if sess.InsnCount != 1 {
+			t.Fatalf("expected overflowing PC line to be skipped (1 valid insn), got %d", sess.InsnCount)
+		}
+		if sess.MemOpCount != 1 {
+			t.Fatalf("expected overflowing mem addr line to be skipped (1 valid mem op), got %d", sess.MemOpCount)
+		}
+		if len(sess.Summary.MemoryRegions) != 1 {
+			t.Fatalf("expected 1 memory region, got %d", len(sess.Summary.MemoryRegions))
+		}
+		reg := sess.Summary.MemoryRegions[0]
+		if reg.EndAddr != math.MaxUint64 || reg.EndAddr < reg.BaseAddr {
+			t.Fatalf("expected clamped EndAddr=MaxUint64 without wraparound, got base=0x%x end=0x%x", reg.BaseAddr, reg.EndAddr)
+		}
+	})
+
+	t.Run("tenet_hex_without_0x_prefix", func(t *testing.T) {
+		raw := "pc=40001000,x0=1000,mr=7f0010:deadbeef\npc=4000100c,x0=100c,mw=7f0020:01020304\n"
+		sess, err := ParseTrace("tenet-no0x", "auto", raw, 0x40000000)
+		if err != nil {
+			t.Fatalf("ParseTrace(tenet no 0x) error: %v", err)
+		}
+		if sess.Format != FormatTenet {
+			t.Fatalf("expected FormatTenet, got %q", sess.Format)
+		}
+		if sess.Events[0].Address != 0x40001000 || sess.Events[0].RegsAfter["x0"] != 0x1000 {
+			t.Fatalf("expected base-16 parsing for 0x-less Tenet values, got addr=0x%x x0=0x%x",
+				sess.Events[0].Address, sess.Events[0].RegsAfter["x0"])
+		}
+		if sess.Events[1].MemAddr != 0x7f0010 {
+			t.Fatalf("expected mr addr 0x7f0010, got 0x%x", sess.Events[1].MemAddr)
+		}
+	})
+}
+
+func TestTaintSoundnessRegressions(t *testing.T) {
+	t.Run("constant_store_kills_forward_and_stops_backward", func(t *testing.T) {
+		raw := `
+0x401000: mov [rdi], rax ; rdi=0x7f0010 rax=0x1111
+0x401003: mov [rdi], 0x0 ; rdi=0x7f0010
+0x40100a: mov rbx, [rdi] ; rdi=0x7f0010 => rbx=0x0
+`
+		sess, err := ParseTrace("const-store", "qiling", raw, 0x400000)
+		if err != nil {
+			t.Fatalf("ParseTrace error: %v", err)
+		}
+		fwd, err := RunTaint(sess, TaintRequest{Direction: TaintForward, StartSeq: 1, SeedReg: "rax"})
+		if err != nil {
+			t.Fatalf("forward taint error: %v", err)
+		}
+		// seq 1 taints mem[0x7f0010], seq 2 overwrites with 0x0 killing taint, so seq 3 must NOT taint rbx!
+		if len(fwd.TaintedSteps) != 1 {
+			t.Fatalf("expected 1 step (killed by constant store), got %d: %+v", len(fwd.TaintedSteps), fwd.TaintedSteps)
+		}
+		for _, r := range fwd.TaintedRegs {
+			if r == "rbx" {
+				t.Errorf("rbx must not be tainted after constant store killed mem[0x7f0010]")
+			}
+		}
+
+		bwd, err := RunTaint(sess, TaintRequest{Direction: TaintBackward, StartSeq: 3, SeedReg: "rbx"})
+		if err != nil {
+			t.Fatalf("backward taint error: %v", err)
+		}
+		// Backward from rbx @ seq 3 -> depends on mem[0x7f0010] -> stopped by constant store at seq 2 (must NOT include seq 1 or rax!).
+		if len(bwd.TaintedSteps) != 2 || bwd.TaintedSteps[0].Seq != 2 || bwd.TaintedSteps[1].Seq != 3 {
+			t.Fatalf("expected backward slice [seq 2, seq 3] stopping at constant store, got %+v", bwd.TaintedSteps)
+		}
+		if len(bwd.SourcesOrSinks) != 0 {
+			t.Errorf("expected no remaining unresolved sources after constant store, got %v", bwd.SourcesOrSinks)
+		}
+	})
+
+	t.Run("x86_mem_alu_operands", func(t *testing.T) {
+		raw := `
+0x401000: add [rdi], rax ; rdi=0x7f0010 rax=0x42
+0x401004: xor ecx, [rsi] ; rsi=0x7f0010 ecx=0x0 => ecx=0x42
+0x401008: mov rdx, rdi ; rdi=0x7f0010 => rdx=0x7f0010
+`
+		sess, err := ParseTrace("x86-mem-alu", "qiling", raw, 0x400000)
+		if err != nil {
+			t.Fatalf("ParseTrace error: %v", err)
+		}
+		fwd, err := RunTaint(sess, TaintRequest{Direction: TaintForward, StartSeq: 1, SeedReg: "rax"})
+		if err != nil {
+			t.Fatalf("forward taint error: %v", err)
+		}
+		// rax -> mem[0x7f0010] via `add [rdi], rax` -> rcx via `xor ecx, [rsi]`; rdi/rdx must NOT be tainted!
+		if len(fwd.TaintedSteps) != 2 || fwd.TaintedSteps[0].Seq != 1 || fwd.TaintedSteps[1].Seq != 2 {
+			t.Fatalf("expected 2 steps [seq 1, seq 2], got %+v", fwd.TaintedSteps)
+		}
+		for _, r := range fwd.TaintedRegs {
+			if r == "rdi" || r == "rdx" {
+				t.Errorf("pointer register %s must not be tainted by memory-dest ALU: %v", r, fwd.TaintedRegs)
+			}
+		}
+
+		bwd, err := RunTaint(sess, TaintRequest{Direction: TaintBackward, StartSeq: 2, SeedReg: "ecx"})
+		if err != nil {
+			t.Fatalf("backward taint error: %v", err)
+		}
+		if len(bwd.TaintedSteps) != 2 || bwd.TaintedSteps[0].Seq != 1 || bwd.TaintedSteps[1].Seq != 2 {
+			t.Fatalf("expected backward steps [seq 1, seq 2], got %+v", bwd.TaintedSteps)
+		}
+	})
+
+	t.Run("arm64_4op_eor_neg_adrp_and_shifted_index", func(t *testing.T) {
+		raw := `
+[12:00:00 001][libfoo.so 0x100] 0x40000100: "eor x0, x1, x1, lsl #4" x1=0x11 => x0=0x101
+[12:00:00 002][libfoo.so 0x104] 0x40000104: "str x0, [x21, x9, lsl #3]" x0=0x101 x21=0x7f0000 x9=0x4
+[12:00:00 003][libfoo.so 0x108] 0x40000108: "ldr x3, [x22]" x22=0x7f0020 => x3=0x101
+[12:00:00 004][libfoo.so 0x10c] 0x4000010c: "neg x0, x5" x5=0x7 => x0=0xfffffffffffffff9
+[12:00:00 005][libfoo.so 0x110] 0x40000110: "adrp x3, #0x400000" => x3=0x400000
+`
+		sess, err := ParseTrace("arm64-edge", "unidbg", raw, 0)
+		if err != nil {
+			t.Fatalf("ParseTrace error: %v", err)
+		}
+		fwd, err := RunTaint(sess, TaintRequest{Direction: TaintForward, StartSeq: 1, SeedReg: "x1"})
+		if err != nil {
+			t.Fatalf("forward taint error: %v", err)
+		}
+		// seq 1: eor x0, x1, x1, lsl #4 must NOT zero-kill x0!
+		// seq 2: str x0, [x21, x9, lsl #3] computes 0x7f0000 + (4<<3) = 0x7f0020!
+		// seq 3: ldr x3, [x22] loads from 0x7f0020 -> taints x3!
+		// seq 4: neg x0, x5 overwrites x0 with clean x5 -> kills x0!
+		// seq 5: adrp x3, #0x400000 overwrites x3 -> kills x3!
+		if len(fwd.TaintedSteps) != 3 {
+			t.Fatalf("expected 3 steps (eor 4-op -> str shifted -> ldr 0x7f0020), got %d: %+v", len(fwd.TaintedSteps), fwd.TaintedSteps)
+		}
+		if fwd.TaintedSteps[1].MemAddr != 0x7f0020 {
+			t.Fatalf("expected shifted mem addr 0x7f0020, got 0x%x", fwd.TaintedSteps[1].MemAddr)
+		}
+		for _, sink := range fwd.SourcesOrSinks {
+			if sink == "reg:x0" || sink == "reg:x3" {
+				t.Errorf("expected neg x0,x5 and adrp x3 to kill x0/x3, got sinks=%v", fwd.SourcesOrSinks)
+			}
+		}
+	})
+
+	t.Run("no_neighbor_mem_event_steal", func(t *testing.T) {
+		sess := &ExecTraceSession{
+			ID: "neighbor",
+			Events: []TraceEvent{
+				{Seq: 1, Kind: KindInsn, Address: 0x1000, Mnemonic: "ldr", Operands: "x1, [x10]", RegsBefore: map[string]uint64{"x10": 0x7f0000}},
+				{Seq: 2, Kind: KindInsn, Address: 0x1004, Mnemonic: "ldr", Operands: "x2, [x11]", RegsBefore: map[string]uint64{"x11": 0x880000}},
+				{Seq: 3, Kind: KindMemRead, Address: 0, MemAddr: 0x880000, MemSize: 8},
+			},
+		}
+		// Seed 0x880000: only seq 2 should be tainted, NOT seq 1 (seq 3 is separated from seq 1 by instruction seq 2!).
+		fwd, err := RunTaint(sess, TaintRequest{Direction: TaintForward, StartSeq: 1, SeedMemAddr: 0x880000})
+		if err != nil {
+			t.Fatalf("RunTaint error: %v", err)
+		}
+		if len(fwd.TaintedSteps) != 1 || fwd.TaintedSteps[0].Seq != 2 {
+			t.Fatalf("expected only seq 2 tainted (no cross-insn mem steal), got %+v", fwd.TaintedSteps)
+		}
+	})
+
+	t.Run("multithreaded_hot_loops_isolated", func(t *testing.T) {
+		sess := &ExecTraceSession{
+			ID: "mt-loops",
+			Events: []TraceEvent{
+				{Seq: 1, ThreadID: 1, Kind: KindInsn, Module: "liba.so", Address: 0x40001020, Mnemonic: "add", Operands: "x0, x0, #1"},
+				{Seq: 2, ThreadID: 2, Kind: KindInsn, Module: "liba.so", Address: 0x40001000, Mnemonic: "eor", Operands: "x1, x1, x2"},
+				{Seq: 3, ThreadID: 1, Kind: KindInsn, Module: "liba.so", Address: 0x40001024, Mnemonic: "add", Operands: "x0, x0, #1"},
+				{Seq: 4, ThreadID: 2, Kind: KindInsn, Module: "liba.so", Address: 0x40001004, Mnemonic: "ror", Operands: "x1, x1, #3"},
+			},
+		}
+		a := AnalyzeSession(sess)
+		if len(a.HotLoops) != 0 {
+			t.Fatalf("expected 0 loops across interleaved threads with monotonically increasing per-thread PCs, got %+v", a.HotLoops)
+		}
+	})
+}
+
+func TestStoreMaxAddrFilterConcurrencyAndEdgeCases(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "traces")
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+
+	// 1. MaxAddr without ModuleBase (Offset == 0) must NOT bypass filter.
+	rawNoBase := `
+0x40001000: mov x0, #1 ; => x0=0x1
+0x40002000: mov x1, #2 ; => x1=0x2
+0x40005000: mov x2, #3 ; => x2=0x3
+`
+	sNoBase, err := mgr.ImportTrace("no-base", "qiling", rawNoBase, 0)
+	if err != nil {
+		t.Fatalf("ImportTrace error: %v", err)
+	}
+	page, err := mgr.QueryEvents(sNoBase.ID, EventFilter{MaxAddr: 0x40002000})
+	if err != nil {
+		t.Fatalf("QueryEvents error: %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("expected 2 events <= 0x40002000 when Offset==0, got %d: %+v", page.Total, page.Events)
+	}
+
+	// 2. MaxAddr with ModuleBase (Offset <= MaxAddr < Address) must NOT bypass via Offset.
+	sWithBase, err := mgr.ImportTrace("with-base", "qiling", rawNoBase, 0x40000000)
+	if err != nil {
+		t.Fatalf("ImportTrace error: %v", err)
+	}
+	pageAbs, err := mgr.QueryEvents(sWithBase.ID, EventFilter{MaxAddr: 0x40002000})
+	if err != nil {
+		t.Fatalf("QueryEvents abs MaxAddr error: %v", err)
+	}
+	if pageAbs.Total != 2 {
+		t.Fatalf("expected 2 events <= 0x40002000 (0x40005000 excluded despite offset 0x5000), got %d", pageAbs.Total)
+	}
+	pageOff, err := mgr.QueryEvents(sWithBase.ID, EventFilter{MinAddr: 0x1000, MaxAddr: 0x2000})
+	if err != nil {
+		t.Fatalf("QueryEvents offset range error: %v", err)
+	}
+	if pageOff.Total != 2 {
+		t.Fatalf("expected 2 events with offset in [0x1000, 0x2000], got %d", pageOff.Total)
+	}
+
+	// 3. Leading dots in ID must not create hidden dotfiles skipped by Reload().
+	dotSess, err := mgr.SaveSession(&ExecTraceSession{
+		ID:     "..hidden",
+		Name:   "dot-id",
+		Source: SourceImported,
+		Events: []TraceEvent{{Seq: 1, Kind: KindInsn, Address: 0x1000, Mnemonic: "nop"}},
+	})
+	if err != nil {
+		t.Fatalf("SaveSession dot ID error: %v", err)
+	}
+	mgrReload, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager reload error: %v", err)
+	}
+	if _, ok := mgrReload.GetSession(dotSess.ID); !ok {
+		t.Fatalf("expected session %q to survive Reload (no hidden dotfile)", dotSess.ID)
+	}
+
+	// 4. Deep-clone race safety + concurrent SaveSession / GetSession / QueryEvents / DeleteSession.
+	var wg sync.WaitGroup
+	for g := 0; g < 6; g++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for iter := 0; iter < 15; iter++ {
+				id := fmt.Sprintf("race-sess-%d", worker%3)
+				saved, err := mgr.SaveSession(&ExecTraceSession{
+					ID:     id,
+					Name:   id,
+					Source: SourceImported,
+					Events: []TraceEvent{
+						{
+							Seq:        1,
+							Kind:       KindInsn,
+							Address:    0x40001000,
+							Mnemonic:   "eor",
+							Operands:   "x0, x1, x2",
+							RegsBefore: map[string]uint64{"x1": 0x1},
+							RegsAfter:  map[string]uint64{"x0": 0x2},
+							Args:       []string{"arg0"},
+						},
+					},
+				})
+				if err == nil && saved != nil && len(saved.Events) > 0 {
+					// Mutate returned copy aggressively to verify deep cloning prevents data races.
+					saved.Events[0].RegsAfter["x0"] = 0x9999
+					saved.Events[0].Args[0] = "mutated"
+					if saved.Summary != nil {
+						saved.Summary.SummaryText = "mutated"
+					}
+				}
+				if got, ok := mgr.GetSession(id); ok && len(got.Events) > 0 {
+					got.Events[0].RegsAfter["x0"] = 0x8888
+				}
+				if pg, err := mgr.QueryEvents(id, EventFilter{Limit: 10}); err == nil && len(pg.Events) > 0 {
+					pg.Events[0].RegsBefore["x1"] = 0x7777
+				}
+				if iter%3 == 0 {
+					_ = mgr.DeleteSession(id)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Final delete must leave zero zombie files on disk for deleted IDs.
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("race-sess-%d", i)
+		_ = mgr.DeleteSession(id)
+		if _, err := os.Stat(mgr.sessionFilePath(id)); !os.IsNotExist(err) {
+			t.Errorf("zombie session file remained after DeleteSession(%q): err=%v", id, err)
+		}
+	}
+}
+
+func TestCollectorSyntaxWithSpecialCharsAndNewlines(t *testing.T) {
+	cfg := CollectorConfig{
+		TargetPackage: "com.acme.pay\n// injected();\x07",
+		TargetModule:  `lib"sign"\foo.so`,
+		TargetSymbol:  "Java_com_acme_Sign_compute\n*/boom\U0001f680",
+		Arch:          "arm64",
+		ClassFilter:   "com.acme.pay.*",
+		MethodFilter:  "sign*",
+		IncludeRegs:   true,
+		IncludeMem:    true,
+		IncludeCalls:  true,
+		MaxEvents:     1000,
+		APKPath:       "/tmp/a\"b\nc.apk",
+		BinaryPath:    "/tmp/lib\"sign\".so",
+		RootFS:        "/tmp/rootfs\nline",
+		Args:          []string{"arg1\nline2", `quote"here`},
+	}
+
+	tmpDir := t.TempDir()
+
+	// Verify JavaScript collectors with `node --check` when available.
+	nodePath, hasNode := exec.LookPath("node")
+	for _, kind := range []string{"stalker", "java_call"} {
+		col := GenerateCollector(kind, cfg)
+		if strings.Contains(col.Code, `\U000`) || strings.Contains(col.Code, `\a`) {
+			t.Errorf("%s: contains Go-only escape invalid in JS", kind)
+		}
+		if kind == "stalker" && !strings.Contains(col.Code, "this.stalking") {
+			t.Errorf("stalker collector missing recursive-call guard `this.stalking`")
+		}
+		if hasNode == nil {
+			jsFile := filepath.Join(tmpDir, col.Filename)
+			if err := os.WriteFile(jsFile, []byte(col.Code), 0644); err != nil {
+				t.Fatalf("write %s: %v", jsFile, err)
+			}
+			cmd := exec.Command(nodePath, "--check", jsFile)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("node --check failed for %s: %v\n%s", kind, err, string(out))
+			}
+		}
+	}
+
+	// Verify Unidbg Java collector fixes & escaping.
+	unidbgCol := GenerateCollector("unidbg", cfg)
+	if !strings.Contains(unidbgCol.Code, "Number[] ret = module.callFunction") {
+		t.Errorf("unidbg collector must assign Number[] from module.callFunction")
+	}
+	if strings.Contains(unidbgCol.Code, `\U000`) || strings.Contains(unidbgCol.Code, `\a`) ||
+		strings.Contains(unidbgCol.Code, "\n// injected();") || strings.Contains(unidbgCol.Code, "\n*/boom") {
+		t.Errorf("unidbg collector leaked unescaped comment newline or Go-only escape")
+	}
+
+	// Verify Qiling Python collector syntax with `python3 -m py_compile` when available.
+	qilingCol := GenerateCollector("qiling", cfg)
+	if !strings.Contains(qilingCol.Code, "ql.os.set_syscall") || !strings.Contains(qilingCol.Code, "except Exception:") {
+		t.Errorf("qiling collector missing syscall hook or try/except guard")
+	}
+	if pyPath, err := exec.LookPath("python3"); err == nil {
+		pyFile := filepath.Join(tmpDir, qilingCol.Filename)
+		if err := os.WriteFile(pyFile, []byte(qilingCol.Code), 0644); err != nil {
+			t.Fatalf("write %s: %v", pyFile, err)
+		}
+		cmd := exec.Command(pyPath, "-m", "py_compile", pyFile)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("python3 -m py_compile failed for qiling collector: %v\n%s", err, string(out))
+		}
+	}
 }

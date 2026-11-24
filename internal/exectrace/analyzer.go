@@ -14,7 +14,6 @@ import (
 
 var (
 	reHexLiteral = regexp.MustCompile(`(?:#)?0x([0-9a-fA-F]+)`)
-	reDecImm     = regexp.MustCompile(`#\s*(-?\d+)`)
 	reRegWord    = regexp.MustCompile(`\b([a-zA-Z][a-zA-Z0-9]{1,4})\b`)
 	reBracketMem = regexp.MustCompile(`\[([^\]]+)\]`)
 )
@@ -356,13 +355,13 @@ func resolveCallTarget(events []TraceEvent, idx int, moduleBase uint64) (name st
 		}
 	}
 
-	// Peek at the next executed instruction to resolve indirect call target / symbol.
+	// Peek at the next executed instruction on the same thread to resolve indirect call target / symbol.
 	for j := idx + 1; j < len(events) && j <= idx+4; j++ {
 		nxt := events[j]
-		if !isInstructionEvent(nxt) {
+		if !isInstructionEvent(nxt) || nxt.ThreadID != ev.ThreadID {
 			continue
 		}
-		if addr == 0 && nxt.Address != 0 && nxt.Address != ev.Address+4 {
+		if addr == 0 && nxt.Address != 0 && nxt.Address != safeAddUint64(ev.Address, 4) {
 			addr = nxt.Address
 		}
 		if name == "" && nxt.Symbol != "" && nxt.Address == addr {
@@ -402,15 +401,19 @@ func analyzeHotLoops(s *ExecTraceSession) []LoopStat {
 	}
 
 	accs := make(map[loopKey]*loopAcc)
-	var prevEv *TraceEvent
-	var recentInsns []TraceEvent
+	prevByTID := make(map[int]*TraceEvent)
+	recentByTID := make(map[int][]TraceEvent)
 
 	for i := range s.Events {
 		ev := &s.Events[i]
 		if !isInstructionEvent(*ev) || ev.Address == 0 {
 			continue
 		}
-		if prevEv != nil && prevEv.Module == ev.Module && prevEv.Kind != KindCall && prevEv.Kind != KindRet {
+		tid := ev.ThreadID
+		prevEv := prevByTID[tid]
+		recentInsns := recentByTID[tid]
+
+		if prevEv != nil && prevEv.ThreadID == ev.ThreadID && prevEv.Module == ev.Module && prevEv.Kind != KindCall && prevEv.Kind != KindRet {
 			if ev.Address <= prevEv.Address && prevEv.Address-ev.Address <= 4096 {
 				key := loopKey{mod: ev.Module, start: ev.Address, end: prevEv.Address}
 				acc, ok := accs[key]
@@ -430,7 +433,7 @@ func analyzeHotLoops(s *ExecTraceSession) []LoopStat {
 				acc.stat.Iterations++
 				acc.stat.LastSeq = prevEv.Seq
 
-				// Count instructions within [start, end] from recent execution window.
+				// Count instructions within [start, end] from recent per-thread execution window.
 				bodyCount := 0
 				cryptoCount := 0
 				for k := len(recentInsns) - 1; k >= 0; k-- {
@@ -462,7 +465,8 @@ func analyzeHotLoops(s *ExecTraceSession) []LoopStat {
 		if len(recentInsns) > 512 {
 			recentInsns = recentInsns[len(recentInsns)-256:]
 		}
-		prevEv = ev
+		recentByTID[tid] = recentInsns
+		prevByTID[tid] = ev
 	}
 
 	out := make([]LoopStat, 0, len(accs))
@@ -504,7 +508,9 @@ func analyzeMemoryRegions(s *ExecTraceSession) []MemoryRegionStat {
 					if page >= 0x1000 {
 						stackPages[page-0x1000] = true
 					}
-					stackPages[page+0x1000] = true
+					if page <= math.MaxUint64-0x1000 {
+						stackPages[page+0x1000] = true
+					}
 				}
 			}
 		}
@@ -531,12 +537,13 @@ func analyzeMemoryRegions(s *ExecTraceSession) []MemoryRegionStat {
 			size = 4
 		}
 		page := addr &^ uint64(0xFFF)
+		end := safeAddUint64(addr, uint64(size))
 		acc, ok := pages[page]
 		if !ok {
 			acc = &pageAcc{
 				page:    page,
 				minAddr: addr,
-				maxEnd:  addr + uint64(size),
+				maxEnd:  end,
 				addrs:   make(map[uint64]struct{}),
 			}
 			pages[page] = acc
@@ -544,7 +551,7 @@ func analyzeMemoryRegions(s *ExecTraceSession) []MemoryRegionStat {
 		if addr < acc.minAddr {
 			acc.minAddr = addr
 		}
-		if end := addr + uint64(size); end > acc.maxEnd {
+		if end > acc.maxEnd {
 			acc.maxEnd = end
 		}
 		if !acc.seenAny {
@@ -820,6 +827,9 @@ func detectRC4Pattern(s *ExecTraceSession, memRegions []MemoryRegionStat, addHit
 	has256State := false
 	var stateBase uint64
 	for _, reg := range memRegions {
+		if reg.EndAddr < reg.BaseAddr {
+			continue
+		}
 		span := reg.EndAddr - reg.BaseAddr
 		if span >= 200 && span <= 300 && reg.ReadCount >= 8 && reg.WriteCount >= 8 {
 			has256State = true
@@ -936,10 +946,20 @@ func buildAnalysisSummary(s *ExecTraceSession, a *TraceAnalysis) string {
 
 type memInterval struct {
 	start uint64
-	end   uint64 // exclusive
+	end   uint64 // exclusive (clamped at math.MaxUint64)
+}
+
+func makeMemInterval(start uint64, size int) memInterval {
+	if size <= 0 {
+		size = 1
+	}
+	return memInterval{start: start, end: safeAddUint64(start, uint64(size))}
 }
 
 func (m memInterval) overlaps(other memInterval) bool {
+	if m.start == math.MaxUint64 && other.start == math.MaxUint64 {
+		return true
+	}
 	return m.start < other.end && other.start < m.end
 }
 
@@ -949,6 +969,8 @@ type insnSemantics struct {
 	addrRegs     []string
 	isLoad       bool
 	isStore      bool
+	isMemRMW     bool // x86 ALU writing memory: e.g. add [rdi], rax
+	isMemSrcALU  bool // x86 ALU reading memory into reg: e.g. xor eax, [rsi]
 	isPair       bool
 	isZeroing    bool
 	isPreserving bool // e.g. movk preserves existing dst bits
@@ -1054,7 +1076,7 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 		allTaintedRegs[seedReg] = true
 	}
 	if seedMem != 0 {
-		liveMem = addMemInterval(liveMem, memInterval{start: seedMem, end: seedMem + 8})
+		liveMem = addMemInterval(liveMem, makeMemInterval(seedMem, 8))
 		allTaintedMem[seedMem] = true
 	}
 
@@ -1070,11 +1092,110 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 		insnText := formatInsn(ev.Mnemonic, ev.Operands)
 
 		switch {
+		case sem.isMemSrcALU:
+			// x86 ALU reading memory into destination register: e.g. xor eax, [rsi]
+			if len(sem.dstRegs) == 0 {
+				continue
+			}
+			dst := sem.dstRegs[0]
+			if dst == "" || isZeroReg(dst) {
+				continue
+			}
+			slotSize := sem.memSize
+			if slotSize <= 0 {
+				slotSize = 8
+			}
+			iv := makeMemInterval(sem.memAddr, slotSize)
+			taintedByMem := sem.memAddr != 0 && hasMemOverlap(liveMem, iv)
+			taintedByDst := liveRegs[dst]
+
+			if taintedByMem {
+				liveRegs[dst] = true
+				allTaintedRegs[dst] = true
+				allTaintedMem[sem.memAddr] = true
+				steps = append(steps, TaintStep{
+					Seq:       ev.Seq,
+					Address:   ev.Address,
+					Offset:    ev.Offset,
+					Module:    ev.Module,
+					Mnemonic:  ev.Mnemonic,
+					Operands:  ev.Operands,
+					Reason:    fmt.Sprintf("%s tainted from mem[0x%x] via %s", dst, sem.memAddr, insnText),
+					DstRegs:   []string{dst},
+					MemAddr:   sem.memAddr,
+					MemOp:     "read",
+					RegsAfter: cloneRegMap(ev.RegsAfter),
+				})
+			} else if taintedByDst {
+				steps = append(steps, TaintStep{
+					Seq:       ev.Seq,
+					Address:   ev.Address,
+					Offset:    ev.Offset,
+					Module:    ev.Module,
+					Mnemonic:  ev.Mnemonic,
+					Operands:  ev.Operands,
+					Reason:    fmt.Sprintf("%s retains taint via %s", dst, insnText),
+					SrcRegs:   []string{dst},
+					DstRegs:   []string{dst},
+					MemAddr:   sem.memAddr,
+					MemOp:     "read",
+					RegsAfter: cloneRegMap(ev.RegsAfter),
+				})
+			}
+
+		case sem.isMemRMW:
+			// x86 ALU reading and writing memory: e.g. add [rdi], rax / add [rdi], 0x1
+			if sem.memAddr == 0 {
+				continue
+			}
+			slotSize := sem.memSize
+			if slotSize <= 0 {
+				slotSize = 8
+			}
+			iv := makeMemInterval(sem.memAddr, slotSize)
+			var matchedSrcs []string
+			for _, sr := range sem.srcRegs {
+				if sr != "" && !isZeroReg(sr) && liveRegs[sr] {
+					matchedSrcs = appendUnique(matchedSrcs, sr)
+				}
+			}
+			if len(matchedSrcs) > 0 {
+				liveMem = addMemInterval(liveMem, iv)
+				allTaintedMem[sem.memAddr] = true
+				steps = append(steps, TaintStep{
+					Seq:       ev.Seq,
+					Address:   ev.Address,
+					Offset:    ev.Offset,
+					Module:    ev.Module,
+					Mnemonic:  ev.Mnemonic,
+					Operands:  ev.Operands,
+					Reason:    fmt.Sprintf("mem[0x%x] tainted from %s via %s", sem.memAddr, strings.Join(matchedSrcs, ","), insnText),
+					SrcRegs:   matchedSrcs,
+					MemAddr:   sem.memAddr,
+					MemOp:     "write",
+					RegsAfter: cloneRegMap(ev.RegsAfter),
+				})
+			} else if hasMemOverlap(liveMem, iv) {
+				// Memory was already tainted and modified in-place (e.g. add [rdi], 0x1).
+				allTaintedMem[sem.memAddr] = true
+				steps = append(steps, TaintStep{
+					Seq:       ev.Seq,
+					Address:   ev.Address,
+					Offset:    ev.Offset,
+					Module:    ev.Module,
+					Mnemonic:  ev.Mnemonic,
+					Operands:  ev.Operands,
+					Reason:    fmt.Sprintf("mem[0x%x] modified in-place while tainted via %s", sem.memAddr, insnText),
+					MemAddr:   sem.memAddr,
+					MemOp:     "write",
+					RegsAfter: cloneRegMap(ev.RegsAfter),
+				})
+			}
+
 		case sem.isLoad:
 			if len(sem.dstRegs) == 0 {
 				continue
 			}
-			// Check each loaded register (handles single ldr as well as ldp r1, r2).
 			for slot, dst := range sem.dstRegs {
 				if dst == "" || isZeroReg(dst) {
 					continue
@@ -1082,13 +1203,13 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 				slotAddr := sem.memAddr
 				slotSize := sem.memSize
 				if sem.isPair && slotAddr != 0 {
-					slotAddr += uint64(slot) * sem.memStride
+					slotAddr = safeAddUint64(slotAddr, uint64(slot)*sem.memStride)
 					slotSize = int(sem.memStride)
 				}
 				if slotSize <= 0 {
 					slotSize = 8
 				}
-				iv := memInterval{start: slotAddr, end: slotAddr + uint64(slotSize)}
+				iv := makeMemInterval(slotAddr, slotSize)
 
 				taintedByMem := slotAddr != 0 && hasMemOverlap(liveMem, iv)
 				var taintedIdxRegs []string
@@ -1115,7 +1236,7 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 						DstRegs:   []string{dst},
 						MemAddr:   slotAddr,
 						MemOp:     "read",
-						RegsAfter: ev.RegsAfter,
+						RegsAfter: cloneRegMap(ev.RegsAfter),
 					})
 				} else if len(taintedIdxRegs) > 0 {
 					liveRegs[dst] = true
@@ -1132,7 +1253,7 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 						DstRegs:   []string{dst},
 						MemAddr:   slotAddr,
 						MemOp:     "read",
-						RegsAfter: ev.RegsAfter,
+						RegsAfter: cloneRegMap(ev.RegsAfter),
 					})
 				} else if !(i == startIdx && dst == seedReg) {
 					delete(liveRegs, dst)
@@ -1140,11 +1261,25 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 			}
 
 		case sem.isStore:
+			// Constant store (e.g. x86 `mov [rdi], 0x0`) has no register source: kill memory taint.
+			if len(sem.srcRegs) == 0 {
+				if sem.memAddr != 0 {
+					slotSize := sem.memSize
+					if slotSize <= 0 {
+						slotSize = 8
+					}
+					iv := makeMemInterval(sem.memAddr, slotSize)
+					if !(i == startIdx && seedMem != 0 && iv.overlaps(makeMemInterval(seedMem, 8))) {
+						liveMem = removeMemInterval(liveMem, iv)
+					}
+				}
+				continue
+			}
 			for slot, src := range sem.srcRegs {
 				slotAddr := sem.memAddr
 				slotSize := sem.memSize
 				if sem.isPair && slotAddr != 0 {
-					slotAddr += uint64(slot) * sem.memStride
+					slotAddr = safeAddUint64(slotAddr, uint64(slot)*sem.memStride)
 					slotSize = int(sem.memStride)
 				}
 				if slotSize <= 0 {
@@ -1153,8 +1288,8 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 				if slotAddr == 0 {
 					continue
 				}
-				iv := memInterval{start: slotAddr, end: slotAddr + uint64(slotSize)}
-				if liveRegs[src] {
+				iv := makeMemInterval(slotAddr, slotSize)
+				if src != "" && !isZeroReg(src) && liveRegs[src] {
 					liveMem = addMemInterval(liveMem, iv)
 					allTaintedMem[slotAddr] = true
 					steps = append(steps, TaintStep{
@@ -1168,9 +1303,9 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 						SrcRegs:   []string{src},
 						MemAddr:   slotAddr,
 						MemOp:     "write",
-						RegsAfter: ev.RegsAfter,
+						RegsAfter: cloneRegMap(ev.RegsAfter),
 					})
-				} else if !(i == startIdx && seedMem != 0 && iv.overlaps(memInterval{start: seedMem, end: seedMem + 8})) {
+				} else if !(i == startIdx && seedMem != 0 && iv.overlaps(makeMemInterval(seedMem, 8))) {
 					liveMem = removeMemInterval(liveMem, iv)
 				}
 			}
@@ -1210,7 +1345,7 @@ func runForwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem 
 					Reason:    fmt.Sprintf("%s tainted from %s via %s", dst, strings.Join(matchedSrcs, ","), insnText),
 					SrcRegs:   matchedSrcs,
 					DstRegs:   []string{dst},
-					RegsAfter: ev.RegsAfter,
+					RegsAfter: cloneRegMap(ev.RegsAfter),
 				})
 			} else if !sem.isPreserving && !(i == startIdx && dst == seedReg) {
 				delete(liveRegs, dst)
@@ -1246,7 +1381,7 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 		allTaintedRegs[seedReg] = true
 	}
 	if seedMem != 0 {
-		neededMem = addMemInterval(neededMem, memInterval{start: seedMem, end: seedMem + 8})
+		neededMem = addMemInterval(neededMem, makeMemInterval(seedMem, 8))
 		allTaintedMem[seedMem] = true
 	}
 
@@ -1265,6 +1400,93 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 		insnText := formatInsn(ev.Mnemonic, ev.Operands)
 
 		switch {
+		case sem.isMemSrcALU:
+			// x86 ALU reading memory into reg: e.g. xor eax, [rsi]
+			if len(sem.dstRegs) == 0 {
+				continue
+			}
+			dst := sem.dstRegs[0]
+			if !neededRegs[dst] {
+				continue
+			}
+			allTaintedRegs[dst] = true
+			slotSize := sem.memSize
+			if slotSize <= 0 {
+				slotSize = 8
+			}
+			if sem.memAddr != 0 {
+				neededMem = addMemInterval(neededMem, makeMemInterval(sem.memAddr, slotSize))
+				allTaintedMem[sem.memAddr] = true
+				revSteps = append(revSteps, TaintStep{
+					Seq:       ev.Seq,
+					Address:   ev.Address,
+					Offset:    ev.Offset,
+					Module:    ev.Module,
+					Mnemonic:  ev.Mnemonic,
+					Operands:  ev.Operands,
+					Reason:    fmt.Sprintf("%s depends on %s and mem[0x%x] via %s", dst, dst, sem.memAddr, insnText),
+					SrcRegs:   []string{dst},
+					DstRegs:   []string{dst},
+					MemAddr:   sem.memAddr,
+					MemOp:     "read",
+					RegsAfter: cloneRegMap(ev.RegsAfter),
+				})
+			} else {
+				revSteps = append(revSteps, TaintStep{
+					Seq:       ev.Seq,
+					Address:   ev.Address,
+					Offset:    ev.Offset,
+					Module:    ev.Module,
+					Mnemonic:  ev.Mnemonic,
+					Operands:  ev.Operands,
+					Reason:    fmt.Sprintf("%s depends on %s and memory operand via %s", dst, dst, insnText),
+					SrcRegs:   []string{dst},
+					DstRegs:   []string{dst},
+					MemOp:     "read",
+					RegsAfter: cloneRegMap(ev.RegsAfter),
+				})
+			}
+
+		case sem.isMemRMW:
+			// x86 ALU modifying memory in-place: e.g. add [rdi], rax
+			if sem.memAddr == 0 {
+				continue
+			}
+			slotSize := sem.memSize
+			if slotSize <= 0 {
+				slotSize = 8
+			}
+			iv := makeMemInterval(sem.memAddr, slotSize)
+			if hasMemOverlap(neededMem, iv) {
+				// Keep mem[addr] in neededMem since RMW reads previous memory contents too.
+				allTaintedMem[sem.memAddr] = true
+				var deps []string
+				for _, sr := range sem.srcRegs {
+					if sr != "" && !isZeroReg(sr) {
+						neededRegs[sr] = true
+						allTaintedRegs[sr] = true
+						deps = appendUnique(deps, sr)
+					}
+				}
+				reason := fmt.Sprintf("mem[0x%x] modified in-place via %s", sem.memAddr, insnText)
+				if len(deps) > 0 {
+					reason = fmt.Sprintf("mem[0x%x] depends on %s and prior mem[0x%x] via %s", sem.memAddr, strings.Join(deps, ","), sem.memAddr, insnText)
+				}
+				revSteps = append(revSteps, TaintStep{
+					Seq:       ev.Seq,
+					Address:   ev.Address,
+					Offset:    ev.Offset,
+					Module:    ev.Module,
+					Mnemonic:  ev.Mnemonic,
+					Operands:  ev.Operands,
+					Reason:    reason,
+					SrcRegs:   deps,
+					MemAddr:   sem.memAddr,
+					MemOp:     "write",
+					RegsAfter: cloneRegMap(ev.RegsAfter),
+				})
+			}
+
 		case sem.isLoad:
 			for slot, dst := range sem.dstRegs {
 				if !neededRegs[dst] {
@@ -1273,7 +1495,7 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 				slotAddr := sem.memAddr
 				slotSize := sem.memSize
 				if sem.isPair && slotAddr != 0 {
-					slotAddr += uint64(slot) * sem.memStride
+					slotAddr = safeAddUint64(slotAddr, uint64(slot)*sem.memStride)
 					slotSize = int(sem.memStride)
 				}
 				if slotSize <= 0 {
@@ -1284,7 +1506,7 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 				allTaintedRegs[dst] = true
 
 				if slotAddr != 0 {
-					iv := memInterval{start: slotAddr, end: slotAddr + uint64(slotSize)}
+					iv := makeMemInterval(slotAddr, slotSize)
 					neededMem = addMemInterval(neededMem, iv)
 					allTaintedMem[slotAddr] = true
 					revSteps = append(revSteps, TaintStep{
@@ -1298,7 +1520,7 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 						DstRegs:   []string{dst},
 						MemAddr:   slotAddr,
 						MemOp:     "read",
-						RegsAfter: ev.RegsAfter,
+						RegsAfter: cloneRegMap(ev.RegsAfter),
 					})
 				} else {
 					var deps []string
@@ -1320,17 +1542,44 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 						SrcRegs:   deps,
 						DstRegs:   []string{dst},
 						MemOp:     "read",
-						RegsAfter: ev.RegsAfter,
+						RegsAfter: cloneRegMap(ev.RegsAfter),
 					})
 				}
 			}
 
 		case sem.isStore:
+			// Constant store (e.g. mov [rdi], 0x0): terminates backward dependency on mem[addr].
+			if len(sem.srcRegs) == 0 {
+				if sem.memAddr != 0 {
+					slotSize := sem.memSize
+					if slotSize <= 0 {
+						slotSize = 8
+					}
+					iv := makeMemInterval(sem.memAddr, slotSize)
+					if hasMemOverlap(neededMem, iv) {
+						neededMem = removeMemInterval(neededMem, iv)
+						allTaintedMem[sem.memAddr] = true
+						revSteps = append(revSteps, TaintStep{
+							Seq:       ev.Seq,
+							Address:   ev.Address,
+							Offset:    ev.Offset,
+							Module:    ev.Module,
+							Mnemonic:  ev.Mnemonic,
+							Operands:  ev.Operands,
+							Reason:    fmt.Sprintf("mem[0x%x] initialized from constant via %s", sem.memAddr, insnText),
+							MemAddr:   sem.memAddr,
+							MemOp:     "write",
+							RegsAfter: cloneRegMap(ev.RegsAfter),
+						})
+					}
+				}
+				continue
+			}
 			for slot, src := range sem.srcRegs {
 				slotAddr := sem.memAddr
 				slotSize := sem.memSize
 				if sem.isPair && slotAddr != 0 {
-					slotAddr += uint64(slot) * sem.memStride
+					slotAddr = safeAddUint64(slotAddr, uint64(slot)*sem.memStride)
 					slotSize = int(sem.memStride)
 				}
 				if slotSize <= 0 {
@@ -1339,13 +1588,17 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 				if slotAddr == 0 {
 					continue
 				}
-				iv := memInterval{start: slotAddr, end: slotAddr + uint64(slotSize)}
+				iv := makeMemInterval(slotAddr, slotSize)
 				if hasMemOverlap(neededMem, iv) {
 					neededMem = removeMemInterval(neededMem, iv)
 					allTaintedMem[slotAddr] = true
+					var srcList []string
+					reason := fmt.Sprintf("mem[0x%x] zeroed via %s", slotAddr, insnText)
 					if src != "" && !isZeroReg(src) {
 						neededRegs[src] = true
 						allTaintedRegs[src] = true
+						srcList = []string{src}
+						reason = fmt.Sprintf("mem[0x%x] depends on %s via %s", slotAddr, src, insnText)
 					}
 					revSteps = append(revSteps, TaintStep{
 						Seq:       ev.Seq,
@@ -1354,11 +1607,11 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 						Module:    ev.Module,
 						Mnemonic:  ev.Mnemonic,
 						Operands:  ev.Operands,
-						Reason:    fmt.Sprintf("mem[0x%x] depends on %s via %s", slotAddr, src, insnText),
-						SrcRegs:   []string{src},
+						Reason:    reason,
+						SrcRegs:   srcList,
 						MemAddr:   slotAddr,
 						MemOp:     "write",
-						RegsAfter: ev.RegsAfter,
+						RegsAfter: cloneRegMap(ev.RegsAfter),
 					})
 				}
 			}
@@ -1384,7 +1637,7 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 					Operands:  ev.Operands,
 					Reason:    fmt.Sprintf("%s zeroed by %s", dst, insnText),
 					DstRegs:   []string{dst},
-					RegsAfter: ev.RegsAfter,
+					RegsAfter: cloneRegMap(ev.RegsAfter),
 				})
 				continue
 			}
@@ -1418,7 +1671,7 @@ func runBackwardTaint(s *ExecTraceSession, startIdx int, seedReg string, seedMem
 				Reason:    reason,
 				SrcRegs:   deps,
 				DstRegs:   []string{dst},
-				RegsAfter: ev.RegsAfter,
+				RegsAfter: cloneRegMap(ev.RegsAfter),
 			})
 		}
 	}
@@ -1488,7 +1741,7 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 
 	var sem insnSemantics
 
-	// Load instructions
+	// Load instructions (ARM/ARM64 ldr/ldp, x86 mov reg, [mem], pop)
 	if isLoadMnemonic(m) || (isMoveMnemonic(m) && len(ops) >= 2 && strings.Contains(ops[1], "[")) {
 		sem.isLoad = true
 		if m == "ldp" && len(ops) >= 3 {
@@ -1518,7 +1771,7 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 		return sem
 	}
 
-	// Store instructions
+	// Store instructions (ARM/ARM64 str/stp, x86 mov [mem], src/imm, push)
 	if isStoreMnemonic(m) || (isMoveMnemonic(m) && len(ops) >= 2 && strings.Contains(ops[0], "[")) {
 		sem.isStore = true
 		if m == "stp" && len(ops) >= 3 {
@@ -1533,24 +1786,27 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 			return sem
 		}
 		if m == "push" && len(ops) >= 1 {
-			sem.srcRegs = []string{canonicalReg(ops[0])}
+			if r := canonicalReg(ops[0]); r != "" {
+				sem.srcRegs = []string{r}
+			}
 			sem.addrRegs = []string{"rsp"}
 			sem.memSize = int(regWidthBytes(ops[0]))
 			sem.memAddr = resolveConcreteMemAddr(events, idx, true, "[rsp]")
 			return sem
 		}
 		if isMoveMnemonic(m) && len(ops) >= 2 && strings.Contains(ops[0], "[") {
-			// x86: mov [mem], src
+			// x86: mov [mem], src (src may be a register or an immediate constant)
 			if r := canonicalReg(ops[1]); r != "" {
 				sem.srcRegs = []string{r}
 			}
+			sem.memSize = memPtrWidth(ops[0], ops[1])
 		} else if len(ops) >= 1 {
 			// ARM/ARM64: str src, [mem]
 			if r := canonicalReg(ops[0]); r != "" {
 				sem.srcRegs = []string{r}
 			}
+			sem.memSize = loadStoreWidth(m, ops)
 		}
-		sem.memSize = loadStoreWidth(m, ops)
 		sem.addrRegs = extractBracketRegs(ev.Operands)
 		sem.memAddr = resolveConcreteMemAddr(events, idx, true, ev.Operands)
 		return sem
@@ -1568,7 +1824,7 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 		return sem
 	}
 
-	// Move / sign-extend / zero-extend / byte-swap instructions (overwrite dst from op[1:])
+	// Move / PC-relative address / sign-extend / zero-extend / byte-swap instructions
 	if isMoveMnemonic(m) {
 		dst := canonicalReg(ops[0])
 		if dst != "" {
@@ -1592,6 +1848,39 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 
 	// ALU / bitwise / shift / multiply instructions
 	if isALUMnemonic(m) {
+		// x86 memory-destination ALU (e.g. `add [rdi], rax`, `xor dword ptr [rdi], 0xff`)
+		if len(ops) >= 1 && strings.Contains(ops[0], "[") {
+			sem.isMemRMW = true
+			sem.addrRegs = extractBracketRegs(ops[0])
+			sem.memAddr = resolveConcreteMemAddr(events, idx, true, ops[0])
+			if len(ops) >= 2 {
+				sem.memSize = memPtrWidth(ops[0], ops[1])
+				for _, r := range extractRegTokens(ops[1]) {
+					if cr := canonicalReg(r); cr != "" {
+						sem.srcRegs = appendUnique(sem.srcRegs, cr)
+					}
+				}
+			} else {
+				sem.memSize = memPtrWidth(ops[0], "")
+			}
+			return sem
+		}
+
+		// x86 memory-source ALU (e.g. `xor eax, [rsi]`, `add rax, qword ptr [rsi+8]`)
+		if len(ops) == 2 && strings.Contains(ops[1], "[") {
+			dst := canonicalReg(ops[0])
+			if dst == "" {
+				return sem
+			}
+			sem.isMemSrcALU = true
+			sem.dstRegs = []string{dst}
+			sem.srcRegs = []string{dst}
+			sem.addrRegs = extractBracketRegs(ops[1])
+			sem.memSize = memPtrWidth(ops[1], ops[0])
+			sem.memAddr = resolveConcreteMemAddr(events, idx, false, ops[1])
+			return sem
+		}
+
 		dst := canonicalReg(ops[0])
 		if dst == "" {
 			return sem
@@ -1600,9 +1889,10 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 
 		if len(ops) >= 3 {
 			// 3-operand form (ARM64/ARM): op dst, src1, src2 [, shift]
+			// Zeroing idiom only holds when there is NO 4th shift/extend operand (e.g. `eor x0, x1, x1, lsl #4` != 0).
 			src1 := canonicalReg(ops[1])
 			src2 := canonicalReg(ops[2])
-			if (m == "eor" || m == "xor" || m == "sub" || m == "subs") && src1 != "" && src1 == src2 {
+			if len(ops) == 3 && (m == "eor" || m == "xor" || m == "sub" || m == "subs") && src1 != "" && src1 == src2 {
 				sem.isZeroing = true
 				return sem
 			}
@@ -1614,6 +1904,15 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 				}
 			}
 		} else if len(ops) == 2 {
+			// 2-operand unary overwrite (ARM64 `neg x0, x1` / `negs x0, x1`) does NOT read dst.
+			if isTwoOpUnaryOverwrite(m) {
+				for _, r := range extractRegTokens(ops[1]) {
+					if cr := canonicalReg(r); cr != "" {
+						sem.srcRegs = appendUnique(sem.srcRegs, cr)
+					}
+				}
+				return sem
+			}
 			// 2-operand form (x86 / Thumb): op dst, src => dst = dst op src
 			src2 := canonicalReg(ops[1])
 			if (m == "xor" || m == "eor" || m == "sub" || m == "subs") && dst == src2 {
@@ -1627,7 +1926,7 @@ func analyzeInsnSemantics(events []TraceEvent, idx int) insnSemantics {
 				}
 			}
 		} else if len(ops) == 1 {
-			// 1-operand form (e.g. inc/dec/not/neg/bswap)
+			// 1-operand form (e.g. x86 inc/dec/not/neg/bswap)
 			sem.srcRegs = []string{dst}
 		}
 		return sem
@@ -1647,18 +1946,21 @@ func resolveConcreteMemAddr(events []TraceEvent, idx int, isWrite bool, operands
 		wantKind = KindMemWrite
 	}
 
-	// Check immediately adjacent memory events (Unidbg logs before or after; Tenet logs right after).
+	// Check immediately adjacent memory events without crossing another instruction.
 	for _, delta := range []int{1, -1, 2, -2} {
 		j := idx + delta
 		if j < 0 || j >= len(events) {
 			continue
 		}
+		if delta == 2 && isInstructionEvent(events[idx+1]) {
+			continue
+		}
+		if delta == -2 && isInstructionEvent(events[idx-1]) {
+			continue
+		}
 		adj := events[j]
-		if isInstructionEvent(adj) && delta != 0 {
-			// Don't cross another instruction when looking two steps away.
-			if delta == 2 || delta == -2 {
-				continue
-			}
+		if isInstructionEvent(adj) {
+			continue
 		}
 		if adj.Kind == wantKind && adj.MemAddr != 0 {
 			if adj.Address == 0 || ev.Address == 0 || adj.Address == ev.Address {
@@ -1667,19 +1969,23 @@ func resolveConcreteMemAddr(events []TraceEvent, idx int, isWrite bool, operands
 		}
 	}
 
-	// Fallback: evaluate [base, #imm] or [base, idx] from RegsBefore / RegsAfter.
+	// Fallback: evaluate [base, #imm] or [base, idx, lsl #shift] from RegsBefore / RegsAfter.
 	bm := reBracketMem.FindStringSubmatch(operands)
 	if bm == nil {
 		return 0
 	}
 	inside := strings.TrimSpace(bm[1])
 	parts := strings.Split(inside, ",")
-	if len(parts) == 1 && strings.ContainsAny(inside, "+-") {
+	if len(parts) == 1 && strings.ContainsAny(inside, "+-*") {
 		return evalX86MemExpr(inside, ev)
 	}
 
-	var addr uint64
+	var baseVal uint64
+	var idxVal uint64
+	var immOff int64
 	foundBase := false
+	hasIdx := false
+
 	for idxPart, p := range parts {
 		p = strings.TrimSpace(p)
 		if p == "" {
@@ -1688,32 +1994,67 @@ func resolveConcreteMemAddr(events []TraceEvent, idx int, isWrite bool, operands
 		// Immediate offset: #0x10, #-8, #16
 		if strings.HasPrefix(p, "#") {
 			if off, ok := parseSignedImm(p); ok {
-				addr = uint64(int64(addr) + off)
+				immOff += off
 			}
 			continue
 		}
-		// Shift qualifier (e.g. "lsl #2") - skip standalone
+		// ARM64 shift / extend modifier on the index register (e.g. "lsl #3", "uxtw #2", "sxtw #3")
 		low := strings.ToLower(p)
-		if strings.HasPrefix(low, "lsl") || strings.HasPrefix(low, "uxtw") || strings.HasPrefix(low, "sxtw") {
+		if strings.HasPrefix(low, "lsl") || strings.HasPrefix(low, "lsr") || strings.HasPrefix(low, "asr") ||
+			strings.HasPrefix(low, "uxtw") || strings.HasPrefix(low, "sxtw") || strings.HasPrefix(low, "uxtx") || strings.HasPrefix(low, "sxtx") {
+			if hasIdx {
+				idxVal = applyARM64IndexModifier(idxVal, low)
+			}
 			continue
 		}
 		if val, ok := lookupRegForMem(ev, p); ok {
 			if idxPart == 0 {
-				addr = val
+				baseVal = val
 				foundBase = true
 			} else {
-				addr += val
+				if strings.HasPrefix(strings.ToLower(p), "w") {
+					val = uint64(uint32(val))
+				}
+				idxVal = val
+				hasIdx = true
 			}
 		}
 	}
 	if !foundBase {
 		return 0
 	}
-	return addr
+	return uint64(int64(baseVal) + int64(idxVal) + immOff)
+}
+
+func applyARM64IndexModifier(val uint64, mod string) uint64 {
+	fields := strings.Fields(mod)
+	if len(fields) == 0 {
+		return val
+	}
+	op := fields[0]
+	var shift uint64
+	if len(fields) >= 2 {
+		if s, ok := parseSignedImm(fields[1]); ok && s >= 0 && s < 64 {
+			shift = uint64(s)
+		}
+	}
+	switch op {
+	case "uxtw":
+		val = uint64(uint32(val)) << shift
+	case "sxtw":
+		val = uint64(int64(int32(val))) << shift
+	case "uxtx", "sxtx", "lsl":
+		val = val << shift
+	case "lsr":
+		val = val >> shift
+	case "asr":
+		val = uint64(int64(val) >> shift)
+	}
+	return val
 }
 
 func evalX86MemExpr(expr string, ev TraceEvent) uint64 {
-	// Handles simple [rax + 0x10], [rbp - 0x8], [rdi + rsi]
+	// Handles [rax + 0x10], [rbp - 0x8], [rdi + rsi*4 + 0x10]
 	normalized := strings.ReplaceAll(expr, "-", "+-")
 	terms := strings.Split(normalized, "+")
 	var total int64
@@ -1726,6 +2067,24 @@ func evalX86MemExpr(expr string, ev TraceEvent) uint64 {
 		if off, ok := parseSignedImm(t); ok {
 			total += off
 			continue
+		}
+		if star := strings.IndexByte(t, '*'); star > 0 {
+			lhs := strings.TrimSpace(t[:star])
+			rhs := strings.TrimSpace(t[star+1:])
+			if val, ok := lookupRegForMem(ev, lhs); ok {
+				if scale, ok2 := parseSignedImm(rhs); ok2 {
+					total += int64(val) * scale
+					found = true
+					continue
+				}
+			}
+			if val, ok := lookupRegForMem(ev, rhs); ok {
+				if scale, ok2 := parseSignedImm(lhs); ok2 {
+					total += int64(val) * scale
+					found = true
+					continue
+				}
+			}
 		}
 		if val, ok := lookupRegForMem(ev, t); ok {
 			total += int64(val)
@@ -1757,6 +2116,9 @@ func lookupRegValue(regs map[string]uint64, reg string) (uint64, bool) {
 		return v, true
 	}
 	canon := canonicalReg(raw)
+	if canon == "" {
+		return 0, false
+	}
 	if v, ok := regs[canon]; ok {
 		return v, true
 	}
@@ -2073,13 +2435,16 @@ func diffRegisters(evA, evB TraceEvent) []string {
 
 // canonicalReg normalizes ARM64 (w0->x0, fp->x29, lr->x30), x86/x86_64
 // sub-registers (eax/ax/al->rax, r8d->r8), and ARM32 register aliases.
+// Memory operands containing '[' or ']' are never treated as registers.
 func canonicalReg(raw string) string {
 	r := strings.ToLower(strings.TrimSpace(raw))
-	r = strings.Trim(r, "[]!{}")
+	if r == "" || strings.ContainsAny(r, "[]") {
+		return ""
+	}
+	r = strings.Trim(r, "!{}")
 	if r == "" {
 		return ""
 	}
-	// Strip ARM64/x86 size prefixes if glued
 	if strings.HasPrefix(r, "#") || strings.HasPrefix(r, "0x") || (r[0] >= '0' && r[0] <= '9') {
 		return ""
 	}
@@ -2160,6 +2525,24 @@ func regWidthBytes(raw string) uint64 {
 	return 8
 }
 
+func memPtrWidth(memOp, otherOp string) int {
+	low := strings.ToLower(memOp)
+	switch {
+	case strings.Contains(low, "byte ptr"):
+		return 1
+	case strings.Contains(low, "word ptr") && !strings.Contains(low, "dword") && !strings.Contains(low, "qword"):
+		return 2
+	case strings.Contains(low, "dword ptr"):
+		return 4
+	case strings.Contains(low, "qword ptr"):
+		return 8
+	}
+	if otherOp != "" && canonicalReg(otherOp) != "" {
+		return int(regWidthBytes(otherOp))
+	}
+	return 8
+}
+
 func loadStoreWidth(mnemonic string, ops []string) int {
 	switch {
 	case strings.HasSuffix(mnemonic, "b") || strings.HasSuffix(mnemonic, "sb"):
@@ -2199,6 +2582,7 @@ func isMoveMnemonic(m string) bool {
 	switch m {
 	case "mov", "movz", "movk", "movn", "mvn", "movzx", "movsx", "movsxd",
 		"movq", "movl", "movw", "movb", "movabs",
+		"adr", "adrp",
 		"sxtb", "sxth", "sxtw", "uxtb", "uxth", "uxtw",
 		"bfi", "bfxil", "ubfx", "sbfx", "ubfm", "sbfm",
 		"rbit", "rev", "rev16", "rev32", "bswap",
@@ -2209,13 +2593,23 @@ func isMoveMnemonic(m string) bool {
 	}
 }
 
+func isTwoOpUnaryOverwrite(m string) bool {
+	switch m {
+	case "neg", "negs", "not", "abs", "clz", "cls", "cnt":
+		return true
+	default:
+		return false
+	}
+}
+
 func isALUMnemonic(m string) bool {
 	switch m {
 	case "add", "adds", "adc", "adcs", "sub", "subs", "sbc", "sbcs", "rsb", "neg", "negs",
 		"eor", "eors", "eon", "xor", "and", "ands", "bic", "bics", "orr", "orrs", "orn", "or", "not",
 		"lsl", "lsr", "asr", "ror", "rol", "shl", "shr", "sar", "sal", "extr",
 		"mul", "imul", "madd", "msub", "umull", "smull", "umulh", "smulh", "udiv", "sdiv",
-		"inc", "dec", "aese", "aesd", "crc32b", "crc32h", "crc32w", "crc32x":
+		"inc", "dec", "abs", "clz", "cls", "cnt",
+		"aese", "aesd", "crc32b", "crc32h", "crc32w", "crc32x":
 		return true
 	default:
 		return false
@@ -2329,7 +2723,7 @@ func extractRegTokens(s string) []string {
 }
 
 func addMemInterval(list []memInterval, iv memInterval) []memInterval {
-	if iv.end <= iv.start {
+	if iv.end <= iv.start && iv.start < math.MaxUint64 {
 		iv.end = iv.start + 1
 	}
 	list = append(list, iv)
@@ -2351,7 +2745,7 @@ func addMemInterval(list []memInterval, iv memInterval) []memInterval {
 }
 
 func removeMemInterval(list []memInterval, rm memInterval) []memInterval {
-	if len(list) == 0 || rm.end <= rm.start {
+	if len(list) == 0 || (rm.end <= rm.start && rm.start < math.MaxUint64) {
 		return list
 	}
 	var out []memInterval
@@ -2449,6 +2843,13 @@ func findEventIndexBySeq(events []TraceEvent, seq int) int {
 		}
 	}
 	return -1
+}
+
+func safeAddUint64(a, b uint64) uint64 {
+	if b > math.MaxUint64-a {
+		return math.MaxUint64
+	}
+	return a + b
 }
 
 func maxInt(a, b int) int {

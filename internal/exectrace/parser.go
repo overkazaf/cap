@@ -40,7 +40,8 @@ var (
 
 	// Tenet register-delta line:
 	// pc=0x40001a20,x0=0x1,mr=0x7f0010:deadbeef,mw=0x7f0020:01020304
-	reTenetPC = regexp.MustCompile(`(?i)(?:^|,)\s*(?:pc|rip|eip|r15)\s*=\s*0x[0-9a-fA-F]+`)
+	// Also matches 0x-less Tenet lines like pc=40001000,x0=1000
+	reTenetPC = regexp.MustCompile(`(?i)(?:^|,)\s*(?:pc|rip|eip|r15)\s*=\s*(?:0x)?[0-9a-fA-F]+(?:,|$)`)
 )
 
 // flexUint64 unmarshals JSON numbers as well as hex ("0x1a20") or decimal strings.
@@ -111,6 +112,24 @@ type jsonTraceLine struct {
 	Raw         string                `json:"raw"`
 }
 
+// scanLines iterates over all lines of raw using bufio.Reader so arbitrarily
+// large lines (>4 MiB) never abort parsing with bufio.ErrTooLong.
+func scanLines(raw string, fn func(line string) bool) {
+	r := bufio.NewReaderSize(strings.NewReader(raw), 64*1024)
+	for {
+		line, err := r.ReadString('\n')
+		if len(line) > 0 {
+			line = strings.TrimRight(line, "\r\n")
+			if !fn(line) {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 // DetectFormat inspects the leading non-empty lines of raw trace data and
 // returns the best matching TraceFormat.
 func DetectFormat(raw string) TraceFormat {
@@ -123,52 +142,64 @@ func DetectFormat(raw string) TraceFormat {
 		FormatTenet:    0,
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	inspected := 0
-	for scanner.Scan() && inspected < 60 {
-		line := strings.TrimSpace(scanner.Text())
+	scanLines(raw, func(rawLine string) bool {
+		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "//") {
-			continue
+			return true
 		}
 		inspected++
+		if inspected > 60 {
+			return false
+		}
 
-		if strings.Contains(line, "[CAP_TRACE]") {
-			scores[FormatStalker] += 6
-			continue
+		// Bound prefix inspected by regexes on giant lines (>8 KiB) to avoid O(N) backtracking.
+		sample := line
+		if len(sample) > 8192 {
+			sample = sample[:8192]
+		}
+
+		if strings.Contains(sample, "[CAP_TRACE]") {
+			if strings.Contains(sample, `"source":"qiling"`) || strings.Contains(sample, `"source": "qiling"`) {
+				scores[FormatJSONL] += 6
+			} else {
+				scores[FormatStalker] += 6
+			}
+			return true
 		}
 		if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
-			if strings.Contains(line, `"stalker"`) || strings.Contains(line, `"regs_after"`) || strings.Contains(line, `"mnemonic"`) {
+			if strings.Contains(sample, `"stalker"`) || strings.Contains(sample, `"regs_after"`) || strings.Contains(sample, `"mnemonic"`) {
 				scores[FormatJSONL] += 5
 			} else {
 				scores[FormatJSONL] += 3
 			}
-			continue
+			return true
 		}
-		if reTenetPC.MatchString(line) {
+		if reTenetPC.MatchString(sample) {
 			scores[FormatTenet] += 6
-			continue
+			return true
 		}
-		if reUnidbgInsn.MatchString(line) || reUnidbgMem.MatchString(line) {
+		if reUnidbgInsn.MatchString(sample) || reUnidbgMem.MatchString(sample) {
 			scores[FormatUnidbg] += 6
-			continue
+			return true
 		}
-		if reUnidbgJNI.MatchString(line) {
+		if reUnidbgJNI.MatchString(sample) {
 			scores[FormatUnidbg] += 3
-			continue
+			return true
 		}
-		if reJavaArrow.MatchString(line) {
+		if reJavaArrow.MatchString(sample) {
 			scores[FormatJavaCall] += 6
-			continue
+			return true
 		}
-		if reQilingMem.MatchString(line) || reQilingInsn.MatchString(line) {
+		if reQilingMem.MatchString(sample) || reQilingInsn.MatchString(sample) {
 			scores[FormatQiling] += 4
-			continue
+			return true
 		}
-		if reSyscall.MatchString(line) {
+		if reSyscall.MatchString(sample) {
 			scores[FormatQiling] += 2
 		}
-	}
+		return true
+	})
 
 	best := FormatQiling
 	bestScore := -1
@@ -284,24 +315,27 @@ func formatToSource(f TraceFormat) string {
 
 func parseUnidbgTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error) {
 	var events []TraceEvent
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-
 	var lastModule string
 	var lastPC uint64
 	seq := 0
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	scanLines(raw, func(rawLine string) bool {
+		line := strings.TrimSpace(rawLine)
 		if line == "" {
-			continue
+			return true
 		}
 
 		// Memory READ / WRITE event
 		if m := reUnidbgMem.FindStringSubmatch(line); m != nil {
+			addr, err := strconv.ParseUint(m[2], 16, 64)
+			if err != nil {
+				return true
+			}
 			op := strings.ToUpper(m[1])
-			addr, _ := strconv.ParseUint(m[2], 16, 64)
-			sz, _ := parseIntAuto(m[3])
+			sz, szErr := parseIntAuto(m[3])
+			if szErr != nil || sz < 0 {
+				sz = 0
+			}
 			valHex := strings.ToLower(m[4])
 			pc := lastPC
 			if m[5] != "" {
@@ -322,14 +356,17 @@ func parseUnidbgTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 				MemAddr:     addr,
 				MemSize:     sz,
 				MemValueHex: valHex,
-				Raw:         line,
+				Raw:         capRawLine(line),
 			})
-			continue
+			return true
 		}
 
 		// Unidbg instruction event
 		if m := reUnidbgInsn.FindStringSubmatch(line); m != nil {
-			addr, _ := strconv.ParseUint(m[1], 16, 64)
+			addr, err := strconv.ParseUint(m[1], 16, 64)
+			if err != nil {
+				return true
+			}
 			insnText := strings.TrimSpace(m[2])
 			tail := strings.TrimSpace(m[3])
 
@@ -339,11 +376,13 @@ func parseUnidbgTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 
 			if hm := reUnidbgHeader.FindStringSubmatch(line); hm != nil {
 				mod = hm[1]
-				offset, _ = strconv.ParseUint(hm[2], 16, 64)
-				lastModule = mod
-				if session.ModuleBase == 0 && addr > offset {
-					session.ModuleBase = addr - offset
+				if parsedOff, err := strconv.ParseUint(hm[2], 16, 64); err == nil {
+					offset = parsedOff
+					if session.ModuleBase == 0 && addr > offset {
+						session.ModuleBase = addr - offset
+					}
 				}
+				lastModule = mod
 			}
 
 			rawBytes := ""
@@ -367,9 +406,9 @@ func parseUnidbgTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 				RawBytes:   rawBytes,
 				RegsBefore: regsBefore,
 				RegsAfter:  regsAfter,
-				Raw:        line,
+				Raw:        capRawLine(line),
 			})
-			continue
+			return true
 		}
 
 		// JNI call line
@@ -382,44 +421,43 @@ func parseUnidbgTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 				Symbol: "JNIEnv->" + jm[1],
 				Args:   splitArgs(jm[2]),
 				RetVal: strings.TrimSpace(jm[3]),
-				Raw:    line,
+				Raw:    capRawLine(line),
 			})
-			continue
+			return true
 		}
-	}
-	return events, scanner.Err()
+		return true
+	})
+	return events, nil
 }
 
 func parseJSONLTrace(raw string, session *ExecTraceSession, isStalker bool) ([]TraceEvent, error) {
 	var events []TraceEvent
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-
 	seq := 0
 	sawJava := 0
 	sawNative := 0
+	explicitSource := ""
 
-	for scanner.Scan() {
-		rawLine := strings.TrimSpace(scanner.Text())
-		if rawLine == "" {
-			continue
+	scanLines(raw, func(rawLine string) bool {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			return true
 		}
-		jsonPart := rawLine
-		if idx := strings.Index(rawLine, "[CAP_TRACE]"); idx >= 0 {
+		jsonPart := line
+		if idx := strings.Index(line, "[CAP_TRACE]"); idx >= 0 {
 			isStalker = true
-			jsonPart = strings.TrimSpace(rawLine[idx+len("[CAP_TRACE]"):])
+			jsonPart = strings.TrimSpace(line[idx+len("[CAP_TRACE]"):])
 		}
 		if !strings.HasPrefix(jsonPart, "{") {
 			if brace := strings.Index(jsonPart, "{"); brace >= 0 && strings.HasSuffix(jsonPart, "}") {
 				jsonPart = jsonPart[brace:]
 			} else {
-				continue
+				return true
 			}
 		}
 
 		var jl jsonTraceLine
 		if err := json.Unmarshal([]byte(jsonPart), &jl); err != nil {
-			continue
+			return true
 		}
 
 		if jl.ModuleBase != 0 && session.ModuleBase == 0 {
@@ -431,8 +469,8 @@ func parseJSONLTrace(raw string, session *ExecTraceSession, isStalker bool) ([]T
 		if jl.Package != "" && session.TargetPackage == "" {
 			session.TargetPackage = jl.Package
 		}
-		if jl.Source != "" && session.Source == SourceImported {
-			session.Source = strings.ToLower(jl.Source)
+		if s := strings.ToLower(strings.TrimSpace(jl.Source)); s != "" && explicitSource == "" {
+			explicitSource = s
 		}
 
 		addr := uint64(jl.Address)
@@ -533,7 +571,7 @@ func parseJSONLTrace(raw string, session *ExecTraceSession, isStalker bool) ([]T
 
 		rawStr := jl.Raw
 		if rawStr == "" {
-			rawStr = rawLine
+			rawStr = capRawLine(line)
 		}
 
 		ev := TraceEvent{
@@ -562,28 +600,29 @@ func parseJSONLTrace(raw string, session *ExecTraceSession, isStalker bool) ([]T
 			session.ModuleBase = ev.Address - ev.Offset
 		}
 		events = append(events, ev)
-	}
+		return true
+	})
 
-	if isStalker {
+	if explicitSource != "" {
+		session.Source = explicitSource
+	} else if isStalker {
 		if sawJava > 0 && sawNative == 0 {
 			session.Source = SourceJava
 		} else {
 			session.Source = SourceStalker
 		}
 	}
-	return events, scanner.Err()
+	return events, nil
 }
 
 func parseTenetTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error) {
 	var events []TraceEvent
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-
 	seq := 0
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+
+	scanLines(raw, func(rawLine string) bool {
+		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+			return true
 		}
 
 		parts := strings.Split(line, ",")
@@ -612,7 +651,7 @@ func parseTenetTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error
 				}
 				addrStr := strings.TrimSpace(v[:colon])
 				hexData := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v[colon+1:]), "0x"))
-				addr, err := parseUintAuto(addrStr)
+				addr, err := parseHexUint64(addrStr)
 				if err != nil {
 					continue
 				}
@@ -624,7 +663,7 @@ func parseTenetTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error
 					MemAddr:     addr,
 					MemSize:     sz,
 					MemValueHex: hexData,
-					Raw:         p,
+					Raw:         capRawLine(p),
 				}
 				if k == "mr" {
 					mev.Kind = KindMemRead
@@ -634,7 +673,7 @@ func parseTenetTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error
 					memWrites = append(memWrites, mev)
 				}
 			default:
-				val, err := parseUintAuto(v)
+				val, err := parseHexUint64(v)
 				if err != nil {
 					continue
 				}
@@ -651,7 +690,7 @@ func parseTenetTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error
 		}
 
 		if pc == 0 && len(regs) == 0 && len(memReads) == 0 && len(memWrites) == 0 {
-			continue
+			return true
 		}
 
 		seq++
@@ -660,7 +699,7 @@ func parseTenetTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error
 			Kind:      KindInsn,
 			Address:   pc,
 			RegsAfter: regs,
-			Raw:       line,
+			Raw:       capRawLine(line),
 		})
 		for _, mr := range memReads {
 			seq++
@@ -674,29 +713,26 @@ func parseTenetTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error
 			mw.Address = pc
 			events = append(events, mw)
 		}
-	}
-	return events, scanner.Err()
+		return true
+	})
+	return events, nil
 }
 
 func parseJavaCallTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error) {
 	var events []TraceEvent
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-
 	seq := 0
 	stackDepth := 0
 	var symStack []string
 
-	for scanner.Scan() {
-		rawLine := scanner.Text()
+	scanLines(raw, func(rawLine string) bool {
 		trimmed := strings.TrimSpace(rawLine)
 		if trimmed == "" {
-			continue
+			return true
 		}
 
 		m := reJavaArrow.FindStringSubmatch(rawLine)
 		if m == nil {
-			continue
+			return true
 		}
 		indent := m[1]
 		tag := m[2]
@@ -741,7 +777,7 @@ func parseJavaCallTrace(raw string, session *ExecTraceSession) ([]TraceEvent, er
 				Symbol:      sym,
 				Args:        args,
 				Depth:       depth,
-				Raw:         trimmed,
+				Raw:         capRawLine(trimmed),
 			})
 		} else {
 			if stackDepth > 0 {
@@ -772,39 +808,43 @@ func parseJavaCallTrace(raw string, session *ExecTraceSession) ([]TraceEvent, er
 				Symbol:      sym,
 				RetVal:      retVal,
 				Depth:       stackDepth,
-				Raw:         trimmed,
+				Raw:         capRawLine(trimmed),
 			})
 		}
-	}
+		return true
+	})
 	if session.Arch == "" {
 		session.Arch = "dalvik"
 	}
-	return events, scanner.Err()
+	return events, nil
 }
 
 func parseQilingTrace(raw string, session *ExecTraceSession) ([]TraceEvent, error) {
 	var events []TraceEvent
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-
 	seq := 0
 	var lastPC uint64
 	var lastMod string
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	scanLines(raw, func(rawLine string) bool {
+		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
-			continue
+			return true
 		}
 
 		// Memory READ / WRITE
 		if mm := reQilingMem.FindStringSubmatch(line); mm != nil {
+			addr, err := strconv.ParseUint(mm[3], 16, 64)
+			if err != nil {
+				return true
+			}
 			op := strings.ToUpper(mm[1])
 			if op == "" {
 				op = strings.ToUpper(mm[2])
 			}
-			addr, _ := strconv.ParseUint(mm[3], 16, 64)
-			sz, _ := parseIntAuto(mm[4])
+			sz, szErr := parseIntAuto(mm[4])
+			if szErr != nil || sz < 0 {
+				sz = 0
+			}
 			valHex := strings.ToLower(mm[5])
 			pc := lastPC
 			if mm[6] != "" {
@@ -825,16 +865,22 @@ func parseQilingTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 				MemAddr:     addr,
 				MemSize:     sz,
 				MemValueHex: valHex,
-				Raw:         line,
+				Raw:         capRawLine(line),
 			})
-			continue
+			return true
 		}
 
 		// Also accept Unidbg-style memory lines inside generic traces
 		if um := reUnidbgMem.FindStringSubmatch(line); um != nil {
+			addr, err := strconv.ParseUint(um[2], 16, 64)
+			if err != nil {
+				return true
+			}
 			op := strings.ToUpper(um[1])
-			addr, _ := strconv.ParseUint(um[2], 16, 64)
-			sz, _ := parseIntAuto(um[3])
+			sz, szErr := parseIntAuto(um[3])
+			if szErr != nil || sz < 0 {
+				sz = 0
+			}
 			valHex := strings.ToLower(um[4])
 			pc := lastPC
 			if um[5] != "" {
@@ -855,9 +901,9 @@ func parseQilingTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 				MemAddr:     addr,
 				MemSize:     sz,
 				MemValueHex: valHex,
-				Raw:         line,
+				Raw:         capRawLine(line),
 			})
-			continue
+			return true
 		}
 
 		// Instruction line
@@ -888,9 +934,9 @@ func parseQilingTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 					Operands:   operands,
 					RegsBefore: regsBefore,
 					RegsAfter:  regsAfter,
-					Raw:        line,
+					Raw:        capRawLine(line),
 				})
-				continue
+				return true
 			}
 		}
 
@@ -903,12 +949,21 @@ func parseQilingTrace(raw string, session *ExecTraceSession) ([]TraceEvent, erro
 				Symbol: sm[1],
 				Args:   splitArgs(sm[2]),
 				RetVal: strings.TrimSpace(sm[3]),
-				Raw:    line,
+				Raw:    capRawLine(line),
 			})
-			continue
+			return true
 		}
+		return true
+	})
+	return events, nil
+}
+
+func capRawLine(line string) string {
+	const maxRawLen = 4096
+	if len(line) <= maxRawLen {
+		return line
 	}
-	return events, scanner.Err()
+	return line[:maxRawLen] + "...<truncated>"
 }
 
 func finalizeSession(s *ExecTraceSession, events []TraceEvent) {
@@ -1041,10 +1096,8 @@ func parseRegMap(s string) map[string]uint64 {
 	for _, m := range matches {
 		name := strings.ToLower(m[1])
 		// Skip non-register metadata keys that happen to carry hex values.
-		if name == "pc" || name == "addr" || name == "size" || name == "value" || name == "val" {
-			if name != "pc" {
-				continue
-			}
+		if name == "addr" || name == "size" || name == "value" || name == "val" {
+			continue
 		}
 		if v, err := strconv.ParseUint(m[2], 16, 64); err == nil {
 			out[name] = v
@@ -1078,6 +1131,15 @@ func convertFlexRegs(in map[string]flexUint64) map[string]uint64 {
 	return out
 }
 
+func parseHexUint64(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("empty hex number")
+	}
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	return strconv.ParseUint(s, 16, 64)
+}
+
 func parseUintAuto(s string) (uint64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1096,6 +1158,9 @@ func parseIntAuto(s string) (int, error) {
 	v, err := parseUintAuto(s)
 	if err != nil {
 		return 0, err
+	}
+	if v > uint64(^uint(0)>>1) {
+		return 0, errors.New("integer overflow")
 	}
 	return int(v), nil
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/overkazaf/cap/internal/android"
+	"github.com/overkazaf/cap/internal/config"
+	"github.com/overkazaf/cap/internal/gateway"
 	"github.com/overkazaf/cap/internal/i18n"
 	"github.com/overkazaf/cap/internal/store/sqlite"
 	"github.com/overkazaf/cap/internal/tui"
@@ -726,5 +729,131 @@ func TestExecTraceAndGatewayCLICommands(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"openapi": "3.0.3"`) || !strings.Contains(out.String(), "/gw/list-users") {
 		t.Fatalf("unexpected OpenAPI output:\n%s", out.String())
+	}
+
+	// Regression: cap gateway signers --test parses Path & Query from --url
+	gwMgr, err := gateway.NewManager(config.DefaultDir())
+	if err != nil {
+		t.Fatalf("gateway.NewManager: %v", err)
+	}
+	savedSigner, err := gwMgr.SaveSigner(gateway.SignerProvider{
+		Name:          "Order HMAC",
+		Kind:          gateway.SignerKindBuiltinHMAC,
+		Enabled:       true,
+		HMACAlgorithm: "hmac-sha256",
+		HMACSecret:    "s3cr3t",
+	})
+	if err != nil {
+		t.Fatalf("SaveSigner: %v", err)
+	}
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "signers", "--test", savedSigner.ID, "--url", "https://api.example.com/v1/order?b=2&a=1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway signers --test failed: %v", err)
+	}
+	var sigOut struct {
+		Sign string         `json:"sign"`
+		Raw  map[string]any `json:"raw"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &sigOut); err != nil {
+		t.Fatalf("decode signer test JSON: %v\n%s", err, out.String())
+	}
+	if sigOut.Sign == "" || sigOut.Raw["canonical"] != "a=1&b=2" {
+		t.Fatalf("expected canonical query a=1&b=2, got sign=%q raw=%+v", sigOut.Sign, sigOut.Raw)
+	}
+}
+
+func TestDeobfStealthScanAutoTailoring(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Build a minimal ARM64 ELF64 containing an inline `svc #0` (0xd4000001) in .text
+	const ehdrSize, shdrSize = 64, 64
+	shstrtab := []byte("\x00.shstrtab\x00.text\x00")
+	textData := []byte{
+		0xa8, 0x0e, 0x80, 0xd2, // mov x8, #117 (ptrace)
+		0x01, 0x00, 0x00, 0xd4, // svc #0
+		0xc0, 0x03, 0x5f, 0xd6, // ret
+	}
+	shstrOff := uint64(ehdrSize)
+	textOff := shstrOff + uint64(len(shstrtab))
+	shoff := (textOff + uint64(len(textData)) + 7) &^ 7
+
+	var buf bytes.Buffer
+	hdr := make([]byte, ehdrSize)
+	copy(hdr[0:4], []byte{0x7f, 'E', 'L', 'F'})
+	hdr[4] = 2 // 64-bit
+	hdr[5] = 1 // little-endian
+	hdr[6] = 1
+	binary.LittleEndian.PutUint16(hdr[16:18], 3)   // ET_DYN
+	binary.LittleEndian.PutUint16(hdr[18:20], 183) // EM_AARCH64
+	binary.LittleEndian.PutUint32(hdr[20:24], 1)
+	binary.LittleEndian.PutUint64(hdr[40:48], shoff)
+	binary.LittleEndian.PutUint16(hdr[52:54], ehdrSize)
+	binary.LittleEndian.PutUint16(hdr[58:60], shdrSize)
+	binary.LittleEndian.PutUint16(hdr[60:62], 3)
+	binary.LittleEndian.PutUint16(hdr[62:64], 1)
+	buf.Write(hdr)
+	buf.Write(shstrtab)
+	buf.Write(textData)
+	for uint64(buf.Len()) < shoff {
+		buf.WriteByte(0)
+	}
+	writeShdr := func(nameOff, shType uint32, flags, addr, off, size uint64) {
+		s := make([]byte, shdrSize)
+		binary.LittleEndian.PutUint32(s[0:4], nameOff)
+		binary.LittleEndian.PutUint32(s[4:8], shType)
+		binary.LittleEndian.PutUint64(s[8:16], flags)
+		binary.LittleEndian.PutUint64(s[16:24], addr)
+		binary.LittleEndian.PutUint64(s[24:32], off)
+		binary.LittleEndian.PutUint64(s[32:40], size)
+		buf.Write(s)
+	}
+	writeShdr(0, 0, 0, 0, 0, 0)
+	writeShdr(1, 3, 0, 0, shstrOff, uint64(len(shstrtab)))
+	writeShdr(11, 1, 0x6, 0x1000, textOff, uint64(len(textData)))
+
+	elfPath := filepath.Join(t.TempDir(), "libsvc.so")
+	if err := os.WriteFile(elfPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write svc elf: %v", err)
+	}
+
+	// Auto-tailor via --scan should enable PatchInlineSVC and omit BypassTimingAndInotify
+	var out bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"deobf", "stealth", "--scan", elfPath, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap deobf stealth --scan failed: %v", err)
+	}
+	var sc struct {
+		Modules []string `json:"modules"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &sc); err != nil {
+		t.Fatalf("decode stealth JSON: %v", err)
+	}
+	joined := strings.Join(sc.Modules, ",")
+	if !strings.Contains(joined, "PatchInlineSVC") {
+		t.Fatalf("expected --scan to auto-enable PatchInlineSVC, got modules=%v", sc.Modules)
+	}
+	if strings.Contains(joined, "BypassTimingAndInotify") {
+		t.Fatalf("expected --scan to omit unused BypassTimingAndInotify, got modules=%v", sc.Modules)
+	}
+
+	// Explicit --patch-svc=false overrides the report-derived default
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"deobf", "stealth", "--scan", elfPath, "--patch-svc=false", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap deobf stealth --scan --patch-svc=false failed: %v", err)
+	}
+	sc.Modules = nil
+	if err := json.Unmarshal(out.Bytes(), &sc); err != nil {
+		t.Fatalf("decode stealth override JSON: %v", err)
+	}
+	if strings.Contains(strings.Join(sc.Modules, ","), "PatchInlineSVC") {
+		t.Fatalf("expected explicit --patch-svc=false to disable PatchInlineSVC, got modules=%v", sc.Modules)
 	}
 }

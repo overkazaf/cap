@@ -435,6 +435,11 @@ func TestGatewayGUIBindingsFullLifecycleAndPublishFlow(t *testing.T) {
 	if cfg.ListenAddr != "127.0.0.1:0" {
 		t.Fatalf("ListenAddr = %q, want 127.0.0.1:0", cfg.ListenAddr)
 	}
+	// Verify UpdateGatewayConfig persisted gateway_addr to settings.json
+	reloadedSettings := loadSettings(filepath.Join(app.certDir, "settings.json"))
+	if reloadedSettings["gateway_addr"] != "127.0.0.1:0" {
+		t.Fatalf("persisted gateway_addr = %q, want 127.0.0.1:0", reloadedSettings["gateway_addr"])
+	}
 
 	// Publish flow as gateway route
 	route, err := app.PublishFlowToGateway(flow.ID, "search-api", "Search API")
@@ -528,18 +533,35 @@ func TestGatewayGUIBindingsFullLifecycleAndPublishFlow(t *testing.T) {
 		t.Fatalf("expected 0 logs after ClearGatewayLogs, got %d", len(logs))
 	}
 
-	// Bulk import proxies + provider fetch + delete
-	imported, err := app.BulkImportGatewayProxies("127.0.0.1:19001\n127.0.0.1:19002:user:pass\n", "socks5", "US", []string{"residential"})
-	if err != nil || imported != 2 {
+	// Bulk import proxies (including password containing ',' and ';') + provider fetch + delete
+	imported, err := app.BulkImportGatewayProxies("127.0.0.1:19001\n127.0.0.1:19002:user:pass\nsocks5://alice:p,a;ss@127.0.0.1:19003\n", "socks5", "US", []string{"residential"})
+	if err != nil || imported != 3 {
 		t.Fatalf("BulkImportGatewayProxies err=%v imported=%d", err, imported)
 	}
 	proxies := app.ListGatewayProxies()
-	if len(proxies) != 2 || !strings.HasPrefix(proxies[0].URL, "socks5://") || proxies[0].Region != "US" {
+	if len(proxies) != 3 || !strings.HasPrefix(proxies[0].URL, "socks5://") || proxies[0].Region != "US" {
 		t.Fatalf("unexpected imported proxies: %+v", proxies)
 	}
+	foundSpecialPass := false
+	for _, p := range proxies {
+		if p.URL == "socks5://127.0.0.1:19003" && p.Username == "alice" && p.Password == "p,a;ss" {
+			foundSpecialPass = true
+		}
+	}
+	if !foundSpecialPass {
+		t.Fatalf("expected URL with ',' and ';' in password to stay intact, got: %+v", proxies)
+	}
+
 	fetched, err := app.FetchGatewayProxiesFromProvider(providerSrv.URL, gateway.ProviderFormatLines, "")
 	if err != nil || fetched != 2 {
 		t.Fatalf("FetchGatewayProxiesFromProvider err=%v fetched=%d", err, fetched)
+	}
+	// Regression: invalid provider URL must return error and NOT clobber saved valid ProviderURL
+	if _, err := app.FetchGatewayProxiesFromProvider("ftp://invalid.provider/list", gateway.ProviderFormatLines, ""); err == nil {
+		t.Fatal("expected error for unsupported provider URL scheme")
+	}
+	if got := app.GetProxyPoolConfig().ProviderURL; got != providerSrv.URL {
+		t.Fatalf("invalid provider fetch clobbered saved ProviderURL: got %q, want %q", got, providerSrv.URL)
 	}
 	if err := app.UpdateProxyPoolConfig(gateway.ProxyPoolConfig{Strategy: gateway.StrategyRandom, FailoverRetries: 1}); err != nil {
 		t.Fatalf("UpdateProxyPoolConfig: %v", err)

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -96,8 +98,11 @@ func newGatewayStartCmd() *cobra.Command {
 				_ = mgr.UpdateConfig(cfg)
 			}
 
+			var outMu sync.Mutex
 			mgr.SetCallbacks(
 				func(rec gateway.InvocationRecord) {
+					outMu.Lock()
+					defer outMu.Unlock()
 					fmt.Fprintf(out, "[%s] /gw/%s -> %d (%dms, proxy=%s, device=%s)\n",
 						rec.Method, rec.RouteSlug, rec.StatusCode, rec.LatencyMs, rec.ProxyName, rec.DeviceName)
 				},
@@ -111,6 +116,7 @@ func newGatewayStartCmd() *cobra.Command {
 
 			styled := isStyledWriter(out)
 			th := cliTheme(styled)
+			outMu.Lock()
 			if styled {
 				printSectionHeader(out, th, i18n.T("cli.gateway.title"), st.ListenAddr)
 			}
@@ -119,12 +125,15 @@ func newGatewayStartCmd() *cobra.Command {
 			fmt.Fprintf(out, "Pools:     routes=%d/%d  proxies=%d/%d  devices=%d/%d  signers=%d\n",
 				st.RouteEnabled, st.RouteTotal, st.ProxyHealthy, st.ProxyTotal,
 				st.DeviceEnabled, st.DeviceTotal, st.SignerTotal)
+			outMu.Unlock()
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 			defer signal.Stop(sigCh)
 			<-sigCh
+			outMu.Lock()
 			fmt.Fprintln(out, "\nShutting down Open API Gateway...")
+			outMu.Unlock()
 			return mgr.Shutdown()
 		},
 	}
@@ -589,9 +598,21 @@ func newGatewaySignersCmd() *cobra.Command {
 				return nil
 			}
 			if testID != "" {
+				parsedURL, err := url.Parse(strings.TrimSpace(testURL))
+				if err != nil {
+					return fmt.Errorf("invalid --url %q: %w", testURL, err)
+				}
+				flatQuery := make(map[string]string)
+				for k, vals := range parsedURL.Query() {
+					if len(vals) > 0 {
+						flatQuery[k] = vals[0]
+					}
+				}
 				res, err := mgr.TestSigner(context.Background(), testID, gateway.SignerInput{
 					Method: method,
-					URL:    testURL,
+					URL:    parsedURL.String(),
+					Path:   parsedURL.Path,
+					Query:  flatQuery,
 					Body:   body,
 				})
 				if err != nil {

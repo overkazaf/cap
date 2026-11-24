@@ -159,6 +159,30 @@ func newDeobfStealthCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				derived := deobf.StealthOptionsFromReport(report)
+				if opts.TargetPackage != "" {
+					derived.TargetPackage = opts.TargetPackage
+				}
+				if opts.TargetSO != "" {
+					derived.TargetSO = opts.TargetSO
+				}
+				derived.DryRunSVCPatch = opts.DryRunSVCPatch
+				if cmd.Flags().Changed("procfs") {
+					derived.BypassTracerPidAndProcFS = opts.BypassTracerPidAndProcFS
+				}
+				if cmd.Flags().Changed("ptrace") {
+					derived.BypassPtraceAndSignals = opts.BypassPtraceAndSignals
+				}
+				if cmd.Flags().Changed("patch-svc") {
+					derived.PatchInlineSVC = opts.PatchInlineSVC
+				}
+				if cmd.Flags().Changed("timing") {
+					derived.BypassTimingAndInotify = opts.BypassTimingAndInotify
+				}
+				if cmd.Flags().Changed("java") {
+					derived.BypassJavaDebugChecks = opts.BypassJavaDebugChecks
+				}
+				opts = derived
 			}
 			sc := deobf.GenerateStealthScript(opts, report)
 			return writeDeobfScriptOutput(cmd, sc, outFile, jsonOut)

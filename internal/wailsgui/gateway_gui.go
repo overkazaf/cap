@@ -3,6 +3,7 @@ package wailsgui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/overkazaf/cap/internal/gateway"
@@ -76,7 +77,15 @@ func (a *App) UpdateGatewayConfig(cfg gateway.GatewayConfig) (gateway.GatewayCon
 			a.settings = make(map[string]string)
 		}
 		a.settings["gateway_addr"] = updated.ListenAddr
+		certDir := a.certDir
+		snapshot := make(map[string]string, len(a.settings))
+		for k, v := range a.settings {
+			snapshot[k] = v
+		}
 		a.mu.Unlock()
+		if certDir != "" {
+			_ = saveSettings(filepath.Join(certDir, "settings.json"), snapshot)
+		}
 	}
 	return updated, nil
 }
@@ -189,9 +198,14 @@ func (a *App) BulkImportGatewayProxies(rawLines, defaultScheme, region string, t
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
 			continue
 		}
-		entries := strings.FieldsFunc(line, func(r rune) bool {
-			return r == ',' || r == ';'
-		})
+		var entries []string
+		if strings.Contains(line, "://") {
+			entries = []string{line}
+		} else {
+			entries = strings.FieldsFunc(line, func(r rune) bool {
+				return r == ',' || r == ';'
+			})
+		}
 		for _, entry := range entries {
 			tok := strings.TrimSpace(entry)
 			if tok == "" {
@@ -248,11 +262,16 @@ func (a *App) FetchGatewayProxiesFromProvider(providerURL, format, jsonPath stri
 	format = strings.TrimSpace(format)
 	jsonPath = strings.TrimSpace(jsonPath)
 	if providerURL != "" {
+		added, _, err := mgr.ProxyPool().FetchFromProviderURL(context.Background(), providerURL, format, jsonPath)
+		if err != nil {
+			return 0, err
+		}
 		cfg := mgr.GetProxyConfig()
 		cfg.ProviderURL = providerURL
 		cfg.ProviderFormat = format
 		cfg.ProviderJSONPath = jsonPath
 		_ = mgr.UpdateProxyConfig(cfg)
+		return added, nil
 	}
 	added, _, err := mgr.FetchProxiesFromProvider(context.Background())
 	return added, err

@@ -462,7 +462,7 @@ func inspectELF(name string, raw []byte, ef *elf.File) (SOBinaryAudit, []Obfusca
 		case ".data":
 			dataSectionData = secData
 		case ".init_array", ".preinit_array":
-			audit.InitArrayCount += int(sec.Size / ptrSize)
+			audit.InitArrayCount += len(secData) / int(ptrSize)
 		}
 
 		isExec := sec.Flags&elf.SHF_EXECINSTR != 0
@@ -472,10 +472,10 @@ func inspectELF(name string, raw []byte, ef *elf.File) (SOBinaryAudit, []Obfusca
 		}
 
 		// Scan executable code sections for ARM64 / ARM32 instructions.
-		// Skip high-entropy (>= 7.2) non-standard sections (typically encrypted
-		// VMP bytecode or packed payloads) so random data does not skew
-		// instruction-density OLLVM heuristics.
-		if (isExec && (isStandardSection(sec.Name) || ent < 7.2)) || sec.Name == ".text" {
+		// Exclude linker stub sections (.plt*, .init, .fini) whose PLT veneers
+		// routinely use BR X17, and skip high-entropy (>= 7.2) non-standard
+		// sections (typically encrypted VMP bytecode or packed payloads).
+		if !isLinkerStubSection(sec.Name) && ((isExec && (isStandardSection(sec.Name) || ent < 7.2)) || sec.Name == ".text") {
 			baseAddr := sec.Addr
 			if baseAddr == 0 {
 				baseAddr = sec.Offset
@@ -806,11 +806,16 @@ func inspectELF(name string, raw []byte, ef *elf.File) (SOBinaryAudit, []Obfusca
 	return audit, obfs, vmps, antiDebugs
 }
 
+func isLinkerStubSection(name string) bool {
+	return name == ".plt" || strings.HasPrefix(name, ".plt.") || name == ".init" || name == ".fini"
+}
+
 func scanARM64Instructions(code []byte, baseAddr uint64, st *arm64InsnStats) {
+	const maxSyscallWindow = 8
 	n := len(code) / 4
 	st.totalInsns += n
 	var lastMovzX8Val uint16
-	var hasMovzX8 bool
+	lastMovzX8Idx := -100
 	var lastMovzReg uint32 = 0xff
 	var lastMovzIdx = -10
 
@@ -818,39 +823,42 @@ func scanARM64Instructions(code []byte, baseAddr uint64, st *arm64InsnStats) {
 		off := uint64(i * 4)
 		insn := binary.LittleEndian.Uint32(code[off : off+4])
 
-		// MOVZ X8, #imm16 (Linux ARM64 syscall number setup: 0xD2800008 ..)
-		// Encoding: sf=1, opc=10, 100101, hw=00, imm16, Rd=8 -> (insn & 0xFFE0001F) == 0xD2800008
-		if (insn & 0xFFE0001F) == 0xD2800008 {
+		// MOVZ X8/W8, #imm16 (Linux ARM64 syscall number setup: 0xD2800008 / 0x52800008)
+		if (insn&0xFFE0001F) == 0xD2800008 || (insn&0xFFE0001F) == 0x52800008 {
 			lastMovzX8Val = uint16((insn >> 5) & 0xFFFF)
-			hasMovzX8 = true
-		} else if (insn & 0xFFE0001F) == 0x52800008 { // MOVZ W8, #imm16
-			lastMovzX8Val = uint16((insn >> 5) & 0xFFFF)
-			hasMovzX8 = true
+			lastMovzX8Idx = i
+			continue
 		}
 
 		// SVC #0 (0xD4000001) or SVC #imm16 ((insn & 0xFFE0001F) == 0xD4000001)
 		if (insn & 0xFFE0001F) == 0xD4000001 {
 			vaddr := baseAddr + off
 			st.svcOffsets = append(st.svcOffsets, vaddr)
-			if hasMovzX8 {
+			if lastMovzX8Idx >= 0 && i-lastMovzX8Idx <= maxSyscallWindow {
 				st.svcSyscalls[vaddr] = lastMovzX8Val
 			}
-			hasMovzX8 = false
+			lastMovzX8Idx = -100
 			continue
 		}
 
 		// BR Xn: (insn & 0xFFFFFC1F) == 0xD61F0000
 		if (insn & 0xFFFFFC1F) == 0xD61F0000 {
 			st.brCount++
-			hasMovzX8 = false
+			lastMovzX8Idx = -100
 			continue
 		}
 
 		// BLR Xn: (insn & 0xFFFFFC1F) == 0xD63F0000
 		if (insn & 0xFFFFFC1F) == 0xD63F0000 {
 			st.blrCount++
-			hasMovzX8 = false
+			lastMovzX8Idx = -100
 			continue
+		}
+
+		// Clear syscall-number tracking on control-flow boundaries (RET, B, BL, B.cond, CBZ/CBNZ, TBZ/TBNZ)
+		// or instructions that overwrite X8/W8.
+		if isARM64ControlFlowBoundary(insn) || writesARM64Reg8(insn) {
+			lastMovzX8Idx = -100
 		}
 
 		// MRS Xt, CNTVCT_EL0: 0xD53BE040 | Rt
@@ -867,8 +875,8 @@ func scanARM64Instructions(code []byte, baseAddr uint64, st *arm64InsnStats) {
 			lastMovzReg = 0xff
 		}
 
-		// CSEL / CSINC / CSINV / CSNEG: (insn & 0x7FE00C00) == 0x1A800000
-		if (insn & 0x7FE00C00) == 0x1A800000 {
+		// CSEL / CSINC / CSINV / CSNEG: sf|op|0|11010100|Rm|cond|0|o2|Rn|Rd
+		if (insn & 0x3FE00800) == 0x1A800000 {
 			st.cselCount++
 		}
 
@@ -888,17 +896,60 @@ func scanARM64Instructions(code []byte, baseAddr uint64, st *arm64InsnStats) {
 	}
 }
 
+func isARM64ControlFlowBoundary(insn uint32) bool {
+	if (insn & 0xFFFFFC1F) == 0xD65F0000 { // RET [Xn]
+		return true
+	}
+	if (insn & 0x7C000000) == 0x14000000 { // B / BL
+		return true
+	}
+	if (insn & 0xFF000010) == 0x54000000 { // B.cond
+		return true
+	}
+	if (insn & 0x7E000000) == 0x34000000 { // CBZ / CBNZ
+		return true
+	}
+	if (insn & 0x7E000000) == 0x36000000 { // TBZ / TBNZ
+		return true
+	}
+	return false
+}
+
+func writesARM64Reg8(insn uint32) bool {
+	if (insn & 0x1F) != 8 {
+		return false
+	}
+	// Data-processing immediate (ADD/SUB/MOVK/MOVN/ADR/ADRP/BITFIELD/LOGICAL imm)
+	if (insn & 0x1C000000) == 0x10000000 {
+		return true
+	}
+	// Data-processing register (shifted/extended/cond-select/2-src/3-src)
+	if (insn & 0x0E000000) == 0x0A000000 {
+		return true
+	}
+	// Loads (LDR literal, unsigned-offset/pre/post LDR/LDP with L=1)
+	if (insn&0x3B000000) == 0x18000000 || ((insn&0x3B000000) == 0x39000000 && (insn&0x00400000) != 0) ||
+		((insn&0x3E000000) == 0x28000000 && (insn&0x00400000) != 0) {
+		return true
+	}
+	return false
+}
+
 func scanARM32Instructions(code []byte, baseAddr uint64, st *arm64InsnStats) {
 	n := len(code) / 4
 	st.totalInsns += n
 	for i := 0; i < n; i++ {
 		off := uint64(i * 4)
 		insn := binary.LittleEndian.Uint32(code[off : off+4])
-		// ARM32 SVC #0: 0xEF000000 (cond=AL 0xE, op=0xF, imm24=0)
-		if insn == 0xEF000000 {
+		// Reject cond == 0xF (unconditional / NEON / SIMD encoding space).
+		if (insn >> 28) == 0xF {
+			continue
+		}
+		// ARM32 SVC<cc> #0 (cond != 0xF, bits[27:24]=0xF, imm24=0)
+		if (insn & 0x0FFFFFFF) == 0x0F000000 {
 			st.svcOffsets = append(st.svcOffsets, baseAddr+off)
 		}
-		// BX Rn (excluding BX LR 0xE12FFF1E which is standard function return)
+		// BX Rn (excluding BX LR where Rm == 14)
 		if (insn&0x0FFFFFF0) == 0x012FFF10 && (insn&0xF) != 14 {
 			st.brCount++
 		}
@@ -997,24 +1048,28 @@ var nativeAntiDebugStringSigs = []antiDebugSig{
 func scanBytesForAntiDebug(module string, data []byte, baseAddr uint64, emit func(AntiDebugFinding)) {
 	for _, sig := range nativeAntiDebugStringSigs {
 		needle := []byte(sig.pattern)
-		idx := bytes.Index(data, needle)
-		if idx < 0 {
-			continue
+		needsBoundary := sig.pattern == "frida" || sig.pattern == "ptrace" || sig.pattern == "27042" || sig.pattern == "tgkill"
+		searchPos := 0
+		for searchPos < len(data) {
+			rel := bytes.Index(data[searchPos:], needle)
+			if rel < 0 {
+				break
+			}
+			idx := searchPos + rel
+			if needsBoundary && !hasCleanTokenBoundary(data, idx, len(needle)) {
+				searchPos = idx + 1
+				continue
+			}
+			emit(AntiDebugFinding{
+				Kind:            sig.kind,
+				Module:          module,
+				SymbolOrPattern: sig.pattern,
+				OffsetHex:       fmt.Sprintf("0x%x", baseAddr+uint64(idx)),
+				Severity:        sig.severity,
+				Countermeasure:  sig.countermeasure,
+			})
+			break
 		}
-		// Guard against overly short false positives for generic "frida" or "ptrace" inside binary noise:
-		// verify at least one boundary is non-alphanumeric or start/end of buffer.
-		if (sig.pattern == "frida" || sig.pattern == "ptrace" || sig.pattern == "27042" || sig.pattern == "tgkill") &&
-			!hasCleanTokenBoundary(data, idx, len(needle)) {
-			continue
-		}
-		emit(AntiDebugFinding{
-			Kind:            sig.kind,
-			Module:          module,
-			SymbolOrPattern: sig.pattern,
-			OffsetHex:       fmt.Sprintf("0x%x", baseAddr+uint64(idx)),
-			Severity:        sig.severity,
-			Countermeasure:  sig.countermeasure,
-		})
 	}
 }
 

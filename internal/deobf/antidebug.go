@@ -111,14 +111,14 @@ func GenerateStealthScript(opts StealthOptions, report *ProtectionReport) *Gener
 	b.WriteString("'use strict';\n\n")
 	b.WriteString("// ─── cap Anti-Debug & Anti-Frida Stealth Suite ───────────────────────\n")
 	if opts.TargetPackage != "" {
-		fmt.Fprintf(&b, "// Target Package: %s\n", opts.TargetPackage)
+		fmt.Fprintf(&b, "// Target Package: %s\n", sanitizeCommentLine(opts.TargetPackage))
 	}
 	if opts.TargetSO != "" {
-		fmt.Fprintf(&b, "// Target Native:  %s\n", opts.TargetSO)
+		fmt.Fprintf(&b, "// Target Native:  %s\n", sanitizeCommentLine(opts.TargetSO))
 	}
-	fmt.Fprintf(&b, "// Active Modules: %s\n", strings.Join(enabledModules, ", "))
+	fmt.Fprintf(&b, "// Active Modules: %s\n", sanitizeCommentLine(strings.Join(enabledModules, ", ")))
 	if report != nil {
-		fmt.Fprintf(&b, "// Audit Context:  %s\n", report.Summary)
+		fmt.Fprintf(&b, "// Audit Context:  %s\n", sanitizeCommentLine(report.Summary))
 	}
 	b.WriteString("\n")
 
@@ -183,6 +183,52 @@ function containsHiddenToken(str) {
 function findLibcExport(name) {
     return Module.findExportByName('libc.so', name) || Module.findExportByName(null, name);
 }
+
+// Encode UTF-8 string into at most maxBytes raw bytes (NO trailing NUL) so
+// fixed-size read() and readlink()/readlinkat() buffers can never overflow by 1 byte.
+function encodeUtf8Bytes(str, maxBytes) {
+    const out = [];
+    for (let i = 0; i < str.length && out.length < maxBytes; i++) {
+        const code = str.charCodeAt(i);
+        if (code < 0x80) {
+            out.push(code);
+        } else if (code < 0x800) {
+            if (out.length + 2 > maxBytes) break;
+            out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < str.length) {
+            const next = str.charCodeAt(i + 1);
+            if (next >= 0xdc00 && next <= 0xdfff) {
+                if (out.length + 4 > maxBytes) break;
+                const cp = ((code - 0xd800) << 10) + (next - 0xdc00) + 0x10000;
+                out.push(
+                    0xf0 | (cp >> 18),
+                    0x80 | ((cp >> 12) & 0x3f),
+                    0x80 | ((cp >> 6) & 0x3f),
+                    0x80 | (cp & 0x3f)
+                );
+                i++;
+            }
+        } else {
+            if (out.length + 3 > maxBytes) break;
+            out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        }
+    }
+    return out;
+}
+
+function writeRawBytesClamped(bufPtr, str, maxBytes, padByte) {
+    if (maxBytes <= 0) return 0;
+    const bytes = encodeUtf8Bytes(str, maxBytes);
+    if (padByte !== undefined && padByte !== null) {
+        while (bytes.length < maxBytes) {
+            bytes.push(padByte);
+        }
+    }
+    if (bytes.length > 0) {
+        bufPtr.writeByteArray(bytes);
+    }
+    return bytes.length;
+}
 `)
 
 	// Module 1: BypassTracerPidAndProcFS
@@ -191,7 +237,7 @@ function findLibcExport(name) {
 // ─── Module 1: BypassTracerPidAndProcFS ──────────────────────────────
 (function installProcFSCloak() {
     const trackedFds = new Map(); // fd -> 'status' | 'maps' | 'net_tcp'
-    const trackedFiles = new Map(); // FILE* str -> 'status' | 'maps'
+    const trackedFiles = new Map(); // FILE* str -> 'status' | 'maps' | 'net_tcp'
 
     function classifyProcPath(path) {
         if (!path) return null;
@@ -202,11 +248,11 @@ function findLibcExport(name) {
         return null;
     }
 
-    function sanitizeStatusInPlace(bufPtr, len) {
-        if (len <= 0 || len > 131072) return false;
+    function sanitizeStatusInPlace(bufPtr, byteLen) {
+        if (byteLen <= 0 || byteLen > 131072) return false;
         let text = '';
         try {
-            text = bufPtr.readUtf8String(len);
+            text = bufPtr.readUtf8String(byteLen);
         } catch (_) {
             return false;
         }
@@ -225,17 +271,18 @@ function findLibcExport(name) {
                 return pad >= 0 ? rep + ' '.repeat(pad) : rep.slice(0, m.length);
             });
         if (modified) {
-            bufPtr.writeUtf8String(patched.slice(0, len));
+            // Write exact byteLen raw bytes (no trailing NUL overflow)
+            writeRawBytesClamped(bufPtr, patched, byteLen, 0x20);
             emitStealth('BypassTracerPidAndProcFS', 'proc_status', { action: 'spoofed TracerPid=0 & State=S' });
         }
         return modified;
     }
 
-    function sanitizeMapsInPlace(bufPtr, len) {
-        if (len <= 0 || len > 262144) return false;
+    function sanitizeMapsInPlace(bufPtr, byteLen) {
+        if (byteLen <= 0 || byteLen > 262144) return false;
         let text = '';
         try {
-            text = bufPtr.readUtf8String(len);
+            text = bufPtr.readUtf8String(byteLen);
         } catch (_) {
             return false;
         }
@@ -255,7 +302,8 @@ function findLibcExport(name) {
             return line;
         });
         if (hitCount > 0) {
-            bufPtr.writeUtf8String(cleaned.join('\n').slice(0, len));
+            // Write exact byteLen raw bytes (no trailing NUL overflow)
+            writeRawBytesClamped(bufPtr, cleaned.join('\n'), byteLen, 0x20);
             emitStealth('BypassTracerPidAndProcFS', 'proc_maps', { filtered_lines: hitCount });
         }
         return hitCount > 0;
@@ -361,16 +409,18 @@ function findLibcExport(name) {
                 if (!this.kind || retval.isNull()) return;
                 const line = retval.readCString();
                 if (!line) return;
+                const byteLen = encodeUtf8Bytes(line, this.size > 0 ? this.size - 1 : line.length).length;
+                if (byteLen <= 0) return;
                 if (this.kind === 'status') {
-                    sanitizeStatusInPlace(retval, line.length);
-                } else if (this.kind === 'maps') {
-                    sanitizeMapsInPlace(retval, line.length);
+                    sanitizeStatusInPlace(retval, byteLen);
+                } else if (this.kind === 'maps' || this.kind === 'net_tcp') {
+                    sanitizeMapsInPlace(retval, byteLen);
                 }
             }
         });
     }
 
-    // readlinkat(dirfd, pathname, buf, bufsiz) & readlink
+    // readlinkat(dirfd, pathname, buf, bufsiz) & readlink(pathname, buf, bufsiz)
     ['readlinkat', 'readlink'].forEach(function (fn) {
         const addr = findLibcExport(fn);
         if (!addr) return;
@@ -378,18 +428,20 @@ function findLibcExport(name) {
         Interceptor.attach(addr, {
             onEnter(args) {
                 this.buf = args[bufIdx];
+                this.bufsiz = args[bufIdx + 1].toInt32();
             },
             onLeave(retval) {
                 const n = retval.toInt32();
-                if (n <= 0 || this.buf.isNull()) return;
+                if (n <= 0 || this.buf.isNull() || this.bufsiz <= 0) return;
                 try {
                     const target = this.buf.readUtf8String(n);
                     const tok = containsHiddenToken(target);
                     if (tok) {
                         const spoof = '/system/lib64/libc.so';
-                        this.buf.writeUtf8String(spoof);
-                        retval.replace(ptr(spoof.length));
-                        emitStealth('BypassTracerPidAndProcFS', fn, { blocked: target, token: tok });
+                        const maxWrite = Math.min(spoof.length, this.bufsiz);
+                        const written = writeRawBytesClamped(this.buf, spoof, maxWrite);
+                        retval.replace(ptr(written));
+                        emitStealth('BypassTracerPidAndProcFS', fn, { blocked: target, token: tok, bytes: written });
                     }
                 } catch (_) {}
             }
@@ -701,6 +753,19 @@ function findLibcExport(name) {
     const MAX_DELTA_NS = 80000000; // 80ms ceiling between consecutive anti-debug samples
     let lastRealNs = null;
     let virtualNs = null;
+    const is64Bit = Process.pointerSize === 8;
+
+    function readTimeField(p) {
+        return is64Bit ? p.readS64().toNumber() : p.readS32();
+    }
+
+    function writeTimeField(p, v) {
+        if (is64Bit) {
+            p.writeS64(v);
+        } else {
+            p.writeS32(v | 0);
+        }
+    }
 
     const clockAddr = findLibcExport('clock_gettime');
     if (clockAddr) {
@@ -714,8 +779,8 @@ function findLibcExport(name) {
                 // Only clamp CLOCK_MONOTONIC (1) / CLOCK_MONOTONIC_RAW (4)
                 if (this.clkId !== 1 && this.clkId !== 4) return;
                 try {
-                    const sec = this.ts.readS64().toNumber();
-                    const nsec = this.ts.add(Process.pointerSize).readS64().toNumber();
+                    const sec = readTimeField(this.ts);
+                    const nsec = readTimeField(this.ts.add(Process.pointerSize));
                     const nowNs = sec * 1e9 + nsec;
                     if (lastRealNs !== null) {
                         const delta = nowNs - lastRealNs;
@@ -723,8 +788,8 @@ function findLibcExport(name) {
                             virtualNs += 1000000; // advance smoothly by 1ms
                             const vSec = Math.floor(virtualNs / 1e9);
                             const vNsec = Math.floor(virtualNs - vSec * 1e9);
-                            this.ts.writeS64(vSec);
-                            this.ts.add(Process.pointerSize).writeS64(vNsec);
+                            writeTimeField(this.ts, vSec);
+                            writeTimeField(this.ts.add(Process.pointerSize), vNsec);
                         } else {
                             virtualNs = nowNs;
                         }
@@ -747,13 +812,13 @@ function findLibcExport(name) {
             onLeave(retval) {
                 if (retval.toInt32() !== 0 || this.tv.isNull()) return;
                 try {
-                    const sec = this.tv.readS64().toNumber();
-                    const usec = this.tv.add(Process.pointerSize).readS64().toNumber();
+                    const sec = readTimeField(this.tv);
+                    const usec = readTimeField(this.tv.add(Process.pointerSize));
                     const nowUs = sec * 1e6 + usec;
                     if (lastUs !== null && (nowUs - lastUs) > 150000 && (nowUs - lastUs) < 5000000) {
                         const clamped = lastUs + 1000;
-                        this.tv.writeS64(Math.floor(clamped / 1e6));
-                        this.tv.add(Process.pointerSize).writeS64(clamped % 1e6);
+                        writeTimeField(this.tv, Math.floor(clamped / 1e6));
+                        writeTimeField(this.tv.add(Process.pointerSize), Math.floor(clamped % 1e6));
                         lastUs = clamped;
                     } else {
                         lastUs = nowUs;
@@ -868,8 +933,8 @@ func GenerateDexUnpackerScript(pkg string) *GeneratedScript {
 	var b strings.Builder
 	b.WriteString("'use strict';\n\n")
 	b.WriteString("// ─── cap In-Memory DEX Unpacker (libart OpenMemory + Memory Sweep) ──\n")
-	fmt.Fprintf(&b, "// Target Package: %s\n", displayPkg)
-	fmt.Fprintf(&b, "// Dump Directory: %s\n\n", dumpPath)
+	fmt.Fprintf(&b, "// Target Package: %s\n", sanitizeCommentLine(displayPkg))
+	fmt.Fprintf(&b, "// Dump Directory: %s\n\n", sanitizeCommentLine(dumpPath))
 
 	fmt.Fprintf(&b, "const CONFIGURED_PKG = %s;\n", jsQuote(cleanPkg))
 	b.WriteString(`const MAX_DEX_SIZE = 64 * 1024 * 1024; // 64 MiB safety cap

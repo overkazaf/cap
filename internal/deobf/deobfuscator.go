@@ -21,8 +21,8 @@ func GenerateOLLVMDeflattenScript(soPath, funcAddr string, arch string) *Generat
 	b.WriteString("#!/usr/bin/env python3\n")
 	b.WriteString("\"\"\"\n")
 	b.WriteString("cap OLLVM Control Flow Flattening (CFF) De-Flattener & Binary Patcher\n")
-	fmt.Fprintf(&b, "Target Binary:   %s\n", soPath)
-	fmt.Fprintf(&b, "Target Function: %s (%s)\n", funcAddr, normArch)
+	fmt.Fprintf(&b, "Target Binary:   %s\n", sanitizePyDocLine(soPath))
+	fmt.Fprintf(&b, "Target Function: %s (%s)\n", sanitizePyDocLine(funcAddr), sanitizePyDocLine(normArch))
 	b.WriteString("Requires:        pip install angr\n")
 	b.WriteString("\"\"\"\n\n")
 
@@ -308,7 +308,7 @@ func generateQilingStringDecrypt(soPath, baseName string) *GeneratedScript {
 	b.WriteString("#!/usr/bin/env python3\n")
 	b.WriteString("\"\"\"\n")
 	b.WriteString("cap Qiling .init_array String Decryptor & Memory Diff Dumper\n")
-	fmt.Fprintf(&b, "Target SO: %s\n", soPath)
+	fmt.Fprintf(&b, "Target SO: %s\n", sanitizePyDocLine(soPath))
 	b.WriteString("Requires:  pip install qiling pyelftools\n")
 	b.WriteString("\"\"\"\n\n")
 
@@ -457,8 +457,8 @@ func generateUnidbgStringDecrypt(soPath, apkPath, baseName string) *GeneratedScr
 
 	var b strings.Builder
 	b.WriteString("// cap Unidbg .init_array String Decryptor & Memory Diff Harness\n")
-	fmt.Fprintf(&b, "// Target SO:  %s\n", soPath)
-	fmt.Fprintf(&b, "// Target APK: %s\n\n", apkPath)
+	fmt.Fprintf(&b, "// Target SO:  %s\n", sanitizeCommentLine(soPath))
+	fmt.Fprintf(&b, "// Target APK: %s\n\n", sanitizeCommentLine(apkPath))
 
 	b.WriteString(`import com.github.unidbg.AndroidEmulator;
 import com.github.unidbg.Module;
@@ -587,7 +587,7 @@ func GenerateJavaDeobfScript(targetPkg string) *GeneratedScript {
 	var b strings.Builder
 	b.WriteString("'use strict';\n\n")
 	b.WriteString("// ─── cap Java Runtime De-Obfuscator (Reflection & String Monitor) ───\n")
-	fmt.Fprintf(&b, "// Target Package Filter: %s\n\n", displayPkg)
+	fmt.Fprintf(&b, "// Target Package Filter: %s\n\n", sanitizeCommentLine(displayPkg))
 
 	fmt.Fprintf(&b, "const TARGET_PKG = %s;\n", jsQuote(cleanPkg))
 	b.WriteString(`const MAX_SEEN = 4096;
@@ -754,7 +754,17 @@ func normalizeHexAddr(addr, fallback string) string {
 		return fallback
 	}
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
-		return "0x" + strings.ToLower(s[2:])
+		s = s[2:]
+	}
+	if s == "" || len(s) > 16 {
+		return fallback
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return fallback
+		}
 	}
 	return "0x" + strings.ToLower(s)
 }

@@ -27,8 +27,8 @@ func GenerateVMPStalkerScript(soName, entrySymbolOrOffset string, maxEvents int)
 	var b strings.Builder
 	b.WriteString("'use strict';\n\n")
 	b.WriteString("// ─── cap Native VMP Precision Stalker Tracer ─────────────────────────\n")
-	fmt.Fprintf(&b, "// Target Module: %s\n", soName)
-	fmt.Fprintf(&b, "// Entry Point:   %s\n", entry)
+	fmt.Fprintf(&b, "// Target Module: %s\n", sanitizeCommentLine(soName))
+	fmt.Fprintf(&b, "// Entry Point:   %s\n", sanitizeCommentLine(entry))
 	fmt.Fprintf(&b, "// Max Events:    %d\n\n", maxEvents)
 
 	fmt.Fprintf(&b, "const TARGET_SO = %s;\n", jsQuote(soName))
@@ -69,6 +69,50 @@ function diffRegs(prev, cur) {
     return delta;
 }
 
+function extractBranchReg(insn) {
+    if (insn.operands && insn.operands.length > 0 && insn.operands[0].type === 'reg') {
+        return String(insn.operands[0].value).toLowerCase();
+    }
+    if (insn.opStr) {
+        const tok = insn.opStr.trim().split(/[\s,]+/)[0].toLowerCase();
+        if (/^(x\d+|w\d+|r\d+|lr|ip|fp)$/.test(tok)) return tok;
+    }
+    return null;
+}
+
+function extractMemOperand(insn) {
+    if (insn.operands) {
+        for (let i = 0; i < insn.operands.length; i++) {
+            const op = insn.operands[i];
+            if (op.type === 'mem' && op.value && op.value.base) {
+                return {
+                    base: String(op.value.base).toLowerCase(),
+                    disp: typeof op.value.disp === 'number' ? op.value.disp : 0,
+                };
+            }
+        }
+    }
+    if (insn.opStr) {
+        const m = insn.opStr.match(/\[\s*([a-zA-Z0-9]+)(?:\s*,\s*#(-?0x[0-9a-fA-F]+|-?\d+))?/);
+        if (m) {
+            return {
+                base: m[1].toLowerCase(),
+                disp: m[2] ? parseInt(m[2], 0) : 0,
+            };
+        }
+    }
+    return null;
+}
+
+function readCtxReg(ctx, regName) {
+    if (!regName) return null;
+    if (ctx[regName] !== undefined) return ctx[regName];
+    if (regName.charAt(0) === 'w' && ctx['x' + regName.slice(1)] !== undefined) {
+        return ctx['x' + regName.slice(1)];
+    }
+    return null;
+}
+
 function attachStalker(mod, entryAddr) {
     const modBase = mod.base;
     const modEnd = mod.base.add(mod.size);
@@ -86,8 +130,11 @@ function attachStalker(mod, entryAddr) {
 
     Interceptor.attach(entryAddr, {
         onEnter(args) {
+            this.stalking = false;
             if (activeTid !== null || emittedEvents >= MAX_EVENTS) return;
             activeTid = Process.getCurrentThreadId();
+            this.stalking = true;
+            this.tid = activeTid;
             let lastPC = null;
             let lastRegs = null;
 
@@ -105,13 +152,16 @@ function attachStalker(mod, entryAddr) {
                         const addr = insn.address;
                         if (inBounds(addr)) {
                             const insnText = insn.mnemonic + (insn.opStr ? ' ' + insn.opStr : '');
-                            const isIndirectBr = /^(br|blr|bx|blx)$/i.test(insn.mnemonic);
-                            const isCall = /^(bl|blr|blx)$/i.test(insn.mnemonic);
-                            const callImm = (insn.mnemonic.toLowerCase() === 'bl' && insn.opStr && insn.opStr.indexOf('#0x') === 0)
+                            const mn = insn.mnemonic.toLowerCase();
+                            const isIndirectCall = /^(blr|blx)$/i.test(mn);
+                            const isCall = /^(bl|blr|blx)$/i.test(mn);
+                            const callImm = (mn === 'bl' && insn.opStr && insn.opStr.indexOf('#0x') === 0)
                                 ? insn.opStr.slice(1)
                                 : null;
-                            const isMemRead = /^ldr/i.test(insn.mnemonic);
-                            const isMemWrite = /^str/i.test(insn.mnemonic);
+                            const callReg = isIndirectCall ? extractBranchReg(insn) : null;
+                            const isMemRead = /^ldr/i.test(mn);
+                            const isMemWrite = /^str/i.test(mn);
+                            const memOp = (isMemRead || isMemWrite) ? extractMemOperand(insn) : null;
                             const pcStr = addr.toString();
                             const offStr = addr.sub(modBase).toString();
 
@@ -139,21 +189,25 @@ function attachStalker(mod, entryAddr) {
                                     regs: regDelta,
                                 };
 
-                                // Resolve external libc/JNI call targets
+                                // Resolve external libc/JNI call targets using actual operand register/immediate
                                 if (isCall) {
                                     const targetAddr = callImm
                                         ? ptr(callImm)
-                                        : (isIndirectBr && Process.arch === 'arm64' ? context.x8 : context.lr);
-                                    const sym = DebugSymbol.fromAddress(targetAddr);
-                                    if (sym && sym.name && (!sym.moduleName || sym.moduleName !== mod.name)) {
-                                        rec.call = (sym.moduleName ? sym.moduleName + '!' : '') + sym.name;
+                                        : readCtxReg(context, callReg);
+                                    if (targetAddr) {
+                                        const sym = DebugSymbol.fromAddress(targetAddr);
+                                        if (sym && sym.name && (!sym.moduleName || sym.moduleName !== mod.name)) {
+                                            rec.call = (sym.moduleName ? sym.moduleName + '!' : '') + sym.name;
+                                        }
                                     }
                                 }
-                                if (isMemRead && Process.arch === 'arm64') {
-                                    rec.mem_r = context.x9.toString();
-                                }
-                                if (isMemWrite && Process.arch === 'arm64') {
-                                    rec.mem_w = context.sp.toString();
+                                if (memOp) {
+                                    const baseVal = readCtxReg(context, memOp.base);
+                                    if (baseVal) {
+                                        const effAddr = memOp.disp ? baseVal.add(memOp.disp) : baseVal;
+                                        if (isMemRead) rec.mem_r = effAddr.toString();
+                                        if (isMemWrite) rec.mem_w = effAddr.toString();
+                                    }
                                 }
                                 emitVMP(rec);
                             });
@@ -165,7 +219,7 @@ function attachStalker(mod, entryAddr) {
             });
         },
         onLeave(retval) {
-            if (activeTid === null) return;
+            if (!this.stalking || activeTid === null || this.tid !== activeTid) return;
             Stalker.unfollow(activeTid);
             Stalker.flush();
             Stalker.garbageCollect();
@@ -186,6 +240,7 @@ function attachStalker(mod, entryAddr) {
                 total_events: emittedEvents,
                 top_dispatchers: topDispatchers,
             });
+            this.stalking = false;
             activeTid = null;
         }
     });
@@ -250,7 +305,7 @@ func GenerateVMPRegisterNativesScript(filterPkg string) *GeneratedScript {
 	var b strings.Builder
 	b.WriteString("'use strict';\n\n")
 	b.WriteString("// ─── cap VMP / Dex2C RegisterNatives Mapper & Dispatcher Detector ───\n")
-	fmt.Fprintf(&b, "// Package Filter: %s\n\n", nonEmptyOr(cleanPkg, "*"))
+	fmt.Fprintf(&b, "// Package Filter: %s\n\n", sanitizeCommentLine(nonEmptyOr(cleanPkg, "*")))
 
 	fmt.Fprintf(&b, "const FILTER_PKG_DOT = %s;\n", jsQuote(cleanPkg))
 	fmt.Fprintf(&b, "const FILTER_PKG_SLASH = %s;\n\n", jsQuote(pkgSlash))
@@ -384,9 +439,9 @@ func GenerateUnidbgVMPTraceScript(apkPath, soName, className, methodName string)
 
 	var b strings.Builder
 	b.WriteString("// cap Unidbg Offline VMP Instruction + Memory + JNI Trace Harness\n")
-	fmt.Fprintf(&b, "// APK:    %s\n", apkPath)
-	fmt.Fprintf(&b, "// SO:     %s\n", soName)
-	fmt.Fprintf(&b, "// Method: %s.%s\n\n", slashClass, methodName)
+	fmt.Fprintf(&b, "// APK:    %s\n", sanitizeCommentLine(apkPath))
+	fmt.Fprintf(&b, "// SO:     %s\n", sanitizeCommentLine(soName))
+	fmt.Fprintf(&b, "// Method: %s.%s\n\n", sanitizeCommentLine(slashClass), sanitizeCommentLine(methodName))
 
 	b.WriteString(`import com.github.unidbg.AndroidEmulator;
 import com.github.unidbg.Module;
@@ -499,8 +554,9 @@ var (
 	reBracketHexInsn = regexp.MustCompile(`^\[(?:[^\]]*?\+)?0x([0-9a-fA-F]+)\]\s*(.*)$`)
 	reUnidbgLine     = regexp.MustCompile(`0x([0-9a-fA-F]+):\s*"([^"]+)"`)
 	rePlainHexInsn   = regexp.MustCompile(`^0x([0-9a-fA-F]+):?\s+(.+)$`)
-	reMemRead        = regexp.MustCompile(`(?i)(?:\bMEM_R\b|\bmr\b|\bREAD\b)\s*[=:@]?\s*0x([0-9a-fA-F]+)`)
-	reMemWrite       = regexp.MustCompile(`(?i)(?:\bMEM_W\b|\bmw\b|\bWRITE\b)\s*[=:@]?\s*0x([0-9a-fA-F]+)`)
+	reTenetPC        = regexp.MustCompile(`(?i)\bpc\s*=\s*0x([0-9a-fA-F]+)`)
+	reMemRead        = regexp.MustCompile(`(?i)(?:\bMEM_R\b|\bmr\b|\bREAD\b)\s*(?:at\s+)?[=:@]?\s*0x([0-9a-fA-F]+)`)
+	reMemWrite       = regexp.MustCompile(`(?i)(?:\bMEM_W\b|\bmw\b|\bWRITE\b)\s*(?:at\s+)?[=:@]?\s*0x([0-9a-fA-F]+)`)
 	reCallLine       = regexp.MustCompile(`(?i)^(?:\[CALL\]|CALL)\s+(?:(0x[0-9a-fA-F]+)\s*->\s*)?(.+)$`)
 	reInlineCall     = regexp.MustCompile(`(?i)\b(?:bl|blr|call)\s+([a-zA-Z_][a-zA-Z0-9_!:.@$<>()-]+)`)
 )
@@ -654,14 +710,15 @@ func AnalyzeVMPTrace(rawTrace string, moduleBase uint64) *VMPTraceAnalysis {
 			}
 		}
 
-		// Pure MEM_R / MEM_W line without an instruction PC
+		// Pure memory trace line without an instruction PC (e.g. "MEM_R 0x...", "Memory READ at 0x...")
 		upper := strings.ToUpper(line)
 		if strings.HasPrefix(upper, "MEM_R") || strings.HasPrefix(upper, "MEM_W") ||
-			strings.HasPrefix(upper, "READ ") || strings.HasPrefix(upper, "WRITE ") {
+			strings.HasPrefix(upper, "READ ") || strings.HasPrefix(upper, "WRITE ") ||
+			strings.Contains(upper, "MEMORY READ ") || strings.Contains(upper, "MEMORY WRITE ") {
 			continue
 		}
 
-		// Format 3: Unidbg / Bracketed / Plain hex PC instruction lines
+		// Format 3: Unidbg / Bracketed / Plain hex PC / Tenet pc=0x... instruction lines
 		var pc uint64
 		var insn string
 		var parsed bool
@@ -682,6 +739,12 @@ func AnalyzeVMPTrace(rawTrace string, moduleBase uint64) *VMPTraceAnalysis {
 			if v, err := strconv.ParseUint(m[1], 16, 64); err == nil {
 				pc = v
 				insn = cleanInsnText(m[2])
+				parsed = true
+			}
+		} else if m := reTenetPC.FindStringSubmatch(line); len(m) == 2 {
+			if v, err := strconv.ParseUint(m[1], 16, 64); err == nil {
+				pc = v
+				insn = "tenet"
 				parsed = true
 			}
 		}
@@ -734,9 +797,15 @@ func AnalyzeVMPTrace(rawTrace string, moduleBase uint64) *VMPTraceAnalysis {
 		if fanOut < 2 {
 			continue
 		}
-		insnLow := strings.ToLower(pcInsn[pc])
+		insnLow := strings.TrimSpace(strings.ToLower(pcInsn[pc]))
+		// Exclude function return instructions (ret, bx lr, etc.) whose dynamic
+		// fan-out simply reflects multiple callers rather than a VMP dispatcher.
+		if isReturnInsn(insnLow) {
+			continue
+		}
 		isIndirect := strings.HasPrefix(insnLow, "br ") || strings.HasPrefix(insnLow, "blr ") ||
-			strings.HasPrefix(insnLow, "bx ") || strings.HasPrefix(insnLow, "jmp ") ||
+			(strings.HasPrefix(insnLow, "bx ") && !strings.HasPrefix(insnLow, "bx lr")) ||
+			strings.HasPrefix(insnLow, "jmp ") ||
 			strings.Contains(insnLow, "ldr pc")
 
 		// Require either fan-out >= 3 or an indirect register branch with fan-out >= 2.
@@ -766,7 +835,10 @@ func AnalyzeVMPTrace(rawTrace string, moduleBase uint64) *VMPTraceAnalysis {
 		if dispCands[i].score != dispCands[j].score {
 			return dispCands[i].score > dispCands[j].score
 		}
-		return dispCands[i].hits > dispCands[j].hits
+		if dispCands[i].hits != dispCands[j].hits {
+			return dispCands[i].hits > dispCands[j].hits
+		}
+		return dispCands[i].pc < dispCands[j].pc
 	})
 	if len(dispCands) > 10 {
 		dispCands = dispCands[:10]
@@ -959,6 +1031,21 @@ func cleanInsnText(raw string) string {
 		s = strings.TrimSpace(s[:idx])
 	}
 	return s
+}
+
+func isReturnInsn(insnLow string) bool {
+	if insnLow == "" {
+		return false
+	}
+	if insnLow == "ret" || strings.HasPrefix(insnLow, "ret ") ||
+		insnLow == "retaa" || insnLow == "retab" ||
+		insnLow == "bx lr" || strings.HasPrefix(insnLow, "bx lr ") {
+		return true
+	}
+	if strings.HasPrefix(insnLow, "pop ") && strings.Contains(insnLow, "pc") {
+		return true
+	}
+	return false
 }
 
 func isRegisterName(tok string) bool {

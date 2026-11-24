@@ -11,6 +11,7 @@ package deobf
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -241,4 +242,25 @@ func boolJS(v bool) string {
 
 func round3(v float64) float64 {
 	return math.Round(v*1000) / 1000
+}
+
+// sanitizeCommentLine ensures user-controlled strings interpolated into
+// single-line // comments cannot break out via newlines or JS line separators.
+func sanitizeCommentLine(s string) string {
+	r := strings.NewReplacer(
+		"\r", " ",
+		"\n", " ",
+		"\u2028", " ",
+		"\u2029", " ",
+	)
+	return strings.TrimSpace(r.Replace(s))
+}
+
+// sanitizePyDocLine ensures strings placed inside Python """...""" docstrings
+// cannot terminate the docstring prematurely or escape the closing quotes.
+func sanitizePyDocLine(s string) string {
+	s = sanitizeCommentLine(s)
+	s = strings.ReplaceAll(s, `"""`, `'''`)
+	s = strings.TrimRight(s, `\`)
+	return s
 }

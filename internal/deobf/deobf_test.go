@@ -916,3 +916,279 @@ func TestGeneratedScripts_SyntaxCheck(t *testing.T) {
 		}
 	}
 }
+
+// ─── Regression Tests (Verifier-2 Review #17) ────────────────────────────────
+
+func TestScanELFBytes_PLTNoFalsePositive(t *testing.T) {
+	// Clean .text with no indirect branches, paired with .plt/.plt.got/.init/.fini
+	// containing many ARM64 PLT veneer BR X17 (0xD61F0220) instructions.
+	var text []byte
+	text = appendU32(text, 0x8B010000, 0xD65F03C0) // ADD X0, X0, X1; RET
+
+	var plt []byte
+	for i := 0; i < 20; i++ {
+		plt = appendU32(plt, 0xD61F0220) // BR X17 (standard AArch64 PLT stub)
+	}
+
+	elfBytes := buildSyntheticARM64ELF([]synthSection{
+		{name: ".text", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC | elf.SHF_EXECINSTR, addr: 0x1000, data: text},
+		{name: ".plt", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC | elf.SHF_EXECINSTR, addr: 0x2000, data: plt},
+		{name: ".plt.got", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC | elf.SHF_EXECINSTR, addr: 0x2200, data: plt[:16]},
+		{name: ".init", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC | elf.SHF_EXECINSTR, addr: 0x2300, data: plt[:8]},
+		{name: ".fini", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC | elf.SHF_EXECINSTR, addr: 0x2400, data: plt[:8]},
+		{name: ".rodata", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC, addr: 0x3000, data: []byte("clean library\x00")},
+	})
+
+	rep, err := ScanELFBytes("libclean_plt.so", elfBytes)
+	if err != nil {
+		t.Fatalf("ScanELFBytes failed: %v", err)
+	}
+	if rep.SOAudits[0].IndirectBranchCount != 0 {
+		t.Errorf("expected 0 indirect branches (PLT stubs excluded), got %d", rep.SOAudits[0].IndirectBranchCount)
+	}
+	for _, o := range rep.Obfuscation {
+		if o.Kind == ObfIndirectBranch || o.Kind == ObfOLLVMCFF {
+			t.Errorf("false positive obfuscation %q from .plt stubs", o.Kind)
+		}
+	}
+	if len(rep.VMPIndicators) != 0 {
+		t.Errorf("false positive VMP indicators from .plt stubs: %+v", rep.VMPIndicators)
+	}
+}
+
+func TestScanInstructions_SyscallWindowCSINCAndARM32(t *testing.T) {
+	// 1. ARM64 syscall window, control-flow clear, X8 overwrite clear, and CSINC/CSINV/CSNEG mask.
+	var arm64Code []byte
+	// Case A: MOVZ X8, #117; RET; SVC #0 -> cleared by RET (offset 0x1008 must NOT decode as ptrace)
+	arm64Code = appendU32(arm64Code, 0xD2800008|(117<<5), 0xD65F03C0, 0xD4000001)
+	// Case B: MOVZ X8, #131; 10x NOP; SVC #0 -> beyond 8-insn window (offset 0x1038 must NOT decode as tgkill)
+	arm64Code = appendU32(arm64Code, 0xD2800008|(131<<5))
+	for i := 0; i < 10; i++ {
+		arm64Code = appendU32(arm64Code, 0xD503201F) // NOP
+	}
+	arm64Code = appendU32(arm64Code, 0xD4000001)
+	// Case C: MOVZ X8, #56; ADD X8, X0, #1 (0x91000408 overwrites X8); SVC #0 -> must NOT decode as openat
+	arm64Code = appendU32(arm64Code, 0xD2800008|(56<<5), 0x91000408, 0xD4000001)
+	// Case D: CSEL, CSINC, CSINV, CSNEG -> all 4 must be counted in cselCount
+	arm64Code = appendU32(arm64Code,
+		0x1A8C016A, // CSEL  W10, W11, W12, EQ (op=0, o2=0)
+		0x1A8C056A, // CSINC W10, W11, W12, EQ (op=0, o2=1)
+		0x5A8C016A, // CSINV W10, W11, W12, EQ (op=1, o2=0)
+		0x5A8C056A, // CSNEG W10, W11, W12, EQ (op=1, o2=1)
+	)
+
+	var st arm64InsnStats
+	st.svcSyscalls = make(map[uint64]uint16)
+	scanARM64Instructions(arm64Code, 0x1000, &st)
+
+	if len(st.svcOffsets) != 3 {
+		t.Fatalf("expected 3 SVC sites, got %d", len(st.svcOffsets))
+	}
+	if len(st.svcSyscalls) != 0 {
+		t.Errorf("expected 0 attributed syscalls across RET / >8-insn window / X8 overwrite, got %+v", st.svcSyscalls)
+	}
+	if st.cselCount != 4 {
+		t.Errorf("expected cselCount=4 (CSEL+CSINC+CSINV+CSNEG), got %d", st.cselCount)
+	}
+
+	// 2. ARM32 decoding: reject cond==0xF, match conditional SVC<cc> #0, exclude BX LR
+	var arm32Code []byte
+	arm32Code = appendU32(arm32Code,
+		0x0F000000, // SVCEQ #0 (cond=0x0) -> MUST match
+		0xEF000000, // SVCAL #0 (cond=0xE) -> MUST match
+		0xFF000000, // cond=0xF -> MUST reject
+		0xF12FFF13, // cond=0xF in BX encoding space -> MUST reject
+		0xF12FFF34, // cond=0xF in BLX encoding space -> MUST reject
+		0xE12FFF1E, // BX LR -> MUST reject (standard return)
+		0xE12FFF13, // BX R3 -> MUST match brCount
+		0x112FFF34, // BLXNE R4 -> MUST match blrCount
+	)
+	var st32 arm64InsnStats
+	st32.svcSyscalls = make(map[uint64]uint16)
+	scanARM32Instructions(arm32Code, 0x2000, &st32)
+
+	if len(st32.svcOffsets) != 2 {
+		t.Errorf("expected 2 ARM32 SVCs (SVCEQ + SVCAL), got %d", len(st32.svcOffsets))
+	}
+	if st32.brCount != 1 || st32.blrCount != 1 {
+		t.Errorf("expected ARM32 brCount=1, blrCount=1, got br=%d blr=%d", st32.brCount, st32.blrCount)
+	}
+}
+
+func TestScanELFBytes_TruncatedMalformedAndAntiDebugBoundaryLoop(t *testing.T) {
+	// 1. Truncated/malformed ELF with wildly inflated .init_array sh_size -> must not panic or report bogus count.
+	initData := make([]byte, 16)
+	elfBytes := buildSyntheticARM64ELF([]synthSection{
+		{name: ".text", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC | elf.SHF_EXECINSTR, addr: 0x1000, data: appendU32(nil, 0xD65F03C0)},
+		{name: ".init_array", secType: elf.SHT_INIT_ARRAY, flags: elf.SHF_ALLOC | elf.SHF_WRITE, addr: 0x4000, entsize: 8, data: initData},
+		// Earlier non-boundary matches ("myfrida", "xptrace") followed by clean-boundary "frida" & "ptrace"
+		{name: ".rodata", secType: elf.SHT_PROGBITS, flags: elf.SHF_ALLOC, addr: 0x2000, data: []byte("myfrida_noise\x00found frida!\x00xptrace_fake\x00ptrace\x00")},
+	})
+
+	// Tamper .init_array sh_size in the section header table to 0x10000000 (256 MiB) while leaving the file small.
+	shoff := binary.LittleEndian.Uint64(elfBytes[40:48])
+	// Section index 2 is .init_array (index 0 = SHT_NULL, 1 = .text, 2 = .init_array)
+	initShdrOff := shoff + 2*64
+	binary.LittleEndian.PutUint64(elfBytes[initShdrOff+32:initShdrOff+40], 0x10000000)
+
+	rep, err := ScanELFBytes("libtampered.so", elfBytes)
+	if err != nil {
+		t.Fatalf("ScanELFBytes should gracefully handle inflated sh_size, got err: %v", err)
+	}
+	if rep.SOAudits[0].InitArrayCount > 1000 {
+		t.Errorf("InitArrayCount trusted raw inflated sh_size: got %d", rep.SOAudits[0].InitArrayCount)
+	}
+
+	// Verify scanBytesForAntiDebug continued past "myfrida_noise"/"xptrace_fake" to find clean "frida" & "ptrace".
+	foundFrida, foundPtrace := false, false
+	for _, ad := range rep.AntiDebugFindings {
+		if ad.SymbolOrPattern == "frida" {
+			foundFrida = true
+		}
+		if ad.SymbolOrPattern == "ptrace" {
+			foundPtrace = true
+		}
+	}
+	if !foundFrida || !foundPtrace {
+		t.Errorf("expected both clean-boundary 'frida' and 'ptrace' findings after earlier non-boundary hits; got %+v", rep.AntiDebugFindings)
+	}
+}
+
+func TestGeneratedScripts_AdversarialEscapingAndMemorySafety(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Adversarial strings with newlines, JS line separators, triple quotes, and trailing backslash
+	evilPkg := "com.evil.pkg\nconsole.log('injected');\r\u2028\"\"\"\\"
+	evilPath := "/tmp/evil\"\"\"dir\\\nimport os; os.system('id')/libevil.so\\"
+	evilAddr := "not_hex\n\"\"\"import os"
+
+	stealth := GenerateStealthScript(StealthOptions{
+		TargetPackage:            evilPkg,
+		TargetSO:                 "libevil.so\n//break",
+		BypassTracerPidAndProcFS: true,
+		BypassPtraceAndSignals:   true,
+		PatchInlineSVC:           true,
+		BypassTimingAndInotify:   true,
+		BypassJavaDebugChecks:    true,
+		WatchdogBlockOffsets:     []string{"0x1234"},
+		CustomHideTokens:         []string{"tok\nbreak"},
+	}, &ProtectionReport{Summary: "Hardening: HIGH\nmalicious();"})
+
+	// Verify memory-safety fixes in Stealth script
+	if !strings.Contains(stealth.Code, "writeRawBytesClamped") || strings.Contains(stealth.Code, "writeUtf8String(") {
+		t.Errorf("stealth script should use writeRawBytesClamped instead of NUL-appending writeUtf8String")
+	}
+	if !strings.Contains(stealth.Code, "this.bufsiz") || !strings.Contains(stealth.Code, "Process.pointerSize === 8") {
+		t.Errorf("stealth script missing readlink bufsiz clamping or 32/64-bit timespec branching")
+	}
+	if !strings.Contains(stealth.Code, "this.kind === 'maps' || this.kind === 'net_tcp'") {
+		t.Errorf("stealth script missing net_tcp handling in fgets")
+	}
+
+	stalker := GenerateVMPStalkerScript("libvmp.so\nbreak()", "0x1a00\nbreak()", 5000)
+	if !strings.Contains(stalker.Code, "extractBranchReg") || !strings.Contains(stalker.Code, "extractMemOperand") || !strings.Contains(stalker.Code, "this.stalking") {
+		t.Errorf("VMP Stalker script missing operand register extraction or per-invocation stalking guard")
+	}
+	if strings.Contains(stalker.Code, "rec.mem_r = context.x9") || strings.Contains(stalker.Code, "rec.mem_w = context.sp") {
+		t.Errorf("VMP Stalker script must not fabricate hardcoded x9/sp memory addresses")
+	}
+
+	ollvm := GenerateOLLVMDeflattenScript(evilPath, evilAddr, "arm64\n\"\"\"")
+	if !strings.Contains(ollvm.Code, `FUNC_ADDR = int("0x1000", 16)`) {
+		t.Errorf("invalid funcAddr should safely fall back to 0x1000, got code:\n%s", ollvm.Code[:400])
+	}
+
+	qiling := GenerateStringDecryptScript("qiling", evilPath, "")
+	unidbgStr := GenerateStringDecryptScript("unidbg", evilPath, evilPath)
+	if strings.Contains(strings.Split(unidbgStr.Code, "\n")[1], "import os") && !strings.HasPrefix(strings.Split(unidbgStr.Code, "\n")[1], "//") {
+		t.Errorf("unidbg comment line broke out of // comment")
+	}
+
+	if nodePath, err := exec.LookPath("node"); err == nil {
+		jsList := []*GeneratedScript{
+			stealth,
+			GenerateDexUnpackerScript(evilPkg),
+			GenerateJavaDeobfScript(evilPkg),
+			stalker,
+			GenerateVMPRegisterNativesScript(evilPkg),
+		}
+		for _, sc := range jsList {
+			p := filepath.Join(tmp, "adv_"+sanitizeSlug(sc.ID)+".js")
+			if err := os.WriteFile(p, []byte(sc.Code), 0644); err != nil {
+				t.Fatalf("write %s: %v", p, err)
+			}
+			if out, err := exec.Command(nodePath, "--check", p).CombinedOutput(); err != nil {
+				t.Errorf("adversarial node --check failed for %s: %v\n%s", sc.ID, err, string(out))
+			}
+		}
+	}
+
+	if pyPath, err := exec.LookPath("python3"); err == nil {
+		pyList := []*GeneratedScript{ollvm, qiling}
+		for _, sc := range pyList {
+			p := filepath.Join(tmp, "adv_"+sanitizeSlug(sc.ID)+".py")
+			if err := os.WriteFile(p, []byte(sc.Code), 0644); err != nil {
+				t.Fatalf("write %s: %v", p, err)
+			}
+			if out, err := exec.Command(pyPath, "-m", "py_compile", p).CombinedOutput(); err != nil {
+				t.Errorf("adversarial py_compile failed for %s: %v\n%s", sc.ID, err, string(out))
+			}
+		}
+	}
+}
+
+func TestAnalyzeVMPTrace_TenetUnidbgReadAtAndRetExclusion(t *testing.T) {
+	const modBase uint64 = 0x7000000000
+
+	var tb strings.Builder
+	// Helper returns (`ret` and `bx lr`) each returning to 5 distinct callers — high fan-out,
+	// MUST NOT be misclassified as VMP dispatchers!
+	for i := 0; i < 10; i++ {
+		callerRet := modBase + 0x5000 + uint64(i%5)*0x20
+		callerBx := modBase + 0x6000 + uint64(i%5)*0x20
+		fmt.Fprintf(&tb, "0x%x: ret\n", modBase+0x3000)
+		fmt.Fprintf(&tb, "0x%x: add x0, x0, #1\n", callerRet)
+		fmt.Fprintf(&tb, "0x%x: bx lr\n", modBase+0x3100)
+		fmt.Fprintf(&tb, "0x%x: mov r0, r1\n", callerBx)
+	}
+
+	// Real VMP dispatcher using Tenet pc=0x... + Unidbg "Memory READ/WRITE at 0x..." lines
+	handlers := []uint64{modBase + 0x2000, modBase + 0x2100, modBase + 0x2200, modBase + 0x2300}
+	for cycle := 0; cycle < 12; cycle++ {
+		h := handlers[cycle%len(handlers)]
+		fmt.Fprintf(&tb, "pc=0x%x,x0=0x1,mr=0x%x:01020304\n", modBase+0x1000, modBase+0x90000)
+		fmt.Fprintf(&tb, "[12:00:00 100] Memory READ at 0x%x, data size = 4, data value = 0x1234\n", modBase+0x80000)
+		fmt.Fprintf(&tb, "0x%x: br x8\n", modBase+0x1008)
+		fmt.Fprintf(&tb, "pc=0x%x,mw=0x%x:deadbeef\n", h, modBase+0x90100)
+		fmt.Fprintf(&tb, "[12:00:00 101] Memory WRITE at 0x%x, data size = 8, data value = 0x5678\n", modBase+0x90200)
+	}
+
+	res := AnalyzeVMPTrace(tb.String(), modBase)
+
+	// Verify ret & bx lr were excluded from DispatcherCandidates
+	retAddr := fmt.Sprintf("0x%x", modBase+0x3000)
+	bxAddr := fmt.Sprintf("0x%x", modBase+0x3100)
+	for _, dc := range res.DispatcherCandidates {
+		if dc.Address == retAddr || dc.Address == bxAddr {
+			t.Errorf("return instruction %s (%q) polluted DispatcherCandidates", dc.Address, dc.SampleInsn)
+		}
+	}
+
+	// Real dispatcher 0x7000001008 must be #1
+	wantDisp := fmt.Sprintf("0x%x", modBase+0x1008)
+	if len(res.DispatcherCandidates) == 0 || res.DispatcherCandidates[0].Address != wantDisp {
+		t.Fatalf("expected top dispatcher %s, got %+v", wantDisp, res.DispatcherCandidates)
+	}
+
+	// Verify Tenet mr=/mw= AND Unidbg Memory READ/WRITE at 0x... were all captured
+	memSet := make(map[string]VMPMemSpot)
+	for _, m := range res.MemoryHotspots {
+		memSet[m.Address] = m
+	}
+	for _, wantMem := range []uint64{modBase + 0x90000, modBase + 0x80000, modBase + 0x90100, modBase + 0x90200} {
+		key := fmt.Sprintf("0x%x", wantMem)
+		if _, ok := memSet[key]; !ok {
+			t.Errorf("expected memory hotspot %s from Tenet/Unidbg trace, got %+v", key, memSet)
+		}
+	}
+}

@@ -1,0 +1,507 @@
+// Package gateway implements cap's Serviceization & Full-Chain Integration
+// Gateway engine: Proxy IP Pool, Device Pool & Virtual Fingerprint Profiles,
+// Pluggable Signer Providers (Script / HTTP / Unidbg HTTP / Frida RPC /
+// Built-in HMAC), and an embedded Open API Gateway HTTP server with OpenAPI
+// 3.0.3 export, API Key authentication, per-route rate limiting, and live
+// telemetry.
+package gateway
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const (
+	// Proxy pool rotation strategies.
+	StrategyRoundRobin   = "round_robin"
+	StrategyRandom       = "random"
+	StrategyLeastLatency = "least_latency"
+	StrategyStickyDevice = "sticky_device"
+
+	// Dynamic IP provider response formats.
+	ProviderFormatLines = "lines"
+	ProviderFormatJSON  = "json"
+
+	// Device profile kinds.
+	DeviceKindVirtual  = "virtual"
+	DeviceKindPhysical = "physical"
+
+	// Signer provider kinds.
+	SignerKindScript      = "script"
+	SignerKindHTTP        = "http"
+	SignerKindUnidbgHTTP  = "unidbg_http"
+	SignerKindFridaRPC    = "frida_rpc"
+	SignerKindBuiltinHMAC = "builtin_hmac"
+
+	// Signer injection targets.
+	InjectTargetQuery    = "query"
+	InjectTargetHeader   = "header"
+	InjectTargetBodyJSON = "body_json"
+
+	// Operational defaults.
+	DefaultListenAddr       = "127.0.0.1:9090"
+	DefaultMaxLogs          = 500
+	DefaultTimeoutSec       = 15
+	DefaultSignerTimeoutSec = 10
+	DefaultFailoverRetries  = 2
+	DefaultHealthCheckURL   = "http://connectivitycheck.gstatic.com/generate_204"
+)
+
+// ProxyNode represents one outbound proxy server in the Proxy IP Pool.
+type ProxyNode struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	URL          string   `json:"url"` // http://, https://, socks5://, socks5h://
+	Username     string   `json:"username,omitempty"`
+	Password     string   `json:"password,omitempty"`
+	Region       string   `json:"region,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	Healthy      bool     `json:"healthy"`
+	LatencyMs    int64    `json:"latency_ms"`
+	SuccessCount int64    `json:"success_count"`
+	FailCount    int64    `json:"fail_count"`
+	LastChecked  string   `json:"last_checked,omitempty"`
+	LastError    string   `json:"last_error,omitempty"`
+}
+
+// ProxyPoolConfig configures proxy rotation, dynamic provider fetching,
+// health probing, and failover retries.
+type ProxyPoolConfig struct {
+	Strategy           string `json:"strategy"` // "round_robin"|"random"|"least_latency"|"sticky_device"
+	ProviderURL        string `json:"provider_url,omitempty"`
+	ProviderFormat     string `json:"provider_format,omitempty"` // "lines"|"json"
+	ProviderJSONPath   string `json:"provider_json_path,omitempty"`
+	RefreshIntervalSec int    `json:"refresh_interval_sec,omitempty"`
+	HealthCheckURL     string `json:"health_check_url,omitempty"`
+	FailoverRetries    int    `json:"failover_retries"`
+}
+
+// ProxySelectOptions constrains proxy selection during request execution.
+type ProxySelectOptions struct {
+	Tags          []string
+	Region        string
+	StickyProxyID string
+	ExcludeIDs    map[string]bool
+	Strategy      string
+}
+
+// DeviceFingerprint holds realistic client/device identity attributes used for
+// header synthesis and template variable expansion.
+type DeviceFingerprint struct {
+	Model        string            `json:"model"`
+	Brand        string            `json:"brand"`
+	OSVersion    string            `json:"os_version"`
+	SDK          int               `json:"sdk"`
+	UserAgent    string            `json:"user_agent"`
+	DeviceID     string            `json:"device_id,omitempty"`
+	AndroidID    string            `json:"android_id,omitempty"`
+	OAID         string            `json:"oaid,omitempty"`
+	Locale       string            `json:"locale,omitempty"`
+	Timezone     string            `json:"timezone,omitempty"`
+	Screen       string            `json:"screen,omitempty"`
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
+}
+
+// DeviceProfile represents a virtual or physical Android device identity in
+// the Device Pool, including optional sticky proxy affinity and session state.
+type DeviceProfile struct {
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Kind          string            `json:"kind"` // "virtual"|"physical"
+	ADBSerial     string            `json:"adb_serial,omitempty"`
+	Enabled       bool              `json:"enabled"`
+	Tags          []string          `json:"tags,omitempty"`
+	StickyProxyID string            `json:"sticky_proxy_id,omitempty"`
+	ProxyRegion   string            `json:"proxy_region,omitempty"`
+	Fingerprint   DeviceFingerprint `json:"fingerprint"`
+	Cookies       map[string]string `json:"cookies,omitempty"`
+	AuthHeaders   map[string]string `json:"auth_headers,omitempty"`
+	Tokens        map[string]string `json:"tokens,omitempty"`
+	InUseCount    int64             `json:"in_use_count"`
+	LastUsedAt    string            `json:"last_used_at,omitempty"`
+	CreatedAt     string            `json:"created_at,omitempty"`
+	UpdatedAt     string            `json:"updated_at,omitempty"`
+}
+
+// DevicePreset describes a curated virtual Android device template.
+type DevicePreset struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Tags        []string          `json:"tags,omitempty"`
+	Fingerprint DeviceFingerprint `json:"fingerprint"`
+}
+
+// SignerProvider defines a pluggable request-signing backend.
+type SignerProvider struct {
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Kind          string            `json:"kind"` // "script"|"http"|"unidbg_http"|"frida_rpc"|"builtin_hmac"
+	Enabled       bool              `json:"enabled"`
+	Description   string            `json:"description,omitempty"`
+	Runtime       string            `json:"runtime,omitempty"` // "python3"|"node"|"sh"
+	ScriptCode    string            `json:"script_code,omitempty"`
+	EndpointURL   string            `json:"endpoint_url,omitempty"`
+	HTTPMethod    string            `json:"http_method,omitempty"`
+	TimeoutSec    int               `json:"timeout_sec,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	HMACAlgorithm string            `json:"hmac_algorithm,omitempty"` // "md5"|"sha1"|"sha256"|"hmac-sha256"
+	HMACSecret    string            `json:"hmac_secret,omitempty"`
+	FridaSerial   string            `json:"frida_serial,omitempty"`
+	FridaPackage  string            `json:"frida_package,omitempty"`
+	FridaExport   string            `json:"frida_export,omitempty"`
+	InjectTarget  string            `json:"inject_target,omitempty"` // "query"|"header"|"body_json"
+	InjectField   string            `json:"inject_field,omitempty"`
+	OutputMapping map[string]string `json:"output_mapping,omitempty"`
+}
+
+// SignerInput is the normalized request payload delivered to a signer backend.
+type SignerInput struct {
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Path      string            `json:"path"`
+	Query     map[string]string `json:"query"`
+	Headers   map[string]string `json:"headers"`
+	Body      string            `json:"body"`
+	Timestamp int64             `json:"timestamp"`
+	Nonce     string            `json:"nonce"`
+	Device    *DeviceProfile    `json:"device,omitempty"`
+	Input     map[string]string `json:"input,omitempty"`
+}
+
+// SignerOutput captures signature fields produced by a signer backend.
+type SignerOutput struct {
+	Sign       string            `json:"sign,omitempty"`
+	Params     map[string]string `json:"params,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	BodyFields map[string]any    `json:"body_fields,omitempty"`
+	Raw        map[string]any    `json:"raw,omitempty"`
+	LatencyMs  int64             `json:"latency_ms"`
+}
+
+// ServiceRoute publishes an upstream reverse-engineered API endpoint behind
+// the embedded Open API Gateway at `/gw/{slug}`.
+type ServiceRoute struct {
+	ID             string            `json:"id"`
+	Slug           string            `json:"slug"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description,omitempty"`
+	Enabled        bool              `json:"enabled"`
+	UpstreamMethod string            `json:"upstream_method"`
+	UpstreamURL    string            `json:"upstream_url"` // supports {{input.x}}, {{device.oaid}}, etc.
+	StaticHeaders  map[string]string `json:"static_headers,omitempty"`
+	StaticQuery    map[string]string `json:"static_query,omitempty"`
+	BodyTemplate   string            `json:"body_template,omitempty"`
+	SignerID       string            `json:"signer_id,omitempty"`
+	DeviceTags     []string          `json:"device_tags,omitempty"`
+	ProxyTags      []string          `json:"proxy_tags,omitempty"`
+	RequireProxy   bool              `json:"require_proxy"`
+	RequireDevice  bool              `json:"require_device"`
+	RateLimitRPS   float64           `json:"rate_limit_rps,omitempty"`
+	TimeoutSec     int               `json:"timeout_sec,omitempty"`
+	SourceFlowID   string            `json:"source_flow_id,omitempty"`
+	CreatedAt      string            `json:"created_at,omitempty"`
+	UpdatedAt      string            `json:"updated_at,omitempty"`
+}
+
+// GatewayConfig holds runtime settings for the embedded Open API Gateway.
+type GatewayConfig struct {
+	ListenAddr  string   `json:"listen_addr"` // default "127.0.0.1:9090"
+	RequireAuth bool     `json:"require_auth"`
+	APIKeys     []string `json:"api_keys,omitempty"`
+	CORSOrigins []string `json:"cors_origins,omitempty"`
+	MaxLogs     int      `json:"max_logs,omitempty"`
+}
+
+// GatewayStatus describes the live server lifecycle state emitted to listeners.
+type GatewayStatus struct {
+	Running    bool   `json:"running"`
+	ListenAddr string `json:"listen_addr"`
+	StartedAt  string `json:"started_at,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// InvocationRecord captures telemetry for a single gateway route execution.
+type InvocationRecord struct {
+	ID          string `json:"id"`
+	Timestamp   string `json:"timestamp"`
+	RouteID     string `json:"route_id,omitempty"`
+	RouteSlug   string `json:"route_slug"`
+	Method      string `json:"method"`
+	UpstreamURL string `json:"upstream_url"`
+	StatusCode  int    `json:"status_code"`
+	LatencyMs   int64  `json:"latency_ms"`
+	ProxyID     string `json:"proxy_id,omitempty"`
+	ProxyName   string `json:"proxy_name,omitempty"`
+	DeviceID    string `json:"device_id,omitempty"`
+	DeviceName  string `json:"device_name,omitempty"`
+	SignerID    string `json:"signer_id,omitempty"`
+	SignerMs    int64  `json:"signer_ms,omitempty"`
+	Retries     int    `json:"retries,omitempty"`
+	OK          bool   `json:"ok"`
+	Error       string `json:"error,omitempty"`
+	ClientIP    string `json:"client_ip,omitempty"`
+}
+
+// GatewayStats summarizes gateway health, traffic, and resource pool metrics.
+type GatewayStats struct {
+	Running         bool    `json:"running"`
+	ListenAddr      string  `json:"listen_addr"`
+	StartedAt       string  `json:"started_at,omitempty"`
+	TotalRequests   int64   `json:"total_requests"`
+	SuccessRequests int64   `json:"success_requests"`
+	ErrorRequests   int64   `json:"error_requests"`
+	RateLimited     int64   `json:"rate_limited"`
+	AuthFailures    int64   `json:"auth_failures"`
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`
+	ProxyTotal      int     `json:"proxy_total"`
+	ProxyHealthy    int     `json:"proxy_healthy"`
+	DeviceTotal     int     `json:"device_total"`
+	DeviceEnabled   int     `json:"device_enabled"`
+	SignerTotal     int     `json:"signer_total"`
+	RouteTotal      int     `json:"route_total"`
+	RouteEnabled    int     `json:"route_enabled"`
+}
+
+// TestInvokeRequest specifies inputs for direct route testing via InvokeRoute.
+type TestInvokeRequest struct {
+	RouteSlug string            `json:"route_slug,omitempty"`
+	Method    string            `json:"method,omitempty"`
+	Input     map[string]string `json:"input,omitempty"`
+	Query     map[string]string `json:"query,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      string            `json:"body,omitempty"`
+	DeviceID  string            `json:"device_id,omitempty"`
+	ProxyID   string            `json:"proxy_id,omitempty"`
+	Raw       bool              `json:"raw,omitempty"`
+}
+
+// TestInvokeResult is the response envelope returned by both InvokeRoute and
+// HTTP calls to `/gw/{slug}` (unless `?raw=1` passthrough is requested).
+type TestInvokeResult struct {
+	OK            bool              `json:"ok"`
+	Status        int               `json:"status"`
+	LatencyMs     int64             `json:"latency_ms"`
+	SignerMs      int64             `json:"signer_ms,omitempty"`
+	UpstreamURL   string            `json:"upstream_url,omitempty"`
+	Proxy         string            `json:"proxy,omitempty"`
+	ProxyID       string            `json:"proxy_id,omitempty"`
+	Device        string            `json:"device,omitempty"`
+	DeviceID      string            `json:"device_id,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	Body          string            `json:"body,omitempty"`
+	Data          any               `json:"data,omitempty"`
+	Error         string            `json:"error,omitempty"`
+	Retries       int               `json:"retries,omitempty"`
+	SignedParams  map[string]string `json:"signed_params,omitempty"`
+	SignedHeaders map[string]string `json:"signed_headers,omitempty"`
+}
+
+var (
+	idSanitizeRe  = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+	urlUserInfoRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)([^/\s@]+)@`)
+)
+
+// redactSecrets scrubs embedded URL userinfo (scheme://user:pass@host) and any
+// explicitly provided secret values from logs and error messages.
+func redactSecrets(text string, secrets ...string) string {
+	if text == "" {
+		return ""
+	}
+	out := urlUserInfoRe.ReplaceAllString(text, "${1}REDACTED@")
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, secret, "[REDACTED]")
+		if esc := url.QueryEscape(secret); esc != "" && esc != secret {
+			out = strings.ReplaceAll(out, esc, "[REDACTED]")
+		}
+	}
+	return out
+}
+
+func redactURLString(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil {
+		return u.Redacted()
+	}
+	return redactSecrets(raw)
+}
+
+func validateHTTPURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL %q: %w", redactURLString(raw), err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("unsupported URL scheme %q (only http and https are allowed)", u.Scheme)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return nil, fmt.Errorf("URL %q is missing host", redactURLString(raw))
+	}
+	return u, nil
+}
+
+func setHeaderFold(headers map[string]string, key, val string) {
+	for existing := range headers {
+		if strings.EqualFold(existing, key) {
+			delete(headers, existing)
+			break
+		}
+	}
+	headers[key] = val
+}
+
+func jsonStringLiteral(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(b)
+}
+
+func nowRFC3339() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func randomHex(nBytes int) string {
+	if nBytes <= 0 {
+		nBytes = 8
+	}
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%016x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+func newUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("00000000-0000-4000-8000-%012x", time.Now().UnixNano()&0xffffffffffff)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func sanitizeID(raw, fallback string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = idSanitizeRe.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-._")
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(m))
+	maps.Copy(cp, m)
+	return cp
+}
+
+func cloneStringSlice(s []string) []string {
+	if s == nil {
+		return nil
+	}
+	cp := make([]string, len(s))
+	copy(cp, s)
+	return cp
+}
+
+func normalizeTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		clean := strings.TrimSpace(t)
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, clean)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func hasAllTags(itemTags, reqTags []string) bool {
+	if len(reqTags) == 0 {
+		return true
+	}
+	if len(itemTags) == 0 {
+		return false
+	}
+	have := make(map[string]struct{}, len(itemTags))
+	for _, t := range itemTags {
+		have[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+	}
+	for _, req := range reqTags {
+		r := strings.ToLower(strings.TrimSpace(req))
+		if r == "" {
+			continue
+		}
+		if _, ok := have[r]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneProxyNode(n ProxyNode) ProxyNode {
+	n.Tags = cloneStringSlice(n.Tags)
+	return n
+}
+
+func cloneDeviceProfile(d DeviceProfile) DeviceProfile {
+	d.Tags = cloneStringSlice(d.Tags)
+	d.Fingerprint.ExtraHeaders = cloneStringMap(d.Fingerprint.ExtraHeaders)
+	d.Cookies = cloneStringMap(d.Cookies)
+	d.AuthHeaders = cloneStringMap(d.AuthHeaders)
+	d.Tokens = cloneStringMap(d.Tokens)
+	return d
+}
+
+func cloneSignerProvider(s SignerProvider) SignerProvider {
+	s.Headers = cloneStringMap(s.Headers)
+	s.OutputMapping = cloneStringMap(s.OutputMapping)
+	return s
+}
+
+func cloneServiceRoute(r ServiceRoute) ServiceRoute {
+	r.StaticHeaders = cloneStringMap(r.StaticHeaders)
+	r.StaticQuery = cloneStringMap(r.StaticQuery)
+	r.DeviceTags = cloneStringSlice(r.DeviceTags)
+	r.ProxyTags = cloneStringSlice(r.ProxyTags)
+	return r
+}
+
+func cloneGatewayConfig(c GatewayConfig) GatewayConfig {
+	c.APIKeys = cloneStringSlice(c.APIKeys)
+	c.CORSOrigins = cloneStringSlice(c.CORSOrigins)
+	return c
+}

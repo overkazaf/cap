@@ -9,6 +9,7 @@ registerMessages('common', {
       groups: {
         traffic: 'Traffic',
         inspect: 'Analysis',
+        service: 'Services',
         tools: 'System',
       },
       pages: {
@@ -37,10 +38,20 @@ registerMessages('common', {
           title: 'Frida Studio',
           subtitle: 'Dynamic hooking, server lifecycle, CodeShare & live trace bridge',
         },
+        relab: {
+          label: 'RE Lab',
+          title: 'Reverse Engineering Lab',
+          subtitle: 'radare2, Unidbg/Qiling/angr emulation, Deobf/VMP & ExecTrace taint',
+        },
         plugins: {
           label: 'Plugins',
           title: 'Analyzer Plugins',
           subtitle: 'Custom scriptable analyzers & flow hooks',
+        },
+        gateway: {
+          label: 'Gateway',
+          title: 'Service Gateway',
+          subtitle: 'Open API HTTP gateway, proxy IP pool, device fingerprints & signers',
         },
         terminal: {
           label: 'Terminal',
@@ -50,7 +61,7 @@ registerMessages('common', {
         settings: {
           label: 'Settings',
           title: 'Preferences',
-          subtitle: 'Appearance, proxy defaults & export configuration',
+          subtitle: 'Appearance, proxy defaults, RE toolchain & gateway configuration',
         },
       },
       primaryAria: 'Primary navigation',
@@ -64,6 +75,8 @@ registerMessages('common', {
       liveBadge: 'LIVE',
       pausedBadge: 'PAUSED',
       hookBadge: 'HOOK',
+      reJobBadge: 'RUN',
+      gwBadge: 'GW',
     },
     topbar: {
       paletteTrigger: 'Quick jump or command…',
@@ -93,7 +106,11 @@ registerMessages('common', {
       devicesTooltip: 'Connected Android devices',
       breakpointsOne: '1 breakpoint held',
       breakpointsMany: '{count} breakpoints held',
-      hintSwitch: '{mod}1–8 Switch',
+      gatewayLive: 'GW · {addr}',
+      gatewayStatusTooltip: 'Service Gateway status',
+      reJobRunning: 'RE · {engine}',
+      reJobTooltip: 'Active RE Lab job',
+      hintSwitch: '{mod}1–9 Switch',
       hintPalette: '{mod}K Palette',
       switchThemeTooltip: 'Switch theme',
       switchLangTooltip: 'Switch language',
@@ -209,6 +226,7 @@ registerMessages('common', {
       groups: {
         traffic: '流量抓包',
         inspect: '逆向分析',
+        service: '服务集成',
         tools: '系统工具',
       },
       pages: {
@@ -237,10 +255,20 @@ registerMessages('common', {
           title: 'Frida 动态工作室',
           subtitle: '动态 Hook 注入、服务端全生命周期、CodeShare 与追踪联动',
         },
+        relab: {
+          label: '逆向实验室',
+          title: '原生逆向与算法实验室',
+          subtitle: 'radare2 静态分析、Unidbg/Qiling/angr 仿真、反混淆/VMP 与执行追踪污点分析',
+        },
         plugins: {
           label: '分析插件',
           title: '插件工作室',
           subtitle: '可编程流量分析脚本与自定义 Hook',
+        },
+        gateway: {
+          label: '服务网关',
+          title: '接口服务化网关',
+          subtitle: 'Open API HTTP 网关、代理 IP 池、虚拟设备指纹池与可插拔签名器',
         },
         terminal: {
           label: '终端',
@@ -250,7 +278,7 @@ registerMessages('common', {
         settings: {
           label: '偏好设置',
           title: '偏好设置',
-          subtitle: '外观主题、语言、代理默认值与导出配置',
+          subtitle: '外观主题、语言、代理默认值、逆向工具链与网关配置',
         },
       },
       primaryAria: '主导航',
@@ -264,6 +292,8 @@ registerMessages('common', {
       liveBadge: '运行中',
       pausedBadge: '已暂停',
       hookBadge: '注入中',
+      reJobBadge: '运行',
+      gwBadge: 'GW',
     },
     topbar: {
       paletteTrigger: '快速跳转或执行命令…',
@@ -293,7 +323,11 @@ registerMessages('common', {
       devicesTooltip: '已连接的 Android 设备',
       breakpointsOne: '1 个断点挂起',
       breakpointsMany: '{count} 个断点挂起',
-      hintSwitch: '{mod}1–8 切换页面',
+      gatewayLive: '网关 · {addr}',
+      gatewayStatusTooltip: '服务网关运行状态',
+      reJobRunning: '逆向 · {engine}',
+      reJobTooltip: '正在运行的逆向仿真任务',
+      hintSwitch: '{mod}1–9 切换页面',
       hintPalette: '{mod}K 命令面板',
       switchThemeTooltip: '切换主题',
       switchLangTooltip: '切换界面语言',

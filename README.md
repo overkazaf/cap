@@ -80,6 +80,10 @@ Most HTTP proxies (Burp Suite, mitmproxy, HTTP Toolkit) are designed for web sec
 | Sign algorithm inference | ✗ | ✗ | ✗ | **✓ MD5/SHA/HMAC** |
 | Static analysis & DeepTrace | ✗ | ✗ | ✗ | **✓ 8-stage live jadx / DEX / Call Graph** |
 | Frida Studio & live hooking | ✗ | ✗ | ✗ | **✓ Server deploy / live hot-reload / Trace→Hook** |
+| Native RE & Emulation (r2/Unidbg/Qiling/angr) | ✗ | ✗ | ✗ | **✓ Static r2 + pure-Go ELF / Emulation / Symbolic** |
+| Anti-Obfuscation, Anti-Debug & VMP | ✗ | ✗ | ✗ | **✓ 13 packers / OLLVM / Inline SVC / VMP trace** |
+| Execution Trace & Taint Analysis | ✗ | ✗ | ✗ | **✓ Multi-format / Reg+Mem Taint / ASLR Diff / Tenet** |
+| Service Gateway (Open API + Pools) | ✗ | ✗ | ✗ | **✓ HTTP API / Proxy Pool / Device Pool / Signers** |
 | One-cmd Android setup | ✗ | ✗ | △ app-based | **✓ ADB direct + Guard APK** |
 | Auto network restore on disconnect | ✗ | ✗ | △ app-based | **✓ Companion Watchdog (rootless)** |
 | Cert inject (Android 7–15) | ✗ manual | ✗ manual | ✓ | **✓ APEX Conscrypt / mount --bind / Magisk / KeyChain** |
@@ -129,6 +133,15 @@ flowchart TB
         SIGN["Sign Inference<br/>(MD5/SHA/HMAC)"]
         TRACE["DeepTrace & Source Mapper<br/>(jadx / DEX / Call Graph)"]
         DETECT["Param Detector<br/>(sign / ts / nonce)"]
+        RELAB["RE Lab Engine<br/>(r2 / Unidbg / Qiling / angr)"]
+        DEOBF["Deobf & VMP Engine<br/>(Packer / OLLVM / SVC / VMP)"]
+        EXECTRACE["ExecTrace & Taint<br/>(Multi-format / Taint / Diff)"]
+    end
+
+    subgraph Service["Service Gateway & Integration Hub"]
+        GW["Open API HTTP Gateway<br/>(:9090 / Auth / OpenAPI 3.0.3)"]
+        POOLS["Proxy IP Pool &<br/>Device Fingerprint Pool"]
+        SIGNERS["Pluggable Signers<br/>(HMAC / Script / HTTP / Unidbg / Frida)"]
     end
 
     subgraph Export["Export Layer"]
@@ -166,18 +179,29 @@ flowchart TB
     STORE --> AGENT
     STORE --> SIGN
     STORE --> REPLAY
+    STORE --> GW
     TRACE --> STORE
     TRACE --> FRIDA
+    TRACE --> RELAB
+    TRACE --> DEOBF
+    RELAB --> EXECTRACE
+    DEOBF --> FRIDA
+    GW --> POOLS
+    GW --> SIGNERS
+    SIGNERS --> RELAB
+    SIGNERS --> FRIDA
     DETECT --> STORE
     ADB --> PROXY
     ADB --> GUARD
     ADB --> FRIDA
     ADB --> PATCH
+    ADB --> POOLS
     CODESHARE --> FRIDA
 
     style Client fill:#1e3a5f,color:#fff
     style Core fill:#14532d,color:#fff
     style Analysis fill:#7c2d12,color:#fff
+    style Service fill:#1e40af,color:#fff
     style Export fill:#581c87,color:#fff
     style Capture fill:#7f1d1d,color:#fff
     style Device fill:#164e63,color:#fff
@@ -222,16 +246,18 @@ Native Wails v2 + Svelte 4 desktop workbench compiled into a single binary (no E
 - **Workbench Shell & Navigation**:
   - **4 Built-in Themes**: **Obsidian Dark** (default), **Porcelain Light**, **Mocha** (Catppuccin), and **Nord** with crisp 1px borders, layered elevation tokens, and `tabular-nums` monospace telemetry.
   - **Command Palette (`⌘K` / `Ctrl+K`)**: Instant jump across workspaces, proxy start/stop/pause, theme switching, and live `EN ↔ 简体中文` language toggling.
-  - **Collapsible Left Nav Rail (`⌘B`)** with `⌘1–8` workspace shortcuts, live proxy & Frida hook status badges, compact `EN / 中文` switcher, and an IDE-style bottom status bar.
-- **8 Integrated Workspaces**:
+  - **Collapsible Left Nav Rail (`⌘B`)** with `⌘1–9` / `⌘,` workspace shortcuts, live proxy, Frida hook, RE job & Service Gateway status badges, compact `EN / 中文` switcher, and an IDE-style bottom status bar.
+- **10 Integrated Workspaces**:
   1. **Capture (`⌘1`)**: Live 4-KPI telemetry strip (`req/s` + bandwidth, total flows/bytes, active hosts + avg/P95 latency, error rate + TLS alerts), guided 4-step Android setup (`ADB Device` → `CA Certificate` → `Cap Companion Guard` → `Proxy Route`), domain scope filters, Frida server quick controls (Start/Stop/ABI/version + jump to Frida Studio), and a tabbed Activity Log / Active Hosts / TLS Alerts console.
-  2. **Flows (`⌘2`)**: Multi-facet filter toolbar (`/` focus, host suggestions, method/status/content-type pills, Flat vs API Groups), horizontal/vertical draggable `SplitPane`, keyboard navigation (`↑/↓`/`j/k`, `Esc`), tabbed inspector (`Params`, `Req/Resp Headers`, `Req/Resp Body` with JSON / XML / Protobuf / Hex + inline search, `Raw`, `Timing`, `Export` to cURL/Python/Go/Java/JS/Agent JSONL), Replay & Modify-Replay, Side-by-Side Flow Diff, Sign Analysis, HAR/Charles Import, native loopback **MJPEG Device Monitor** (`Fast` / `scrcpy`, live FPS & drag-swipe), and an inline **Plugins** mode (`PluginWorkbench`) for uninterrupted single-page Flow ↔ Plugin debugging.
+  2. **Flows (`⌘2`)**: Multi-facet filter toolbar (`/` focus, host suggestions, method/status/content-type pills, Flat vs API Groups), horizontal/vertical draggable `SplitPane`, keyboard navigation (`↑/↓`/`j/k`, `Esc`), tabbed inspector (`Params`, `Req/Resp Headers`, `Req/Resp Body` with JSON / XML / Protobuf / Hex + inline search, `Raw`, `Timing`, `Export` to cURL/Python/Go/Java/JS/Agent JSONL), Replay & Modify-Replay, Side-by-Side Flow Diff, Sign Analysis, 1-click **Publish to Gateway** handoff, HAR/Charles Import, native loopback **MJPEG Device Monitor** (`Fast` / `scrcpy`, live FPS & drag-swipe), and an inline **Plugins** mode (`PluginWorkbench`) for uninterrupted single-page Flow ↔ Plugin debugging.
   3. **Rules (`⌘3`)**: Split-pane intercept rules engine + live **Held Breakpoints** queue (Forward Edited / Mock / Drop 403), 6 action types, priority ordering, and regex/substring path validation.
-  4. **DeepTrace (`⌘4`)**: Live 8-stage cancellable trace pipeline with real-time progress events, pure-Go DEX bytecode XRefs, 3-perspective interactive SVG Call Graph, and APK/JADX caching — plus 1-click **Hook in Frida** from the Executive Report, module cards, and Native `.so` findings.
+  4. **DeepTrace (`⌘4`)**: Live 8-stage cancellable trace pipeline with real-time progress events, pure-Go DEX bytecode XRefs, 3-perspective interactive SVG Call Graph, and APK/JADX caching — plus 1-click **Hook in Frida**, **Emulate in RE Lab**, and **Scan Protection** handoffs from the Executive Report, module cards, and Native `.so` findings.
   5. **Frida (`⌘5`)**: Dedicated **Frida Studio** workbench with full `frida-server` lifecycle (ABI auto-detect, GitHub Release auto-download or local `.xz` push, stealth binary rename, custom port + `adb forward`, host vs device version-match diagnostics), zero-CGO Python Frida Bridge (with automatic `frida-cli` fallback), searchable process/app picker, `Spawn (-f)` / `Attach`, **live script hot-reload (`⌘R`)** without restarting the app, structured `send()` JSON event cards & JSONL export, 7 built-in RE templates + `~/.cap/frida-scripts/` disk hot-reload, CodeShare & app fingerprint browser, and **From Trace** auto-hook generator.
-  6. **Plugins (`⌘6`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
-  7. **Terminal (`⌘7`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
-  8. **Settings (`⌘8`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android / Frida Runtime Paths & Capture, Export & Storage, Shortcuts, and About & Diagnostics.
+  6. **RE Lab (`⌘6`)**: Unified 4-tab Native Reverse Engineering workbench combining **Native / radare2** static & pseudo-C inspection (with pure-Go ELF fallback), **Unidbg · Qiling · angr** emulation & symbolic execution with live job streaming (`~/.cap/re-projects/*.json`), **Deobf · Anti-Debug · VMP** protection scanner & script generator (1-click handoff to Frida or Emulation), and **ExecTrace · Taint** dynamic trace analyzer with forward/backward taint slicing, crypto detection, ASLR-normalized trace diff, and Tenet/JSONL/Markdown export.
+  7. **Plugins (`⌘7`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
+  8. **Service Gateway (`⌘8`)**: Embedded Open API HTTP Gateway (`:9090`) turning reverse-engineered mobile endpoints into production-ready REST APIs — featuring 1-click Flow-to-Service route publishing, live Route Tester, API Key auth & per-route rate limiting, OpenAPI 3.0.3 export, **Proxy IP Pool** (HTTP/HTTPS/SOCKS5, dynamic provider fetch, health checks, rotation/sticky-device), **Device Pool** (virtual fingerprint presets + ADB sync), **Pluggable Signer Providers** (Built-in HMAC, Script, HTTP, Unidbg HTTP, Frida RPC), and real-time Invocation Logs.
+  9. **Terminal (`⌘9`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
+  10. **Settings (`⌘,`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android / Frida Runtime Paths, RE Toolchain (`r2`, `java`, `mvn`, `unidbg`, `python3`, `qiling rootfs`) & Default Gateway Address, Export & Storage, Shortcuts, and About & Diagnostics.
 
 ### Full-Screen Interactive TUI (`cap tui` & `cap start --tui`)
 
@@ -304,6 +330,73 @@ cap frida run --pkg com.example.app --spawn \
 - **Embedded Python Frida Bridge + CLI Fallback**: Auto-discovers working Python 3 / venv / conda / pipx runtimes (configurable in Frida Studio or Settings) for structured `send()` JSON cards, binary hex previews, Spawn pause/resume, and **live hot-reload (`⌘R`)** without restarting the target app — gracefully falling back to `frida` CLI when needed.
 - **Built-in Script Library & CodeShare**: Ships 7 curated scripts (14+ Universal SSL Unpin, Anti-Root & Anti-Frida Stealth, OkHttp3/URLConnection Tracer, Crypto/Sign Tracer for MD5/SHA/HMAC/AES, JNI `RegisterNatives` & `dlopen` Tracer, SharedPreferences/SQLite Watcher, Dynamic Class Explorer), persistent custom scripts (`~/.cap/frida-scripts/*.json` with disk hot-reload), and integrated CodeShare search + app fingerprinting.
 - **DeepTrace → Frida Closed Loop**: Generate runnable Java, DEX XRef, and delayed `dlopen` Native `.so` hooks directly from any DeepTrace report, module card, or native export in one click.
+
+### RE Lab — Native Binary Analysis & Algorithm Emulation (`cap re` & GUI `⌘6`)
+
+Full native `.so`/ELF/Mach-O reverse-engineering and algorithm emulation pipeline without leaving `cap`:
+
+```bash
+cap re status                                              # Probe radare2, JDK/Maven/Unidbg, Python/Qiling/angr
+cap re analyze ./libsign.so --func Java_com_app_sign       # Static ELF/r2 analysis + disassembly/pseudo-C/xrefs
+cap re r2 ./libsign.so "iI;iEj"                            # Sanitized read-only radare2 command execution
+cap re gen -e unidbg --apk app.apk --so libsign.so \
+  --class com/app/Signer --method sign --http-server       # Synthesize Unidbg harness (with optional HTTP signer mode)
+```
+
+- **radare2 + Pure-Go ELF Fallback**: Extracts architecture, mitigations (`PIE`, `NX`, `Canary`, `RELRO`), functions, dynamic exports/imports, strings, xrefs, disassembly, and pseudo-C (`pdg`/`pdc`), falling back seamlessly to a pure-Go `debug/elf` analyzer when `r2` is absent.
+- **Unidbg · Qiling · angr Emulation & Symbolic Execution**: Ships curated starter templates and parameterized harness generators for Android JNI `.so` emulation (Unidbg, including embedded HTTP signer server mode), ARM64/ARM Linux/Android emulation (Qiling with RootFS & syscall hooks), and symbolic constraint solving (angr with `claripy` concrete solution extraction).
+- **DeepTrace → RE Lab Closed Loop**: Click **Emulate in RE Lab** from any DeepTrace report or Native `.so` finding to synthesize a tailored Unidbg/Qiling/angr harness pre-filled with APK, `.so`, JNI symbols, and captured request inputs, with live cancellable job streaming and `~/.cap/re-projects/*.json` persistence.
+
+### Anti-Obfuscation, Anti-Debug & VMP Analysis (`cap deobf` & GUI `⌘6`)
+
+Automated mobile hardening audit and composable bypass/deobfuscation script generation:
+
+```bash
+cap deobf scan ./target.apk                                # Audit 13 packers, OLLVM, VMP & ARM64 inline SVC #0
+cap deobf stealth --scan ./target.apk --pkg com.app -o stealth.js
+cap deobf unpack --pkg com.app -o unpack.js                # In-memory Frida DEX unpacker
+cap deobf ollvm --so ./libsec.so --addr 0x1a400            # angr OLLVM CFF de-flattening & binary patcher
+cap deobf vmp --mode stalker --so libvmp.so --entry JNI_OnLoad
+cap deobf vmp-trace ./vmp.log --base 0x7000000000          # Identify VMP dispatchers, handlers & external calls
+```
+
+- **Protection & Hardening Scanner**: Pure-Go APK/ELF scanner detecting **13 commercial packers** (Qihoo 360, Tencent Legu, Bangcle, Ijiami, Baidu, Ali, Dingxiang, Najia, SecNeo, Virbox, Jiagu, Naga, etc.), **OLLVM** Control-Flow Flattening / Bogus Control Flow / Instruction Substitution, **VMP** interpreters, anti-debug symbols, and raw **ARM64 inline `SVC #0`** syscalls.
+- **Composable Stealth & Unpacking Generators**: Auto-tailors Frida Anti-Debug / Anti-Frida stealth scripts (`TracerPid` / `/proc/self/maps`, `ptrace` / signal traps, inline ARM64 `SVC` patching with dry-run mode, timing / `inotify`, Java debug checks), in-memory DEX unpackers, OLLVM CFF de-flattening (`angr`), string decryption (Qiling / Unidbg), and Java deobfuscation scripts — with 1-click handoff to Frida Studio or RE Lab Emulation.
+- **VMP Tracing & Analysis**: Generates Frida Stalker, `RegisterNatives`, and Unidbg VMP collectors, and analyzes captured VMP instruction traces to recover dispatcher PCs, handler tables, hot blocks, and external API calls.
+
+### Execution Trace & Taint Analysis (`cap exectrace` & GUI `⌘6`)
+
+Multi-engine dynamic instruction trace inspection, taint slicing, and differential analysis:
+
+```bash
+cap exectrace import ./sign.trace --format auto --base 0x7000000000
+cap exectrace taint --session <id> --direction backward --seq 4200 --reg x0
+cap exectrace diff <sessionA> <sessionB> --max-divergences 25
+cap exectrace collect --kind stalker --module libsign.so --symbol Java_com_app_sign
+cap exectrace export <sessionID> -f tenet -o trace.tenet.txt
+```
+
+- **Multi-Format Parser**: Auto-detects and normalizes traces from **Unidbg**, **Frida Stalker**, **Qiling**, **Java/JNI calls**, **JSONL**, and **Tenet**.
+- **Forward & Backward Register + Memory Taint**: Tracks register and concrete memory propagation (ARM64 shifted/extended addressing, x86 scaled indexing, constant kills, and per-thread hot loops) to slice from output signatures back to key inputs or vice versa.
+- **Crypto Detection, ASLR Diff & Export**: Automatically detects standard crypto constants (AES S-Box, MD5/SHA/CRC32/ChaCha/SM4/RC4), hot loops, and call trees; computes ASLR-normalized trace diffs across runs; generates ready-to-run Stalker / Java / Unidbg / Qiling collectors; and exports to **Tenet**, **JSONL**, or **Markdown**.
+
+### Service Gateway & Integration Hub (`cap gateway` & GUI `⌘8`)
+
+Turn reverse-engineered mobile APIs into reliable, authenticated HTTP endpoints backed by proxy, device, and signer pools:
+
+```bash
+cap gateway publish --flow f1 --slug search-feed           # Publish a captured flow as an Open API route
+cap gateway proxies --add socks5://user:pass@1.2.3.4:1080 --check
+cap gateway devices --from-preset pixel8-android14         # Create virtual fingerprint (or --sync-adb)
+cap gateway signers --test <signerID> --url https://api.example.com/v1/feed
+cap gateway start -a 127.0.0.1:9090 --require-auth --api-key sk-live-demo
+cap gateway openapi -o openapi.json                        # Export OpenAPI 3.0.3 spec
+```
+
+- **Open API HTTP Gateway (`:9090`)**: Publishes captured flows into reusable `POST /api/<slug>` routes with template substitution (`{{input.*}}`, `{{device.*}}`, `{{timestamp}}`, `{{nonce}}`), API Key auth (`X-API-Key` / `Bearer`), per-route rate limiting, retries/failover, raw passthrough mode, live Route Tester, real-time invocation telemetry, and **OpenAPI 3.0.3** spec export.
+- **Proxy IP Pool**: Manages `HTTP` / `HTTPS` / `SOCKS5` nodes with bulk import, dynamic provider fetch (`lines` or `json` path extraction), concurrent health/latency probing, and `round_robin`, `random`, `least_latency`, or `sticky_device` rotation policies.
+- **Device Pool & Virtual Fingerprints**: Ships realistic Android fingerprint presets (UA, OAID, Android ID, build props, screen metrics, cookies/tokens) alongside 1-click **ADB physical device sync**.
+- **Pluggable Signer Providers**: Computes fresh request signatures per invocation via **Built-in HMAC/Hash** (MD5/SHA/HMAC), **Local Script** (`python3`/`node`/`sh`), **External HTTP**, **Unidbg HTTP Signer**, or **Frida RPC** (`rpc.exports`).
 
 ### SSL Unpinning
 
@@ -435,6 +528,31 @@ ANDROID_HOME=~/Library/Android/sdk ./android-companion/build.sh
 | `cap unpin magisk` | Deploy system-wide Magisk CA cert promotion module |
 | `cap unpin codeshare [--pkg <pkg>\|--query <q>]` | Fingerprint APK & search Frida CodeShare scripts |
 | `cap unpin script` | Print raw Frida unpinning script to stdout |
+| `cap re status [--r2\|--java\|--unidbg-dir\|--python\|--rootfs] [--json]` | Probe host RE toolchain (`r2`, JDK/Maven/Unidbg, Python/Qiling/angr) |
+| `cap re analyze <file> [--func <name\|addr>] [--json]` | Static ELF/Mach-O analysis & function disassembly/pseudo-C/xrefs |
+| `cap re r2 <file> <cmd> [--json]` | Run a sanitized read-only radare2 command on a binary |
+| `cap re projects [-e engine] [--show <id>] [--json]` | List built-in & saved RE projects or print harness source |
+| `cap re gen -e <unidbg\|qiling\|angr\|radare2> [--apk\|--so\|--http-server]` | Synthesize an emulation, symbolic execution, or r2 harness |
+| `cap deobf scan <apk\|so> [--json]` | Audit APK/ELF for 13 packers, OLLVM, VMP, anti-debug & inline `SVC #0` |
+| `cap deobf stealth [--scan <path>] [--pkg <pkg>] [--patch-svc] [-o file]` | Generate composable Frida Anti-Debug / Anti-Frida stealth script |
+| `cap deobf unpack [--pkg <pkg>] [-o file]` | Generate Frida in-memory DEX unpacker script |
+| `cap deobf ollvm --so <path> --addr <hex> [--arch arm64] [-o file]` | Generate angr OLLVM CFF de-flattening & patching script |
+| `cap deobf vmp [--mode stalker\|jni\|unidbg] [--so <lib>] [-o file]` | Generate VMP tracing collector (Stalker, `RegisterNatives`, Unidbg) |
+| `cap deobf vmp-trace <file> [--base <hex>] [--json]` | Analyze raw VMP trace for dispatchers, handlers & external calls |
+| `cap exectrace import <file> [--format auto\|unidbg\|stalker\|qiling\|tenet]` | Import & analyze dynamic execution trace (crypto, loops, call tree) |
+| `cap exectrace list [--show <id>\|--delete <id>] [--json]` | List, inspect, or delete stored execution trace sessions |
+| `cap exectrace taint --session <id> --direction <forward\|backward> --seq <n>` | Run forward/backward register & memory taint analysis |
+| `cap exectrace diff <sessionA> <sessionB> [--max-divergences 25]` | Compute ASLR-normalized differential comparison between two traces |
+| `cap exectrace collect --kind <stalker\|java_call\|unidbg\|qiling> [-o file]` | Generate ready-to-run execution trace collector script |
+| `cap exectrace export <sessionID> [-f tenet\|jsonl\|markdown] [-o file]` | Export trace session to Tenet, JSONL, or Markdown |
+| `cap gateway start [-a 127.0.0.1:9090] [--require-auth] [--api-key <k>]` | Start embedded Open API HTTP Service Gateway |
+| `cap gateway status [--json]` | Inspect gateway listener status, routes & pool counts |
+| `cap gateway publish --flow <id> [--slug <slug>] [--name <name>]` | Publish a captured flow as an Open API Gateway route |
+| `cap gateway routes [--test <slug> --input k=v] [--delete <id>] [--json]` | List, test-invoke, or delete published service routes |
+| `cap gateway proxies [--add <url>\|--import <file>\|--fetch <url>\|--check]` | Manage Proxy IP Pool (HTTP/HTTPS/SOCKS5, dynamic fetch, health check) |
+| `cap gateway devices [--presets\|--from-preset <id>\|--sync-adb]` | Manage virtual Android device fingerprints & ADB device sync |
+| `cap gateway signers [--test <id> --url <url>] [--delete <id>] [--json]` | List, test, or delete pluggable Signer Providers |
+| `cap gateway openapi [-o openapi.json]` | Export OpenAPI 3.0.3 JSON specification for enabled routes |
 
 **Global Flag**: `--lang en|zh` (auto-detected from `CAP_LANG` > `LC_ALL` > `LC_MESSAGES` > `LANG`).
 
@@ -448,18 +566,21 @@ cmd/cap/                Main entrypoint & embedded frontend/dist assets
 frontend/
 ├── src/App.svelte      Workbench shell (collapsible nav rail, topbar, status bar, ⌘K)
 ├── src/components/     Icon, Badge, Button, SplitPane, CommandPalette, ToastHost, Kbd, EmptyState
-├── src/lib/            tokens.css, theme.js (4 themes), i18n.js, fridaState.js, locales/{common,core,frida,tools}.js
-└── src/pages/          Capture, Flows, Rules, DeepTrace, Frida, Plugins, Terminal, Settings
+├── src/lib/            tokens.css, theme.js (4 themes), i18n.js, {frida,reLab,gateway}State.js, locales/{common,core,frida,reLab,gateway,tools}.js
+└── src/pages/          Capture, Flows, Rules, DeepTrace, Frida, RELab, Plugins, Gateway, Terminal, Settings
 internal/
 ├── android/            ADB helpers, 3-strategy cert install/verify, companion.go, bin/cap-companion.apk
 ├── buildinfo/          Version injection metadata
 ├── capture/            WebSocket frame parser, SSE stream parser (experimental)
-├── cli/                Cobra commands (start, tui, gui, flows, export, android, frida, unpin)
+├── cli/                Cobra commands (start, tui, gui, flows, export, android, frida, unpin, re, deobf, exectrace, gateway)
 ├── compare/            Side-by-side flow comparison with structured diff
 ├── config/             Shared path defaults (~/.cap)
 ├── context/            jadx scanner, Retrofit/OkHttp parser, URL-to-source mapper
+├── deobf/              APK/ELF protection scanner (13 packers, OLLVM, VMP, inline SVC), stealth/unpack/deobf generators & VMP analyzer
+├── exectrace/          Multi-format execution trace parser, forward/backward taint slicer, crypto/loop detector, ASLR diff & Tenet export
 ├── export/             codegen/ (5 languages) & agent/ (compact JSONL)
 ├── frida/              Frida toolchain probe, server deploy/lifecycle, Python Bridge, script store & Trace→Hook codegen
+├── gateway/            Open API HTTP gateway, Proxy IP Pool, Device Fingerprint Pool, Pluggable Signer Providers & OpenAPI 3.0.3
 ├── grouping/           API auto-grouping by host + path prefix
 ├── i18n/               Zero-dependency EN / zh-CN localization catalog for TUI & CLI
 ├── importer/           HAR and Charles proxy XML import
@@ -467,6 +588,7 @@ internal/
 ├── proto/              Schema-less protobuf wire format decoder (experimental)
 ├── proxy/              goproxy MITM core, ECDSA CA cert gen, stream capture
 ├── replay/             HTTP replay, request modification, response diff
+├── retools/            Native RE & emulation engine (radare2 + pure-Go ELF, Unidbg, Qiling, angr, DeepTrace harness codegen & job runner)
 ├── rules/              Intercept rules, mocks, and held breakpoints persistence & engine
 ├── screen/             Android device screen mirror (screencap + scrcpy)
 ├── sequence/           Request sequence record/replay with variable propagation

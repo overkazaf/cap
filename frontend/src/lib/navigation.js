@@ -62,6 +62,18 @@ export const PAGES = [
     shortcut: '5',
   },
   {
+    id: 'relab',
+    label: 'RE Lab',
+    title: 'Reverse Engineering Lab',
+    subtitle: 'radare2, Unidbg/Qiling/angr emulation, Deobf/VMP & ExecTrace taint',
+    labelKey: 'common.nav.pages.relab.label',
+    titleKey: 'common.nav.pages.relab.title',
+    subtitleKey: 'common.nav.pages.relab.subtitle',
+    icon: 'cpu',
+    group: 'inspect',
+    shortcut: '6',
+  },
+  {
     id: 'plugins',
     label: 'Plugins',
     title: 'Analyzer Plugins',
@@ -71,7 +83,19 @@ export const PAGES = [
     subtitleKey: 'common.nav.pages.plugins.subtitle',
     icon: 'puzzle',
     group: 'inspect',
-    shortcut: '6',
+    shortcut: '7',
+  },
+  {
+    id: 'gateway',
+    label: 'Gateway',
+    title: 'Service Gateway',
+    subtitle: 'Open API HTTP gateway, proxy IP pool, device fingerprints & signers',
+    labelKey: 'common.nav.pages.gateway.label',
+    titleKey: 'common.nav.pages.gateway.title',
+    subtitleKey: 'common.nav.pages.gateway.subtitle',
+    icon: 'globe',
+    group: 'service',
+    shortcut: '8',
   },
   {
     id: 'terminal',
@@ -83,7 +107,7 @@ export const PAGES = [
     subtitleKey: 'common.nav.pages.terminal.subtitle',
     icon: 'terminal',
     group: 'tools',
-    shortcut: '7',
+    shortcut: '9',
   },
   {
     id: 'settings',
@@ -95,13 +119,14 @@ export const PAGES = [
     subtitleKey: 'common.nav.pages.settings.subtitle',
     icon: 'settings',
     group: 'tools',
-    shortcut: '8',
+    shortcut: ',',
   },
 ]
 
 export const PAGE_GROUPS = [
   { id: 'traffic', label: 'Traffic', labelKey: 'common.nav.groups.traffic' },
   { id: 'inspect', label: 'Analysis', labelKey: 'common.nav.groups.inspect' },
+  { id: 'service', label: 'Services', labelKey: 'common.nav.groups.service' },
   { id: 'tools', label: 'System', labelKey: 'common.nav.groups.tools' },
 ]
 

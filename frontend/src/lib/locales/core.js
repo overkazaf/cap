@@ -353,6 +353,7 @@ registerMessages('core', {
       modifyBtn: 'Modify',
       signBtn: 'Sign',
       codeBtn: 'Code',
+      publishGatewayBtn: 'Publish to Gateway',
 
       replayDrawerTitle: 'Modify & Replay Request',
       closeEditorTitle: 'Close editor',
@@ -451,6 +452,7 @@ registerMessages('core', {
         copyCurl: 'Copy as cURL',
         replay: 'Replay Request',
         debugInPlugins: 'Debug in Plugin Workbench',
+        publishGateway: 'Publish to Service Gateway',
         pinCompare: 'Set as Compare Baseline',
         compareVs: 'Compare vs #{id}',
         addBreakpoint: 'Add Breakpoint Rule',
@@ -856,6 +858,7 @@ registerMessages('core', {
       modifyBtn: '编辑重放',
       signBtn: '签名分析',
       codeBtn: '导出代码',
+      publishGatewayBtn: '发布到网关',
 
       replayDrawerTitle: '编辑并重放请求',
       closeEditorTitle: '关闭编辑器',
@@ -954,6 +957,7 @@ registerMessages('core', {
         copyCurl: '复制为 cURL',
         replay: '重放该请求',
         debugInPlugins: '在插件工作台调试',
+        publishGateway: '发布到服务网关',
         pinCompare: '设为对比基准',
         compareVs: '与 #{id} 对比',
         addBreakpoint: '添加断点拦截规则',

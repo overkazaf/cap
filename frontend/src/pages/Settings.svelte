@@ -25,6 +25,13 @@
     frida_python_path: '',
     frida_cli_path: '',
     frida_default_port: '27042',
+    re_r2_path: '',
+    re_java_path: '',
+    re_mvn_path: '',
+    re_unidbg_dir: '',
+    re_python_path: '',
+    re_qiling_rootfs: '',
+    gateway_addr: '127.0.0.1:9090',
   }
 
   let version = 'v0.2.0'
@@ -42,6 +49,7 @@
     { id: 'appearance', icon: 'palette' },
     { id: 'proxy', icon: 'shield' },
     { id: 'android', icon: 'smartphone' },
+    { id: 'relab_gateway', icon: 'cpu' },
     { id: 'storage', icon: 'database' },
     { id: 'shortcuts', icon: 'command' },
     { id: 'about', icon: 'info' },
@@ -71,15 +79,18 @@
         { label: $t('tools.settings.shortcuts.items.rules'), keys: ['Mod', '3'] },
         { label: $t('tools.settings.shortcuts.items.trace'), keys: ['Mod', '4'] },
         { label: $t('tools.settings.shortcuts.items.frida'), keys: ['Mod', '5'] },
-        { label: $t('tools.settings.shortcuts.items.plugins'), keys: ['Mod', '6'] },
-        { label: $t('tools.settings.shortcuts.items.terminal'), keys: ['Mod', '7'] },
-        { label: $t('tools.settings.shortcuts.items.settings'), keys: ['Mod', '8'] },
+        { label: $t('tools.settings.shortcuts.items.relab'), keys: ['Mod', '6'] },
+        { label: $t('tools.settings.shortcuts.items.plugins'), keys: ['Mod', '7'] },
+        { label: $t('tools.settings.shortcuts.items.gateway'), keys: ['Mod', '8'] },
+        { label: $t('tools.settings.shortcuts.items.terminal'), keys: ['Mod', '9'] },
+        { label: $t('tools.settings.shortcuts.items.settings'), keys: ['Mod', ','] },
       ],
     },
     {
       title: $t('tools.settings.shortcuts.groupTools'),
       items: [
         { label: $t('tools.settings.shortcuts.items.savePlugin'), keys: ['Mod', 'S'] },
+        { label: $t('tools.settings.shortcuts.items.runDraftOrJob'), keys: ['Mod', '↵'] },
         { label: $t('tools.settings.shortcuts.items.hotReloadFrida'), keys: ['Mod', 'R'] },
         { label: $t('tools.settings.shortcuts.items.newTermTab'), keys: ['Mod', 'T'] },
         { label: $t('tools.settings.shortcuts.items.closeTermTab'), keys: ['Mod', 'W'] },
@@ -206,6 +217,7 @@
       `Theme: ${settings.theme}`,
       `Font size: ${settings.font_size}px`,
       `Proxy default: ${settings.proxy_addr} (port ${settings.proxy_port})`,
+      `Gateway default: ${settings.gateway_addr}`,
       `Proxy state: ${proxyRunning ? `running (${proxyAddr})` : 'idle'}`,
       `Captured flows: ${flowCount}`,
       `TLS errors: ${tlsErrors.length}`,
@@ -557,6 +569,140 @@
               bind:value={settings.frida_default_port}
               placeholder="27042"
               on:change={() => setSetting('frida_default_port', settings.frida_default_port)}
+            />
+          </div>
+        </div>
+
+      {:else if activeSection === 'relab_gateway'}
+        <header class="panel-head">
+          <h2>{$t('tools.settings.relabGateway.title')}</h2>
+          <p>{$t('tools.settings.relabGateway.subtitle')}</p>
+        </header>
+
+        <div class="pref-card cap-card">
+          <div class="pref-card-head">
+            <div>
+              <div class="pref-title">{$t('tools.settings.relabGateway.reTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.reDesc')}</div>
+            </div>
+            <Badge variant="accent" size="xs" mono>RE Lab</Badge>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.r2Title')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.r2Desc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_r2_path}
+              placeholder="auto"
+              on:change={() => setSetting('re_r2_path', settings.re_r2_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.javaTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.javaDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_java_path}
+              placeholder="auto"
+              on:change={() => setSetting('re_java_path', settings.re_java_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.mvnTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.mvnDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_mvn_path}
+              placeholder="auto"
+              on:change={() => setSetting('re_mvn_path', settings.re_mvn_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.unidbgTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.unidbgDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_unidbg_dir}
+              placeholder="/path/to/unidbg"
+              on:change={() => setSetting('re_unidbg_dir', settings.re_unidbg_dir)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.pythonTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.pythonDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_python_path}
+              placeholder="auto"
+              on:change={() => setSetting('re_python_path', settings.re_python_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.qilingTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.qilingDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_qiling_rootfs}
+              placeholder="/path/to/qiling/rootfs/arm64_linux"
+              on:change={() => setSetting('re_qiling_rootfs', settings.re_qiling_rootfs)}
+            />
+          </div>
+        </div>
+
+        <div class="pref-card cap-card">
+          <div class="pref-card-head">
+            <div>
+              <div class="pref-title">{$t('tools.settings.relabGateway.gwTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.gwDesc')}</div>
+            </div>
+            <Badge variant="accent" size="xs" mono>Gateway</Badge>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.gwAddrTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.gwAddrDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.gateway_addr}
+              placeholder="127.0.0.1:9090"
+              on:change={() => setSetting('gateway_addr', settings.gateway_addr, translate('tools.settings.toast.gatewayAddrUpdated'))}
             />
           </div>
         </div>

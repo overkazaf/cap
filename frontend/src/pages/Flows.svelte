@@ -6,6 +6,7 @@
   import { formatBytes, formatDuration, copyToClipboard } from '../lib/format.js'
   import { isEditableTarget } from '../lib/shortcuts.js'
   import { navigate } from '../lib/navigation.js'
+  import { openGatewayPublishFlow } from '../lib/gatewayState.js'
   import { toast } from '../lib/toast.js'
   import { registerCommands } from '../lib/commandPalette.js'
 
@@ -2290,6 +2291,9 @@
                   <Button variant="subtle" size="xs" icon="key" loading={signLoading} on:click={analyzeSign}>
                     {$t('core.flows.signBtn')}
                   </Button>
+                  <Button variant="subtle" size="xs" icon="globe" on:click={() => openGatewayPublishFlow(selectedFlow)}>
+                    {$t('core.flows.publishGatewayBtn')}
+                  </Button>
                   <Button variant="ghost" size="xs" icon="code" active={activeTab === 'export'} on:click={() => switchTab('export')}>
                     {$t('core.flows.codeBtn')}
                   </Button>
@@ -2757,6 +2761,9 @@
     </button>
     <button class="ctx-item" type="button" on:click={() => { const f = ctxMenu.flow; hideContextMenu(); selectFlow(f, { openPlugins: true }) }}>
       <Icon name="puzzle" size={13} /> <span>{$t('core.flows.ctx.debugInPlugins')}</span>
+    </button>
+    <button class="ctx-item" type="button" on:click={() => { const f = ctxMenu.flow; hideContextMenu(); openGatewayPublishFlow(f) }}>
+      <Icon name="globe" size={13} /> <span>{$t('core.flows.ctx.publishGateway')}</span>
     </button>
 
     <div class="ctx-sep"></div>

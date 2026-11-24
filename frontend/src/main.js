@@ -1,5 +1,7 @@
 import './lib/tokens.css'
 import './lib/locales/common.js'
+import './lib/locales/reLab.js'
+import './lib/locales/gateway.js'
 import { applyTheme } from './lib/theme.js'
 import App from './App.svelte'
 

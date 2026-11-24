@@ -29,6 +29,8 @@
   import Rules from './pages/Rules.svelte'
   import DeepTrace from './pages/DeepTrace.svelte'
   import Frida from './pages/Frida.svelte'
+  import RELab from './pages/RELab.svelte'
+  import Gateway from './pages/Gateway.svelte'
   import Settings from './pages/Settings.svelte'
 
   const SIDEBAR_KEY = 'cap.ui.sidebarExpanded'
@@ -48,6 +50,10 @@
   let activeRuleCount = 0
   let deviceCount = 0
   let fridaRunning = false
+  let reJobRunning = false
+  let reJobEngine = ''
+  let gatewayRunning = false
+  let gatewayAddr = ''
 
   let pollTimer = null
   let unsubs = []
@@ -117,14 +123,24 @@
         rate = { req_per_sec: 0, byte_per_sec: 0, total_reqs: rate.total_reqs || 0, total_bytes: rate.total_bytes || 0 }
       }
 
-      const [stats, rulesList, bps, fridaSess] = await Promise.all([
+      const [stats, rulesList, bps, fridaSess, reJob, gwStats] = await Promise.all([
         api.GetTrafficStats?.().catch(() => null),
         api.ListRules?.().catch(() => []),
         api.GetPendingBreakpoints?.().catch(() => []),
         api.GetFridaSessionState?.().catch(() => null),
+        api.GetREJobState?.().catch(() => null),
+        api.GetGatewayStatus?.().catch(() => null),
       ])
       if (fridaSess && typeof fridaSess.running === 'boolean') {
         fridaRunning = fridaSess.running
+      }
+      if (reJob) {
+        reJobRunning = Boolean(reJob.running || reJob.status === 'running')
+        reJobEngine = reJob.engine || ''
+      }
+      if (gwStats && typeof gwStats.running === 'boolean') {
+        gatewayRunning = gwStats.running
+        gatewayAddr = gwStats.listen_addr || ''
       }
       if (stats && typeof stats.total_flows === 'number') {
         flowCount = stats.total_flows
@@ -222,7 +238,7 @@
         toggleSidebar()
         return
       }
-      if (!e.shiftKey && !e.altKey && key >= '1' && key <= '8') {
+      if (!e.shiftKey && !e.altKey && ((key >= '1' && key <= '9') || key === ',')) {
         const target = PAGES.find((p) => p.shortcut === key)
         if (target) {
           e.preventDefault()
@@ -266,6 +282,18 @@
     on('frida:status', (st) => {
       if (st && typeof st.running === 'boolean') {
         fridaRunning = st.running
+      }
+    })
+    on('re:status', (st) => {
+      if (st) {
+        reJobRunning = Boolean(st.running || st.status === 'running')
+        reJobEngine = st.engine || ''
+      }
+    })
+    on('gateway:status', (st) => {
+      if (st && typeof st.running === 'boolean') {
+        gatewayRunning = st.running
+        gatewayAddr = st.listen_addr || ''
       }
     })
   }
@@ -473,6 +501,12 @@
               {#if page.id === 'frida' && fridaRunning && !sidebarExpanded}
                 <span class="nav-dot"></span>
               {/if}
+              {#if page.id === 'relab' && reJobRunning && !sidebarExpanded}
+                <span class="nav-dot"></span>
+              {/if}
+              {#if page.id === 'gateway' && gatewayRunning && !sidebarExpanded}
+                <span class="nav-dot"></span>
+              {/if}
             </span>
 
             {#if sidebarExpanded}
@@ -484,6 +518,10 @@
                   </span>
                 {:else if page.id === 'frida' && fridaRunning}
                   <span class="pill-live">{$t('common.sidebar.hookBadge')}</span>
+                {:else if page.id === 'relab' && reJobRunning}
+                  <span class="pill-live">{$t('common.sidebar.reJobBadge')}</span>
+                {:else if page.id === 'gateway' && gatewayRunning}
+                  <span class="pill-live">{$t('common.sidebar.gwBadge')}</span>
                 {:else if page.id === 'flows' && flowCount > 0}
                   <span class="pill-count mono tabular-nums">{formatCount(flowCount)}</span>
                 {:else if page.id === 'rules' && pendingBreakpoints > 0}
@@ -637,8 +675,12 @@
         <DeepTrace />
       {:else if $currentPage === 'frida'}
         <Frida />
+      {:else if $currentPage === 'relab'}
+        <RELab />
       {:else if $currentPage === 'plugins'}
         <Plugins />
+      {:else if $currentPage === 'gateway'}
+        <Gateway />
       {:else if $currentPage === 'terminal'}
         <Terminal />
       {:else if $currentPage === 'settings'}
@@ -711,6 +753,30 @@
                 ? $t('common.statusbar.breakpointsOne')
                 : $t('common.statusbar.breakpointsMany', { count: pendingBreakpoints })}
             </span>
+          </button>
+        {/if}
+
+        {#if gatewayRunning}
+          <span class="status-sep"></span>
+          <button
+            class="status-item status-live mono tabular-nums"
+            on:click={() => navigate('gateway')}
+            title={$t('common.statusbar.gatewayStatusTooltip')}
+          >
+            <span class="status-dot"></span>
+            <span>{$t('common.statusbar.gatewayLive', { addr: gatewayAddr || '127.0.0.1:9090' })}</span>
+          </button>
+        {/if}
+
+        {#if reJobRunning}
+          <span class="status-sep"></span>
+          <button
+            class="status-item status-live mono"
+            on:click={() => navigate('relab')}
+            title={$t('common.statusbar.reJobTooltip')}
+          >
+            <Icon name="cpu" size={11} />
+            <span>{$t('common.statusbar.reJobRunning', { engine: reJobEngine || 'job' })}</span>
           </button>
         {/if}
       </div>

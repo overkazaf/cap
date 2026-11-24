@@ -9,6 +9,7 @@
   import TraceGraph from '../components/TraceGraph.svelte'
   import { toast } from '../lib/toast.js'
   import { openFridaStudio } from '../lib/fridaState.js'
+  import { openRELab } from '../lib/reLabState.js'
   import { copyToClipboard, formatBytes, formatDuration } from '../lib/format.js'
 
   const api = () => window?.go?.wailsgui?.App
@@ -705,6 +706,54 @@
     } catch (e) {
       toast.error(translate('tools.deepTrace.toast.fridaHookFailed', { error: e?.message || e }))
     }
+  }
+
+  async function emulateTraceInRELab(nativeRef = null) {
+    const app = api()
+    const resolvedApk = String(result?.apk_path || apkPath || '').trim()
+    const resolvedSo = String(nativeRef?.so_file || result?.native_trace?.[0]?.so_file || '').trim()
+    const opts = {
+      package_name: result?.package || packageName.trim(),
+      apk_path: resolvedApk,
+      binary_path: resolvedSo,
+      so_file: resolvedSo,
+      target_symbol: nativeRef?.function || '',
+      target_addr: nativeRef?.address || '',
+    }
+
+    if (app?.GenerateREHarnessFromTrace) {
+      try {
+        const harness = await app.GenerateREHarnessFromTrace('unidbg', opts)
+        openRELab({
+          subTab: 'emulate',
+          apkPath: resolvedApk,
+          binaryPath: harness?.binary_path || resolvedSo,
+          engine: harness?.engine || 'unidbg',
+          generatedHarness: harness,
+        })
+        toast.success(translate('tools.deepTrace.toast.reLabReady', { name: harness?.name || 'Unidbg' }))
+        return
+      } catch (e) {
+        toast.info(translate('tools.deepTrace.toast.reLabFallback', { error: e?.message || e }))
+      }
+    }
+
+    openRELab({
+      subTab: 'emulate',
+      apkPath: resolvedApk,
+      binaryPath: resolvedSo,
+      engine: 'unidbg',
+    })
+  }
+
+  function scanProtectionInRELab(targetPath = '') {
+    const resolvedApk = String(result?.apk_path || apkPath || '').trim()
+    const resolvedTarget = String(targetPath || resolvedApk || result?.native_trace?.[0]?.so_file || '').trim()
+    openRELab({
+      subTab: 'deobf',
+      apkPath: resolvedApk,
+      scanPath: resolvedTarget,
+    })
   }
 
   function toggleParamExpand(key) {
@@ -1449,6 +1498,12 @@
                   <div class="exec-exports">
                     <Button variant="primary" size="xs" icon="zap" on:click={hookTraceInFrida}>
                       {$t('tools.deepTrace.report.hookInFrida')}
+                    </Button>
+                    <Button variant="secondary" size="xs" icon="cpu" on:click={() => emulateTraceInRELab()}>
+                      {$t('tools.deepTrace.report.emulateInRELab')}
+                    </Button>
+                    <Button variant="secondary" size="xs" icon="shield" on:click={() => scanProtectionInRELab()}>
+                      {$t('tools.deepTrace.report.scanProtection')}
                     </Button>
                     <Button variant="secondary" size="xs" icon="copy" on:click={copyMarkdownReport}>
                       {$t('tools.deepTrace.report.copyMarkdown')}
@@ -2218,6 +2273,9 @@
                   <div class="ev-actions">
                     <Button variant="secondary" size="xs" icon="zap" on:click={() => hookNativeRefInFrida(nr)}>
                       {$t('tools.deepTrace.report.hookModule')}
+                    </Button>
+                    <Button variant="secondary" size="xs" icon="cpu" on:click={() => emulateTraceInRELab(nr)}>
+                      {$t('tools.deepTrace.report.emulateNative')}
                     </Button>
                     <Button
                       variant="ghost"

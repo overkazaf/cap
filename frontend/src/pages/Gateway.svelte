@@ -74,6 +74,39 @@ printf '{"sign":"%s"}\n' "$SIG"
 `,
   }
 
+  function buildFridaStarterScript(exportName = 'sign') {
+    const fn = String(exportName || 'sign').trim() || 'sign'
+    const keyExpr = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(fn) ? fn : JSON.stringify(fn)
+    return `'use strict';
+
+rpc.exports = {
+  ${keyExpr}: function (payload) {
+    let result = '';
+    Java.perform(function () {
+      // Example: invoke target app's Java/JNI signing routine
+      // const Signer = Java.use('com.example.app.Signer');
+      // result = Signer.sign(payload.url || '', JSON.stringify(payload.query || {}));
+      result = 'frida-' + String(payload.timestamp || Date.now());
+    });
+    return {
+      sign: result,
+      headers: { 'X-Sign': result }
+    };
+  }
+};
+`
+  }
+
+  function isUnmodifiedStarterScript(code) {
+    const trimmed = String(code || '').trim()
+    if (!trimmed) return true
+    if (Object.values(STARTER_SCRIPTS).some((tpl) => tpl.trim() === trimmed)) return true
+    if (trimmed === buildFridaStarterScript(sFridaExport).trim() || trimmed === buildFridaStarterScript('sign').trim()) {
+      return true
+    }
+    return false
+  }
+
   // ==================== Global Gateway State ====================
   let activeTab = S.activeTab || 'routes'
   let stats = {
@@ -436,10 +469,12 @@ printf '{"sign":"%s"}\n' "$SIG"
   })
 
   $: logErrorCount = logs.filter((l) => !l.ok || Boolean(l.error)).length
+  $: isRunning = Boolean(stats.running)
 
-  // Command Palette integration
+  // Command Palette integration (depends only on isRunning + $t, not live traffic stats)
   $: {
     const _t = $t
+    const running = isRunning
     if (unregisterCmds) {
       unregisterCmds()
       unregisterCmds = null
@@ -448,9 +483,9 @@ printf '{"sign":"%s"}\n' "$SIG"
       unregisterCmds = registerCommands([
         {
           id: 'gateway:toggle',
-          label: `${_t('gateway.topbar.title')}: ${stats.running ? _t('gateway.topbar.stop') : _t('gateway.topbar.start')}`,
+          label: `${_t('gateway.topbar.title')}: ${running ? _t('gateway.topbar.stop') : _t('gateway.topbar.start')}`,
           category: _t('gateway.topbar.title'),
-          icon: stats.running ? 'square' : 'play',
+          icon: running ? 'square' : 'play',
           keywords: 'gateway api server start stop 网关 启动 停止',
           run: toggleGatewayServer,
         },
@@ -804,6 +839,10 @@ printf '{"sign":"%s"}\n' "$SIG"
   // ==================== Sub-tab 1: Service Routes & Live Tester ====================
   function selectRoute(r) {
     if (!r) return
+    const prevId = selectedRoute?.id || S.selectedRouteId
+    if (prevId && prevId !== r.id) {
+      testResult = null
+    }
     selectedRoute = r
     isNewRoute = false
     confirmDeleteRouteId = null
@@ -1089,7 +1128,12 @@ printf '{"sign":"%s"}\n' "$SIG"
       if (testInputJson.trim()) parsedInput = JSON.parse(testInputJson)
     } catch (_) {}
 
-    const urlObj = new URL(`${activeBaseUrl}/gw/${encodeURIComponent(slug)}`)
+    let urlObj
+    try {
+      urlObj = new URL(`${activeBaseUrl}/gw/${encodeURIComponent(slug)}`)
+    } catch (_) {
+      urlObj = new URL(`http://127.0.0.1:9090/gw/${encodeURIComponent(slug)}`)
+    }
     const sendBody = method === 'POST' || method === 'PUT' || method === 'PATCH' || Boolean(testOverrideBody.trim())
     if (!sendBody && parsedInput && typeof parsedInput === 'object') {
       for (const [k, v] of Object.entries(parsedInput)) {
@@ -1526,7 +1570,7 @@ printf '{"sign":"%s"}\n' "$SIG"
     sEnabled = true
     sDescription = ''
     sRuntime = 'python3'
-    sScriptCode = STARTER_SCRIPTS.python3
+    sScriptCode = ''
     sEndpointUrl = 'http://127.0.0.1:8899/sign'
     sHttpMethod = 'POST'
     sTimeoutSec = 10
@@ -1535,10 +1579,26 @@ printf '{"sign":"%s"}\n' "$SIG"
     sHmacSecret = ''
     sFridaSerial = ''
     sFridaPackage = ''
-    sFridaExport = 'signRequest'
+    sFridaExport = 'sign'
     sInjectTarget = 'query'
     sInjectField = 'sign'
     sOutputMapping = []
+  }
+
+  function selectSignerKind(nextKind) {
+    const prevKind = sKind
+    sKind = nextKind
+    if (nextKind === 'script') {
+      if (!sScriptCode.trim() || (prevKind !== 'script' && isUnmodifiedStarterScript(sScriptCode))) {
+        sScriptCode = STARTER_SCRIPTS[sRuntime] || STARTER_SCRIPTS.python3
+        signerEditorRef?.resetHistory?.(sScriptCode)
+      }
+    } else if (nextKind === 'frida_rpc') {
+      if (!sScriptCode.trim() || (prevKind !== 'frida_rpc' && isUnmodifiedStarterScript(sScriptCode))) {
+        sScriptCode = buildFridaStarterScript(sFridaExport)
+        signerEditorRef?.resetHistory?.(sScriptCode)
+      }
+    }
   }
 
   function loadStarterScript() {
@@ -1549,28 +1609,45 @@ printf '{"sign":"%s"}\n' "$SIG"
     }
   }
 
+  function loadFridaStarterScript() {
+    const code = buildFridaStarterScript(sFridaExport)
+    sScriptCode = code
+    if (signerEditorRef?.replaceValue) {
+      signerEditorRef.replaceValue(code, { undoable: true })
+    }
+  }
+
   function buildSignerDraft(forceEnabled = false) {
-    return {
+    const base = {
       id: isNewSigner ? '' : sId,
       name: sName.trim() || 'Unnamed Signer',
       kind: sKind,
       enabled: forceEnabled ? true : sEnabled,
       description: sDescription.trim(),
-      runtime: sRuntime,
-      script_code: sScriptCode,
-      endpoint_url: sEndpointUrl.trim(),
-      http_method: sHttpMethod || 'POST',
       timeout_sec: Math.max(1, Number(sTimeoutSec) || 10),
-      headers: rowsToMap(sHeaders),
-      hmac_algorithm: sHmacAlgo || 'hmac-sha256',
-      hmac_secret: sHmacSecret,
-      frida_serial: sFridaSerial.trim(),
-      frida_package: sFridaPackage.trim(),
-      frida_export: sFridaExport.trim(),
       inject_target: sInjectTarget || 'query',
       inject_field: sInjectField.trim() || (sInjectTarget === 'header' ? 'X-Sign' : 'sign'),
-      output_mapping: rowsToMap(sOutputMapping),
     }
+    if (sKind === 'builtin_hmac') {
+      base.hmac_algorithm = sHmacAlgo || 'hmac-sha256'
+      base.hmac_secret = sHmacSecret
+    } else if (sKind === 'script') {
+      base.runtime = sRuntime || 'python3'
+      base.script_code = sScriptCode
+      base.output_mapping = rowsToMap(sOutputMapping)
+    } else if (sKind === 'http' || sKind === 'unidbg_http') {
+      base.endpoint_url = sEndpointUrl.trim()
+      base.http_method = sHttpMethod || 'POST'
+      base.headers = rowsToMap(sHeaders)
+      base.output_mapping = rowsToMap(sOutputMapping)
+    } else if (sKind === 'frida_rpc') {
+      base.frida_serial = sFridaSerial.trim()
+      base.frida_package = sFridaPackage.trim()
+      base.frida_export = sFridaExport.trim()
+      base.script_code = sScriptCode
+      base.output_mapping = rowsToMap(sOutputMapping)
+    }
+    return base
   }
 
   async function saveCurrentSigner() {
@@ -1719,10 +1796,11 @@ printf '{"sign":"%s"}\n' "$SIG"
   // ==================== Events, Handoff & Shortcuts ====================
   function applyHandoff(h) {
     if (!h) return
+    S.pendingPublishFlow = null
+    gatewayHandoff.set(null)
     if (h.type === 'publish_flow' || h.flowId) {
       activeTab = 'routes'
       openFlowPicker(h)
-      S.pendingPublishFlow = null
     }
   }
 
@@ -1736,27 +1814,32 @@ printf '{"sign":"%s"}\n' "$SIG"
 
     on('gateway:invoke', (rec) => {
       if (!rec) return
-      logs = [rec, ...logs.filter((x) => x.id !== rec.id)].slice(0, 500)
-      const prevTotal = Number(stats.total_requests) || 0
-      const nextTotal = prevTotal + 1
-      const prevAvg = Number(stats.avg_latency_ms) || 0
-      const nextAvg = ((prevAvg * prevTotal) + (Number(rec.latency_ms) || 0)) / nextTotal
-      stats = {
-        ...stats,
-        total_requests: nextTotal,
-        success_requests: (Number(stats.success_requests) || 0) + (rec.ok ? 1 : 0),
-        error_requests: (Number(stats.error_requests) || 0) + (rec.ok ? 0 : 1),
-        avg_latency_ms: nextAvg,
+      const isDup = Boolean(rec.id) && logs.some((x) => x.id === rec.id)
+      const maxLogs = Math.max(200, Number(gwConfig.max_logs) || 500)
+      logs = [rec, ...logs.filter((x) => x.id !== rec.id)].slice(0, maxLogs)
+      if (!isDup) {
+        const prevTotal = Number(stats.total_requests) || 0
+        const nextTotal = prevTotal + 1
+        const prevAvg = Number(stats.avg_latency_ms) || 0
+        const nextAvg = ((prevAvg * prevTotal) + (Number(rec.latency_ms) || 0)) / nextTotal
+        stats = {
+          ...stats,
+          total_requests: nextTotal,
+          success_requests: (Number(stats.success_requests) || 0) + (rec.ok ? 1 : 0),
+          error_requests: (Number(stats.error_requests) || 0) + (rec.ok ? 0 : 1),
+          avg_latency_ms: nextAvg,
+        }
       }
     })
 
     on('gateway:status', (st) => {
       if (!st) return
+      const running = Boolean(st.running)
       stats = {
         ...stats,
-        running: Boolean(st.running),
+        running,
         listen_addr: st.listen_addr || stats.listen_addr,
-        started_at: st.started_at || stats.started_at,
+        started_at: running ? (st.started_at || stats.started_at) : '',
       }
       if (st.listen_addr) listenAddr = st.listen_addr
       if (st.error) {
@@ -1784,10 +1867,14 @@ printf '{"sign":"%s"}\n' "$SIG"
   onMount(async () => {
     subscribeEvents()
     await loadAllData()
+    let consumedInitialHandoff = false
     unsubHandoff = gatewayHandoff.subscribe((h) => {
-      if (h) applyHandoff(h)
+      if (h) {
+        consumedInitialHandoff = true
+        applyHandoff(h)
+      }
     })
-    if (S.pendingPublishFlow) {
+    if (!consumedInitialHandoff && S.pendingPublishFlow) {
       applyHandoff(S.pendingPublishFlow)
     }
   })
@@ -3462,12 +3549,7 @@ printf '{"sign":"%s"}\n' "$SIG"
                           type="button"
                           class="kind-tile"
                           class:active={sKind === k}
-                          on:click={() => {
-                            sKind = k
-                            if (k === 'script' && !sScriptCode.trim()) {
-                              sScriptCode = STARTER_SCRIPTS[sRuntime] || STARTER_SCRIPTS.python3
-                            }
-                          }}
+                          on:click={() => selectSignerKind(k)}
                         >
                           <span class="kt-title">{$t(`gateway.signers.kinds.${k}`)}</span>
                           <span class="kt-code mono">{k}</span>
@@ -3598,6 +3680,25 @@ printf '{"sign":"%s"}\n' "$SIG"
                         <span class="f-label">{$t('gateway.signers.editor.timeoutSec')}</span>
                         <input type="number" min="1" max="60" class="cap-input mono tabular-nums" bind:value={sTimeoutSec} />
                       </label>
+                    </div>
+
+                    <div class="script-meta-row">
+                      <span class="f-label">{$t('gateway.signers.editor.fridaScriptLabel')}</span>
+                      <div class="ctrl-spacer"></div>
+                      <Button variant="secondary" size="xs" icon="file-code" on:click={loadFridaStarterScript}>
+                        {$t('gateway.signers.editor.loadFridaStarter')}
+                      </Button>
+                    </div>
+                    <div class="f-hint">{$t('gateway.signers.editor.fridaScriptHint')}</div>
+                    <div class="signer-editor-host">
+                      <CodeEditor
+                        bind:this={signerEditorRef}
+                        bind:value={sScriptCode}
+                        runtime="node"
+                        minHeight="210px"
+                        on:save={saveCurrentSigner}
+                        on:run={handleTestSigner}
+                      />
                     </div>
                   {/if}
                 </div>

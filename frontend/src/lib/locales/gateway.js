@@ -331,7 +331,10 @@ registerMessages('gateway', {
         fridaPackage: 'Target Android Package',
         fridaPackagePlaceholder: 'com.example.app',
         fridaExport: 'RPC Export Function',
-        fridaExportPlaceholder: 'signRequest',
+        fridaExportPlaceholder: 'sign',
+        fridaScriptLabel: 'Frida RPC JavaScript (rpc.exports)',
+        fridaScriptHint: 'Loaded into the target Android app via Frida. Export a function matching RPC Export Function that receives SignerInput and returns a signature string or {sign, params, headers}.',
+        loadFridaStarter: 'Load Frida RPC Template',
         sectionInjection: 'Signature Injection & Output Mapping',
         injectTarget: 'Inject Target',
         injectTargets: {
@@ -771,7 +774,10 @@ registerMessages('gateway', {
         fridaPackage: '目标 Android 包名',
         fridaPackagePlaceholder: 'com.example.app',
         fridaExport: 'RPC 导出函数名',
-        fridaExportPlaceholder: 'signRequest',
+        fridaExportPlaceholder: 'sign',
+        fridaScriptLabel: 'Frida RPC 脚本 (rpc.exports)',
+        fridaScriptHint: '通过 Frida 注入目标 Android 进程，需在 rpc.exports 中导出与上方名称一致的函数，接收 SignerInput 并返回签名字符串或 {sign, params, headers}。',
+        loadFridaStarter: '载入 Frida RPC 模板',
         sectionInjection: '签名注入与字段映射',
         injectTarget: '注入位置',
         injectTargets: {

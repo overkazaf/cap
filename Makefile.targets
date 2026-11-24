@@ -6,13 +6,17 @@ LOCAL_TEST_PACKAGES := \
 	github.com/overkazaf/cap/internal/compare \
 	github.com/overkazaf/cap/internal/config \
 	github.com/overkazaf/cap/internal/context \
+	github.com/overkazaf/cap/internal/deobf \
+	github.com/overkazaf/cap/internal/exectrace \
 	github.com/overkazaf/cap/internal/export/agent \
 	github.com/overkazaf/cap/internal/export/codegen \
 	github.com/overkazaf/cap/internal/frida \
+	github.com/overkazaf/cap/internal/gateway \
 	github.com/overkazaf/cap/internal/grouping \
 	github.com/overkazaf/cap/internal/importer \
 	github.com/overkazaf/cap/internal/plugin \
 	github.com/overkazaf/cap/internal/proto \
+	github.com/overkazaf/cap/internal/retools \
 	github.com/overkazaf/cap/internal/rules \
 	github.com/overkazaf/cap/internal/sign \
 	github.com/overkazaf/cap/internal/stats \

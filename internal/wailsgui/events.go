@@ -17,6 +17,10 @@ const (
 	EventFridaLog            = "frida:log"
 	EventFridaStatus         = "frida:status"
 	EventFridaDeployProgress = "frida:deploy_progress"
+	EventRELog               = "re:log"
+	EventREStatus            = "re:status"
+	EventGatewayInvoke       = "gateway:invoke"
+	EventGatewayStatus       = "gateway:status"
 )
 
 type EventBus struct {

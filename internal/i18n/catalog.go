@@ -181,6 +181,7 @@ var catalogs = map[Locale]map[string]string{
 		"cli.root.usage":           "USAGE",
 		"cli.root.group.capture":   "CAPTURE & INSPECTION",
 		"cli.root.group.device":    "DEVICE & SSL UNPINNING",
+		"cli.root.group.re":        "REVERSE ENGINEERING & GATEWAY",
 		"cli.root.group.other":     "OTHER COMMANDS",
 		"cli.root.quickstart":      "QUICK START",
 		"cli.root.flags":           "FLAGS",
@@ -276,6 +277,22 @@ var catalogs = map[Locale]map[string]string{
 
 		// CLI Frida
 		"cli.frida.status.title": "Frida Toolchain & Server Status",
+
+		// CLI RE, Deobf, ExecTrace & Gateway
+		"cli.re.status.title":      "Native RE Toolchain Status",
+		"cli.re.analyze.title":     "Binary Static Analysis",
+		"cli.re.projects.title":    "RE Projects & Templates",
+		"cli.deobf.scan.title":     "Protection & Obfuscation Audit",
+		"cli.deobf.vmp.title":      "VMP Trace Analysis",
+		"cli.exectrace.list.title": "Execution Trace Sessions",
+		"cli.exectrace.taint.title": "Execution Trace Taint Analysis",
+		"cli.exectrace.diff.title": "Execution Trace Diff",
+		"cli.gateway.title":        "Open API Gateway",
+		"cli.gateway.status.title": "Gateway Status & Pools",
+		"cli.gateway.routes.title": "Gateway Service Routes",
+		"cli.gateway.proxies.title": "Gateway Proxy IP Pool",
+		"cli.gateway.devices.title": "Gateway Device Pool",
+		"cli.gateway.signers.title": "Gateway Signer Providers",
 	},
 
 	ZH: {
@@ -458,6 +475,7 @@ var catalogs = map[Locale]map[string]string{
 		"cli.root.usage":           "用法",
 		"cli.root.group.capture":   "抓包与流量检视",
 		"cli.root.group.device":    "设备管理与 SSL 绕过",
+		"cli.root.group.re":        "逆向分析与服务化网关",
 		"cli.root.group.other":     "其他命令",
 		"cli.root.quickstart":      "快速开始",
 		"cli.root.flags":           "参数选项",
@@ -553,5 +571,21 @@ var catalogs = map[Locale]map[string]string{
 
 		// CLI Frida
 		"cli.frida.status.title": "Frida 运行环境与服务端状态",
+
+		// CLI RE, Deobf, ExecTrace & Gateway
+		"cli.re.status.title":       "本地逆向工具链状态",
+		"cli.re.analyze.title":      "二进制静态分析",
+		"cli.re.projects.title":     "逆向工程项目与模板",
+		"cli.deobf.scan.title":      "加固与混淆特征审计",
+		"cli.deobf.vmp.title":       "VMP 指令轨迹分析",
+		"cli.exectrace.list.title":  "动态执行轨迹会话",
+		"cli.exectrace.taint.title": "动态轨迹污点分析",
+		"cli.exectrace.diff.title":  "动态轨迹差分对比",
+		"cli.gateway.title":         "开放 API 网关",
+		"cli.gateway.status.title":  "网关状态与资源池",
+		"cli.gateway.routes.title":  "网关服务路由",
+		"cli.gateway.proxies.title": "网关代理 IP 池",
+		"cli.gateway.devices.title": "网关虚拟与真机设备池",
+		"cli.gateway.signers.title": "网关签名计算提供者",
 	},
 }

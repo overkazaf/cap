@@ -13,9 +13,12 @@ import (
 
 	"github.com/overkazaf/cap/internal/buildinfo"
 	"github.com/overkazaf/cap/internal/config"
+	"github.com/overkazaf/cap/internal/exectrace"
 	"github.com/overkazaf/cap/internal/frida"
+	"github.com/overkazaf/cap/internal/gateway"
 	"github.com/overkazaf/cap/internal/plugin"
 	"github.com/overkazaf/cap/internal/proxy"
+	"github.com/overkazaf/cap/internal/retools"
 	"github.com/overkazaf/cap/internal/rules"
 	"github.com/overkazaf/cap/internal/screen"
 	"github.com/overkazaf/cap/internal/store"
@@ -28,6 +31,9 @@ import (
 //   - proxy_gui.go: proxy control, capture, domain filtering
 //   - flows_gui.go: flows, export, replay, analysis, sequences
 //   - device_gui.go: Android device, screen, RE tools, deep trace
+//   - frida_gui.go: Frida server management, script library, live sessions
+//   - retools_gui.go: Native RE (r2/Unidbg/Qiling/angr), Deobf/VMP, ExecTrace
+//   - gateway_gui.go: Open API Gateway, Proxy Pool, Device Pool, Signers
 type App struct {
 	ctx         context.Context
 	store       store.Store
@@ -72,7 +78,10 @@ type App struct {
 	pluginCtx    context.Context
 	pluginCancel context.CancelFunc
 
-	fridaMgr *frida.Manager
+	fridaMgr     *frida.Manager
+	retoolsMgr   *retools.Manager
+	execTraceMgr *exectrace.Manager
+	gatewayMgr   *gateway.Manager
 }
 
 const maxConcurrentAutoPlugins = 4
@@ -81,6 +90,9 @@ func NewApp(st store.Store) *App {
 	capDir := config.DefaultDir()
 	pluginEngine, _ := plugin.NewEngine(filepath.Join(capDir, "plugins"))
 	fridaMgr, _ := frida.NewManager(capDir)
+	retoolsMgr, _ := retools.NewManager(capDir)
+	execTraceMgr, _ := exectrace.NewManager(filepath.Join(capDir, "exec-traces"))
+	gatewayMgr, _ := gateway.NewManager(capDir)
 	settingsFile := filepath.Join(capDir, "settings.json")
 	settings := loadSettings(settingsFile)
 	pCtx, pCancel := context.WithCancel(context.Background())
@@ -99,6 +111,27 @@ func NewApp(st store.Store) *App {
 			},
 		)
 	}
+	if retoolsMgr != nil {
+		retoolsMgr.SetToolchainConfig(retoolsToolchainFromSettings(settings))
+		retoolsMgr.SetCallbacks(
+			func(ev retools.JobLogEvent) {
+				events.Emit(EventRELog, ev)
+			},
+			func(st *retools.JobState) {
+				events.Emit(EventREStatus, st)
+			},
+		)
+	}
+	if gatewayMgr != nil {
+		gatewayMgr.SetCallbacks(
+			func(rec gateway.InvocationRecord) {
+				events.Emit(EventGatewayInvoke, rec)
+			},
+			func(st gateway.GatewayStatus) {
+				events.Emit(EventGatewayStatus, st)
+			},
+		)
+	}
 	return &App{
 		store:            st,
 		certDir:          capDir,
@@ -113,6 +146,9 @@ func NewApp(st store.Store) *App {
 		pluginCtx:        pCtx,
 		pluginCancel:     pCancel,
 		fridaMgr:         fridaMgr,
+		retoolsMgr:       retoolsMgr,
+		execTraceMgr:     execTraceMgr,
+		gatewayMgr:       gatewayMgr,
 	}
 }
 
@@ -125,10 +161,24 @@ func (a *App) Startup(ctx context.Context) {
 }
 
 func (a *App) Shutdown(ctx context.Context) {
-	// Cancel any active DeepTrace run, Frida session, and auto-run plugin scripts cleanly.
+	// Cancel any active DeepTrace run, Frida session, RE jobs, Gateway server,
+	// and auto-run plugin scripts cleanly.
 	_ = a.CancelDeepTrace()
-	if a.fridaMgr != nil {
-		a.fridaMgr.Shutdown()
+
+	a.mu.Lock()
+	fridaMgr := a.fridaMgr
+	retoolsMgr := a.retoolsMgr
+	gatewayMgr := a.gatewayMgr
+	a.mu.Unlock()
+
+	if fridaMgr != nil {
+		fridaMgr.Shutdown()
+	}
+	if retoolsMgr != nil {
+		retoolsMgr.Shutdown()
+	}
+	if gatewayMgr != nil {
+		_ = gatewayMgr.Shutdown()
 	}
 	if a.pluginCancel != nil {
 		a.pluginCancel()
@@ -395,7 +445,13 @@ func (a *App) ExecCommand(cmd string) (string, error) {
 // ==================== Settings ====================
 
 func (a *App) GetSettings() map[string]string {
-	return a.settings
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make(map[string]string, len(a.settings))
+	for k, v := range a.settings {
+		out[k] = v
+	}
+	return out
 }
 
 func (a *App) SetSetting(key string, value interface{}) error {
@@ -407,17 +463,41 @@ func (a *App) SetSetting(key string, value interface{}) error {
 	a.settings[key] = strVal
 	pyPath := a.settings["frida_python_path"]
 	cliPath := a.settings["frida_cli_path"]
+	reCfg := retoolsToolchainFromSettings(a.settings)
+	fridaMgr := a.fridaMgr
+	retoolsMgr := a.retoolsMgr
+	gatewayMgr := a.gatewayMgr
+	certDir := a.certDir
+	snapshot := make(map[string]string, len(a.settings))
+	for k, v := range a.settings {
+		snapshot[k] = v
+	}
 	a.mu.Unlock()
-	if (key == "frida_python_path" || key == "frida_cli_path") && a.fridaMgr != nil {
-		a.fridaMgr.SetToolchainConfig(frida.ToolchainConfig{
+
+	if (key == "frida_python_path" || key == "frida_cli_path") && fridaMgr != nil {
+		fridaMgr.SetToolchainConfig(frida.ToolchainConfig{
 			PythonPath: pyPath,
 			FridaPath:  cliPath,
 		})
 	}
-	return saveSettings(filepath.Join(a.certDir, "settings.json"), a.settings)
+	if isREToolchainSettingKey(key) && retoolsMgr != nil {
+		retoolsMgr.SetToolchainConfig(reCfg)
+	}
+	if key == "gateway_addr" && gatewayMgr != nil {
+		if addr := strings.TrimSpace(strVal); addr != "" {
+			cfg := gatewayMgr.GetConfig()
+			if cfg.ListenAddr != addr {
+				cfg.ListenAddr = addr
+				_ = gatewayMgr.UpdateConfig(cfg)
+			}
+		}
+	}
+	return saveSettings(filepath.Join(certDir, "settings.json"), snapshot)
 }
 
 func (a *App) GetSetting(key string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.settings[key]
 }
 
@@ -433,6 +513,13 @@ func loadSettings(path string) map[string]string {
 		"frida_python_path":  "",
 		"frida_cli_path":     "",
 		"frida_default_port": "27042",
+		"re_r2_path":         "",
+		"re_java_path":       "",
+		"re_mvn_path":        "",
+		"re_unidbg_dir":      "",
+		"re_python_path":     "",
+		"re_qiling_rootfs":   "",
+		"gateway_addr":       "127.0.0.1:9090",
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

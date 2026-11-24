@@ -449,3 +449,282 @@ func TestFridaCLICommands(t *testing.T) {
 		t.Fatalf("expected MessageDigest hook in crypto-sign-tracer output")
 	}
 }
+
+func TestREAndDeobfCLICommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// 1. cap re --help & projects --json & gen
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"re", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap re --help failed: %v", err)
+	}
+	for _, sub := range []string{"status", "analyze", "r2", "projects", "gen"} {
+		if !strings.Contains(out.String(), sub) {
+			t.Errorf("cap re --help missing subcommand %q", sub)
+		}
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"re", "projects", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap re projects --json failed: %v", err)
+	}
+	if strings.Contains(out.String(), "\x1b[") {
+		t.Fatal("cap re projects --json must not contain ANSI escapes")
+	}
+	var projects []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &projects); err != nil || len(projects) == 0 {
+		t.Fatalf("invalid JSON from cap re projects: err=%v len=%d", err, len(projects))
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"re", "gen", "--engine", "unidbg", "--class", "com/acme/Sign", "--method", "calc"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap re gen failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "com/acme/Sign") {
+		t.Fatalf("cap re gen output missing target class:\n%s", out.String())
+	}
+
+	// 2. cap deobf --help, stealth, unpack, ollvm, vmp, vmp-trace
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"deobf", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap deobf --help failed: %v", err)
+	}
+	for _, sub := range []string{"scan", "stealth", "unpack", "ollvm", "vmp", "vmp-trace"} {
+		if !strings.Contains(out.String(), sub) {
+			t.Errorf("cap deobf --help missing subcommand %q", sub)
+		}
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"deobf", "stealth", "--pkg", "com.acme.app"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap deobf stealth failed: %v", err)
+	}
+	if strings.Contains(out.String(), "\x1b[") || len(out.String()) < 100 {
+		t.Fatalf("unexpected cap deobf stealth output (len=%d)", out.Len())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"deobf", "ollvm", "--so", "./libsec.so", "--addr", "0x1000"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap deobf ollvm failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "import angr") {
+		t.Fatalf("expected angr script from cap deobf ollvm")
+	}
+
+	vmpFile := filepath.Join(t.TempDir(), "vmp.log")
+	vmpTrace := `[CAP_VMP] {"pc":"0x7000001000","insn":"br x8","target":"0x7000002000"}` + "\n" +
+		`[CAP_VMP] {"pc":"0x7000002000","insn":"add x0, x0, #1"}` + "\n"
+	if err := os.WriteFile(vmpFile, []byte(vmpTrace), 0o644); err != nil {
+		t.Fatalf("write vmp trace: %v", err)
+	}
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"deobf", "vmp-trace", vmpFile, "--base", "0x7000000000", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap deobf vmp-trace failed: %v", err)
+	}
+	var vmpOut map[string]any
+	if err := json.Unmarshal(out.Bytes(), &vmpOut); err != nil {
+		t.Fatalf("invalid JSON from cap deobf vmp-trace: %v", err)
+	}
+}
+
+func TestExecTraceAndGatewayCLICommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// 1. cap exectrace workflow: import -> list -> taint -> diff -> collect -> export
+	traceDir := t.TempDir()
+	traceAFile := filepath.Join(traceDir, "a.log")
+	traceBFile := filepath.Join(traceDir, "b.log")
+	traceAContent := "[12:00:00 001][libsign.so 0x1000] [e0 03 01 aa] 0x40001000: \"mov x0, x1\" x1=0x11 => x0=0x11\n" +
+		"[12:00:00 002][libsign.so 0x1004] [02 00 03 ca] 0x40001004: \"eor x2, x0, x3\" x0=0x11 x3=0xff => x2=0xee\n"
+	traceBContent := "[12:00:00 001][libsign.so 0x1000] [e0 03 01 aa] 0x50001000: \"mov x0, x1\" x1=0x11 => x0=0x11\n" +
+		"[12:00:00 002][libsign.so 0x1008] [02 00 03 ca] 0x50001008: \"sub x2, x0, x3\" x0=0x11 x3=0x01 => x2=0x10\n"
+	if err := os.WriteFile(traceAFile, []byte(traceAContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(traceBFile, []byte(traceBContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"exectrace", "import", traceAFile, "--name", "run-a", "--base", "0x40000000", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("exectrace import A failed: %v", err)
+	}
+	var sessA struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &sessA); err != nil || sessA.ID == "" {
+		t.Fatalf("failed to decode imported session A: err=%v raw=%s", err, out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"exectrace", "import", traceBFile, "--name", "run-b", "--base", "0x50000000", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("exectrace import B failed: %v", err)
+	}
+	var sessB struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &sessB); err != nil || sessB.ID == "" {
+		t.Fatalf("failed to decode imported session B: err=%v raw=%s", err, out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"exectrace", "list", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("exectrace list failed: %v", err)
+	}
+	if !strings.Contains(out.String(), sessA.ID) || !strings.Contains(out.String(), sessB.ID) {
+		t.Fatalf("exectrace list missing imported sessions:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"exectrace", "taint", "--session", sessA.ID, "--direction", "forward", "--seq", "1", "--reg", "x0", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("exectrace taint failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "tainted_steps") {
+		t.Fatalf("unexpected taint JSON:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"exectrace", "diff", sessA.ID, sessB.ID, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("exectrace diff failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "first_divergence") {
+		t.Fatalf("unexpected diff JSON:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"exectrace", "collect", "--kind", "stalker", "--module", "libsign.so"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("exectrace collect failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "libsign.so") {
+		t.Fatalf("unexpected collect output:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"exectrace", "export", sessA.ID, "--format", "tenet"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("exectrace export failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "pc=0x40001000") {
+		t.Fatalf("unexpected tenet export:\n%s", out.String())
+	}
+
+	// 2. cap gateway workflow: status, publish, routes, proxies, devices, signers, openapi
+	dbPath := seedTestDB(t)
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway --help failed: %v", err)
+	}
+	for _, sub := range []string{"start", "status", "routes", "publish", "proxies", "devices", "signers", "openapi"} {
+		if !strings.Contains(out.String(), sub) {
+			t.Errorf("cap gateway --help missing subcommand %q", sub)
+		}
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "publish", "-d", dbPath, "--flow", "f1", "--slug", "list-users", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway publish failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"slug": "list-users"`) {
+		t.Fatalf("unexpected publish output:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "routes", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway routes failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "list-users") {
+		t.Fatalf("expected published route in cap gateway routes:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "proxies", "--add", "socks5://127.0.0.1:1080", "--region", "US"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway proxies --add failed: %v", err)
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "devices", "--presets", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway devices --presets failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "fingerprint") {
+		t.Fatalf("unexpected device presets JSON:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "status", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway status failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"route_total": 1`) {
+		t.Fatalf("unexpected gateway status JSON:\n%s", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"gateway", "openapi"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap gateway openapi failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"openapi": "3.0.3"`) || !strings.Contains(out.String(), "/gw/list-users") {
+		t.Fatalf("unexpected OpenAPI output:\n%s", out.String())
+	}
+}

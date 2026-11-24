@@ -376,13 +376,13 @@ cap exectrace export <sessionID> -f tenet -o trace.tenet.txt
 ```bash
 cap gateway publish --flow f1 --slug search-feed           # 将抓包请求流一键发布为 Open API 路由
 cap gateway proxies --add socks5://user:pass@1.2.3.4:1080 --check
-cap gateway devices --from-preset pixel8-android14         # 创建虚拟 Android 指纹（或 --sync-adb 同步真机）
+cap gateway devices --from-preset pixel-8-pro              # 创建虚拟 Android 指纹（或 --sync-adb 同步真机）
 cap gateway signers --test <signerID> --url https://api.example.com/v1/feed
 cap gateway start -a 127.0.0.1:9090 --require-auth --api-key sk-live-demo
 cap gateway openapi -o openapi.json                        # 导出 OpenAPI 3.0.3 接口规范
 ```
 
-- **Open API HTTP 网关（默认 `:9090`）**：支持从抓包 Flow 一键发布 `POST /api/<slug>` 路由，内置模板变量渲染（`{{input.*}}`、`{{device.*}}`、`{{timestamp}}`、`{{nonce}}`）、API Key 鉴权（`X-API-Key` / `Bearer`）、路由级限流、失败自动重试切换、原始透传模式、在线路由测试器、实时调用日志以及 **OpenAPI 3.0.3** 文档导出。
+- **Open API HTTP 网关（默认 `:9090`）**：支持从抓包 Flow 一键发布 `POST /gw/<slug>` 路由，内置模板变量渲染（`{{input.*}}`、`{{device.*}}`、`{{timestamp}}`、`{{nonce}}`）、API Key 鉴权（`X-API-Key` / `Bearer`）、路由级限流、失败自动重试切换、原始透传模式、在线路由测试器、实时调用日志以及 **OpenAPI 3.0.3** 文档导出。
 - **代理 IP 池**：支持 `HTTP` / `HTTPS` / `SOCKS5` 节点管理、批量导入、动态代理商 API 拉取（纯文本按行或 JSON 路径提取）、并发健康探测与延迟测速，提供轮询（`round_robin`）、随机（`random`）、最低延迟（`least_latency`）与设备粘性（`sticky_device`）调度策略。
 - **设备池与虚拟指纹**：预置主流 Android 机型虚拟指纹模板（UA、OAID、Android ID、Build 属性、屏幕参数、会话 Cookie/Token），并支持一键同步已连接的 **ADB 实体设备**。
 - **可插拔签名提供者（Signer Providers）**：支持在每次网关调用时自动注入动态签名，覆盖 **内置 HMAC/Hash**（MD5/SHA/HMAC）、**本地脚本**（`python3`/`node`/`sh`）、**外部 HTTP 接口**、**Unidbg HTTP 签名服务** 与 **Frida RPC**（`rpc.exports`）。

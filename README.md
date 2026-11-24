@@ -387,13 +387,13 @@ Turn reverse-engineered mobile APIs into reliable, authenticated HTTP endpoints 
 ```bash
 cap gateway publish --flow f1 --slug search-feed           # Publish a captured flow as an Open API route
 cap gateway proxies --add socks5://user:pass@1.2.3.4:1080 --check
-cap gateway devices --from-preset pixel8-android14         # Create virtual fingerprint (or --sync-adb)
+cap gateway devices --from-preset pixel-8-pro              # Create virtual fingerprint (or --sync-adb)
 cap gateway signers --test <signerID> --url https://api.example.com/v1/feed
 cap gateway start -a 127.0.0.1:9090 --require-auth --api-key sk-live-demo
 cap gateway openapi -o openapi.json                        # Export OpenAPI 3.0.3 spec
 ```
 
-- **Open API HTTP Gateway (`:9090`)**: Publishes captured flows into reusable `POST /api/<slug>` routes with template substitution (`{{input.*}}`, `{{device.*}}`, `{{timestamp}}`, `{{nonce}}`), API Key auth (`X-API-Key` / `Bearer`), per-route rate limiting, retries/failover, raw passthrough mode, live Route Tester, real-time invocation telemetry, and **OpenAPI 3.0.3** spec export.
+- **Open API HTTP Gateway (`:9090`)**: Publishes captured flows into reusable `POST /gw/<slug>` routes with template substitution (`{{input.*}}`, `{{device.*}}`, `{{timestamp}}`, `{{nonce}}`), API Key auth (`X-API-Key` / `Bearer`), per-route rate limiting, retries/failover, raw passthrough mode, live Route Tester, real-time invocation telemetry, and **OpenAPI 3.0.3** spec export.
 - **Proxy IP Pool**: Manages `HTTP` / `HTTPS` / `SOCKS5` nodes with bulk import, dynamic provider fetch (`lines` or `json` path extraction), concurrent health/latency probing, and `round_robin`, `random`, `least_latency`, or `sticky_device` rotation policies.
 - **Device Pool & Virtual Fingerprints**: Ships realistic Android fingerprint presets (UA, OAID, Android ID, build props, screen metrics, cookies/tokens) alongside 1-click **ADB physical device sync**.
 - **Pluggable Signer Providers**: Computes fresh request signatures per invocation via **Built-in HMAC/Hash** (MD5/SHA/HMAC), **Local Script** (`python3`/`node`/`sh`), **External HTTP**, **Unidbg HTTP Signer**, or **Frida RPC** (`rpc.exports`).

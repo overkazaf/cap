@@ -531,19 +531,15 @@
   function parseAddrNumber(raw) {
     const s = String(raw || '').trim()
     if (!s) return { ok: true, value: 0 }
-    if (/^0x[0-9a-fA-F]+$/.test(s)) {
-      const n = Number.parseInt(s.slice(2), 16)
-      return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, value: 0 }
+    const hex = s.replace(/^0[xX]/, '')
+    if (!/^[0-9a-fA-F]+$/.test(hex)) {
+      return { ok: false, value: 0 }
     }
-    if (/^[0-9]+$/.test(s)) {
-      const n = Number.parseInt(s, 10)
-      return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, value: 0 }
+    const n = Number.parseInt(hex, 16)
+    if (!Number.isSafeInteger(n) || n < 0) {
+      return { ok: false, value: 0 }
     }
-    if (/^[0-9a-fA-F]+$/.test(s)) {
-      const n = Number.parseInt(s, 16)
-      return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, value: 0 }
-    }
-    return { ok: false, value: 0 }
+    return { ok: true, value: n }
   }
 
   function engineVariant(eng) {
@@ -1016,12 +1012,154 @@
     }
   }
 
+  let retiredJobIds = new Set()
+
+  function mergeJobEvents(existing, incoming) {
+    const bySeq = new Map()
+    const extras = []
+    for (const ev of existing || []) {
+      if (ev && ev.seq) bySeq.set(ev.seq, ev)
+      else if (ev) extras.push(ev)
+    }
+    for (const ev of incoming || []) {
+      if (ev && ev.seq) bySeq.set(ev.seq, ev)
+      else if (ev) extras.push(ev)
+    }
+    const ordered = [...bySeq.values()].sort((a, b) => (a.seq || 0) - (b.seq || 0))
+    return [...ordered, ...extras].slice(-1000)
+  }
+
+  function extractResultFromLog(ev) {
+    if (!ev || (ev.stream !== 'result' && ev.level !== 'result') || !ev.data) return null
+    return {
+      kind: ev.data.kind || 'result',
+      summary: ev.data.summary || ev.message || '',
+      payload: ev.data,
+    }
+  }
+
+  function mergeJobResults(existing, incoming) {
+    const inc = Array.isArray(incoming) ? incoming : []
+    const cur = Array.isArray(existing) ? existing : []
+    if (inc.length >= cur.length) return inc
+    return cur
+  }
+
+  function applyJobStatus(st, { fromStartReturn = false } = {}) {
+    if (!st) return
+    const prevId = jobState?.id || ''
+    const nextId = st.id || ''
+    if (nextId && retiredJobIds.has(nextId)) return
+
+    const isSameJob = Boolean(jobState && nextId && prevId === nextId)
+
+    if (!isSameJob) {
+      if (prevId && nextId && prevId !== nextId) {
+        retiredJobIds.add(prevId)
+      }
+      expandedJobEvents = new Set()
+      jobState = {
+        ...st,
+        events: Array.isArray(st.events) ? st.events.slice(-1000) : [],
+        results: Array.isArray(st.results) ? st.results : [],
+      }
+      return
+    }
+
+    // Same job ID reconciliation
+    if (fromStartReturn) {
+      // StartREJob returns an early snapshot; never downgrade live status or wipe streamed logs/results.
+      const mergedEvents = mergeJobEvents(jobState.events, st.events)
+      const mergedResults = mergeJobResults(jobState.results, st.results)
+      const alreadyTerminal = jobState.status && jobState.status !== 'idle' && jobState.status !== 'running'
+      jobState = {
+        ...st,
+        ...jobState,
+        status: alreadyTerminal ? jobState.status : (st.status || jobState.status),
+        running: alreadyTerminal ? false : Boolean(jobState.running || st.running),
+        events: mergedEvents,
+        results: mergedResults,
+        event_count: Math.max(jobState.event_count || 0, st.event_count || 0, mergedEvents.length),
+      }
+      return
+    }
+
+    // Explicit clear from ClearJobLogs emits event_count === 0 with empty events & results
+    const isExplicitClear =
+      st.event_count === 0 &&
+      (!st.events || st.events.length === 0) &&
+      (!st.results || st.results.length === 0) &&
+      (jobState.events?.length > 0 || jobState.results?.length > 0)
+
+    if (isExplicitClear) {
+      expandedJobEvents = new Set()
+      jobState = { ...st, events: [], results: [], event_count: 0 }
+      return
+    }
+
+    const mergedEvents = mergeJobEvents(jobState.events, st.events)
+    const mergedResults = mergeJobResults(jobState.results, st.results)
+    jobState = {
+      ...st,
+      events: mergedEvents,
+      results: mergedResults,
+      event_count: Math.max(st.event_count || 0, mergedEvents.length),
+    }
+  }
+
+  function appendJobLogEvent(ev) {
+    if (!ev) return
+    if (ev.job_id && retiredJobIds.has(ev.job_id)) return
+
+    const resEntry = extractResultFromLog(ev)
+    const isNewJob = !jobState || (ev.job_id && jobState.id && ev.job_id !== jobState.id)
+
+    if (isNewJob) {
+      if (jobState?.id && ev.job_id && jobState.id !== ev.job_id) {
+        retiredJobIds.add(jobState.id)
+      }
+      expandedJobEvents = new Set()
+      jobState = {
+        id: ev.job_id || '',
+        engine: projEngine,
+        status: 'running',
+        running: true,
+        event_count: 1,
+        events: [ev],
+        results: resEntry ? [resEntry] : [],
+      }
+      scrollJobConsole()
+      return
+    }
+
+    const existingEvents = jobState.events || []
+    if (ev.seq && existingEvents.some((e) => e.seq === ev.seq)) {
+      return
+    }
+    const nextEvents = [...existingEvents, ev].slice(-1000)
+    const nextResults = [...(jobState.results || [])]
+    if (resEntry) {
+      const sig = JSON.stringify(resEntry)
+      if (!nextResults.some((r) => JSON.stringify(r) === sig)) {
+        nextResults.push(resEntry)
+      }
+    }
+    jobState = {
+      ...jobState,
+      id: jobState.id || ev.job_id || '',
+      events: nextEvents,
+      results: nextResults,
+      event_count: Math.max((jobState.event_count || 0) + 1, nextEvents.length),
+    }
+    scrollJobConsole()
+  }
+
   async function startREJob() {
     const app = api()
     if (!app?.StartREJob || startingJob) return
     startingJob = true
     try {
-      jobState = await app.StartREJob({
+      const snap = await app.StartREJob({
         project_id: projId,
         project_name: projName.trim() || `${projEngine.toUpperCase()} Job`,
         engine: projEngine,
@@ -1037,6 +1175,7 @@
         timeout_sec: Number(projTimeoutSec) || 60,
         r2_command: projEngine === 'radare2' ? projCode.trim() : '',
       })
+      applyJobStatus(snap, { fromStartReturn: true })
       toast.success(translate('reLab.toast.jobStarted', { engine: projEngine }))
     } catch (e) {
       toast.error(translate('reLab.toast.jobStartFailed', { err: e?.message || e }))
@@ -1078,6 +1217,62 @@
   }
 
   // ==================== Sub-Tab 3 Actions: Deobf · Anti-Debug · VMP ====================
+  function deriveStealthOptsFromReport(report, prevOpts, scannedPath) {
+    // Mirrors deobf.StealthOptionsFromReport so UI toggles and generated scripts
+    // stay 100% tailored to the latest protection audit.
+    const next = {
+      ...prevOpts,
+      bypass_tracer_pid_and_proc_fs: true,
+      bypass_ptrace_and_signals: true,
+      patch_inline_svc: false,
+      bypass_timing_and_inotify: false,
+      bypass_java_debug_checks: true,
+    }
+    for (const ad of report?.anti_debug_findings || []) {
+      switch (ad.kind) {
+        case 'tracer_pid':
+        case 'proc_maps':
+        case 'frida_detect':
+          next.bypass_tracer_pid_and_proc_fs = true
+          break
+        case 'ptrace':
+        case 'watchdog_thread':
+          next.bypass_ptrace_and_signals = true
+          break
+        case 'inline_svc':
+          next.patch_inline_svc = true
+          break
+        case 'timing_check':
+        case 'inotify':
+          next.bypass_timing_and_inotify = true
+          break
+        case 'java_debug':
+        case 'root_detect':
+          next.bypass_java_debug_checks = true
+          break
+      }
+    }
+
+    let bestSO = ''
+    let bestWeight = -1
+    for (const so of report?.so_audits || []) {
+      const w =
+        (so.inline_svc_count || 0) * 10 +
+        (so.indirect_branch_count || 0) +
+        (so.suspicious_sections?.length || 0) * 5
+      if (w > bestWeight) {
+        bestWeight = w
+        bestSO = so.name || ''
+      }
+    }
+    if (!bestSO && report?.target_kind !== 'apk' && scannedPath) {
+      const parts = scannedPath.split(/[/\\]/)
+      bestSO = parts[parts.length - 1] || ''
+    }
+    next.target_so = bestSO
+    return { nextOpts: next, bestSO }
+  }
+
   async function scanProtection() {
     const app = api()
     const path = scanPath.trim()
@@ -1092,21 +1287,16 @@
       protectionReport = report
       deobfView = 'audit'
 
-      // Smart pre-fill generator parameters from scan target
+      // Smart pre-fill generator parameters & stealth modules from scan report
       if (report?.target_kind === 'apk') {
         genApkPath = path
       } else {
         genSoPath = path
-        const parts = path.split(/[/\\]/)
-        const base = parts[parts.length - 1]
-        if (base) {
-          stealthOpts = { ...stealthOpts, target_so: base }
-          genVmpSoName = base
-        }
       }
-      if (report?.so_audits?.length > 0 && !stealthOpts.target_so) {
-        stealthOpts = { ...stealthOpts, target_so: report.so_audits[0].name }
-        genVmpSoName = report.so_audits[0].name
+      const { nextOpts, bestSO } = deriveStealthOptsFromReport(report, stealthOpts, path)
+      stealthOpts = nextOpts
+      if (bestSO) {
+        genVmpSoName = bestSO
       }
 
       toast.success(
@@ -1134,6 +1324,12 @@
     try {
       let res = null
       if (genId === 'stealth') {
+        if (overrideGenId === 'stealth' && protectionReport) {
+          stealthUseReport = true
+          const { nextOpts, bestSO } = deriveStealthOptsFromReport(protectionReport, stealthOpts, scanPath)
+          stealthOpts = nextOpts
+          if (bestSO) genVmpSoName = bestSO
+        }
         const opts = {
           ...stealthOpts,
           watchdog_block_offsets: splitCSV(stealthWatchdogOffsets),
@@ -1306,6 +1502,11 @@
         activeTrace = null
         eventPage = null
       }
+      if (diffSessionA === sess.id || diffSessionB === sess.id) {
+        if (diffSessionA === sess.id) diffSessionA = ''
+        if (diffSessionB === sess.id) diffSessionB = ''
+        diffResult = null
+      }
       await loadExecTraces()
       toast.info(translate('reLab.toast.traceDeleted', { name: sess.name || sess.id }))
     } catch (e) {
@@ -1368,11 +1569,34 @@
     traceViewTab = 'taint'
   }
 
-  function seedTaintFromCryptoOrMem({ seq = 1, addrHex = '', direction = 'backward' }) {
-    taintDirection = direction
-    taintStartSeq = seq || 1
+  function seedTaintFromCryptoHit(hit) {
+    if (!hit) return
+    const ev = (activeTrace?.events || []).find((e) => e.seq === hit.seq)
+    if (ev) {
+      seedTaintFromEvent(ev, 'backward')
+      return
+    }
+    taintDirection = 'backward'
+    taintStartSeq = hit.seq || 1
     taintSeedReg = ''
-    taintSeedMemAddr = addrHex
+    taintSeedMemAddr = ''
+    taintSeedValueHex = ''
+    traceViewTab = 'taint'
+  }
+
+  function seedTaintFromMemRegion(mr) {
+    if (!mr || !activeTrace) return
+    const dir = mr.role_hint === 'input_buffer' ? 'forward' : 'backward'
+    const evs = activeTrace.events || []
+    const firstSeq = evs.length > 0 ? (evs[0].seq || 1) : 1
+    const lastSeq =
+      evs.length > 0
+        ? (evs[evs.length - 1].seq || activeTrace.total_events || 1)
+        : (activeTrace.total_events || 1)
+    taintDirection = dir
+    taintStartSeq = dir === 'forward' ? firstSeq : lastSeq
+    taintSeedReg = ''
+    taintSeedMemAddr = mr.base_addr_hex || formatHex(mr.base_addr)
     taintSeedValueHex = ''
     traceViewTab = 'taint'
   }
@@ -1492,49 +1716,10 @@
       if (typeof off === 'function') unsubs.push(off)
     }
     on('re:log', (ev) => {
-      if (!ev) return
-      if (!jobState) {
-        jobState = {
-          id: ev.job_id,
-          engine: projEngine,
-          status: 'running',
-          running: true,
-          event_count: 1,
-          events: [ev],
-          results: [],
-        }
-      } else {
-        const nextEvents = [...(jobState.events || []), ev].slice(-1000)
-        const nextResults = [...(jobState.results || [])]
-        if ((ev.stream === 'result' || ev.level === 'result') && ev.data) {
-          nextResults.push({
-            kind: ev.data.kind || 'result',
-            summary: ev.data.summary || ev.message || '',
-            payload: ev.data,
-          })
-        }
-        jobState = {
-          ...jobState,
-          events: nextEvents,
-          results: nextResults,
-          event_count: (jobState.event_count || 0) + 1,
-        }
-      }
-      scrollJobConsole()
+      appendJobLogEvent(ev)
     })
     on('re:status', (st) => {
-      if (!st) return
-      jobState = {
-        ...st,
-        events:
-          Array.isArray(st.events) && st.events.length >= (jobState?.events?.length || 0)
-            ? st.events
-            : (jobState?.events || []),
-        results:
-          Array.isArray(st.results) && st.results.length >= (jobState?.results?.length || 0)
-            ? st.results
-            : (jobState?.results || []),
-      }
+      applyJobStatus(st)
     })
   }
 
@@ -1562,7 +1747,7 @@
       loadToolchain(false),
       loadProjects(),
       loadExecTraces(),
-      app?.GetREJobState?.().then((st) => { if (st) jobState = st }).catch(() => {}),
+      app?.GetREJobState?.().then((st) => { if (st) applyJobStatus(st) }).catch(() => {}),
     ])
     if (projCode && emuEditorRef?.resetHistory) {
       emuEditorRef.resetHistory(projCode)
@@ -3001,7 +3186,19 @@
                           <label class="check-opt"><input type="checkbox" bind:checked={stealthOpts.dry_run_svc_patch} /><span>{$t('reLab.deobf.generators.stealth.dryRunSvc')}</span></label>
                         {/if}
                         {#if protectionReport}
-                          <label class="check-opt"><input type="checkbox" bind:checked={stealthUseReport} /><span>{$t('reLab.deobf.generators.stealth.useReport')}</span></label>
+                          <label class="check-opt">
+                            <input
+                              type="checkbox"
+                              bind:checked={stealthUseReport}
+                              on:change={() => {
+                                if (stealthUseReport && protectionReport) {
+                                  const { nextOpts } = deriveStealthOptsFromReport(protectionReport, stealthOpts, scanPath)
+                                  stealthOpts = nextOpts
+                                }
+                              }}
+                            />
+                            <span>{$t('reLab.deobf.generators.stealth.useReport')}</span>
+                          </label>
                         {/if}
                       </div>
 
@@ -4035,7 +4232,7 @@
                               <Button
                                 variant="ghost"
                                 size="xs"
-                                on:click={() => seedTaintFromCryptoOrMem({ seq: hit.seq, addrHex: hit.address ? formatHex(hit.address) : '', direction: 'backward' })}
+                                on:click={() => seedTaintFromCryptoHit(hit)}
                               >
                                 {$t('reLab.exectrace.overview.seedTaintBtn')}
                               </Button>
@@ -4083,7 +4280,7 @@
                             <Button
                               variant="subtle"
                               size="xs"
-                              on:click={() => seedTaintFromCryptoOrMem({ seq: activeTrace.total_events || 1, addrHex: mr.base_addr_hex || formatHex(mr.base_addr), direction: mr.role_hint === 'input_buffer' ? 'forward' : 'backward' })}
+                              on:click={() => seedTaintFromMemRegion(mr)}
                             >
                               {$t('reLab.exectrace.overview.seedTaintBtn')}
                             </Button>

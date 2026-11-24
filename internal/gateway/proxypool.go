@@ -104,8 +104,10 @@ func (p *ProxyPool) LoadNodes(nodes []ProxyNode) {
 	p.closeTransportsLocked()
 	p.nodes = make(map[string]ProxyNode, len(nodes))
 	for _, n := range nodes {
-		if normURL, err := NormalizeProxyURL(n.URL); err == nil {
-			n.URL = normURL
+		if cleanURL, user, pass, err := splitProxyURLCredentials(n.URL, n.Username, n.Password); err == nil {
+			n.URL = cleanURL
+			n.Username = user
+			n.Password = pass
 		}
 		if strings.TrimSpace(n.ID) == "" {
 			n.ID = "proxy-" + randomHex(4)
@@ -150,13 +152,16 @@ func (p *ProxyPool) Add(node ProxyNode) (*ProxyNode, error) {
 	return p.Upsert(node)
 }
 
-// Upsert validates, normalizes, and stores a proxy node.
+// Upsert validates, normalizes, extracts embedded URL credentials into
+// Username/Password, and stores a proxy node.
 func (p *ProxyPool) Upsert(node ProxyNode) (*ProxyNode, error) {
-	normURL, err := NormalizeProxyURL(node.URL)
+	cleanURL, user, pass, err := splitProxyURLCredentials(node.URL, node.Username, node.Password)
 	if err != nil {
 		return nil, err
 	}
-	node.URL = normURL
+	node.URL = cleanURL
+	node.Username = user
+	node.Password = pass
 	node.ID = strings.TrimSpace(node.ID)
 	if node.ID == "" {
 		base := sanitizeID(node.Name, "proxy")
@@ -172,6 +177,9 @@ func (p *ProxyPool) Upsert(node ProxyNode) (*ProxyNode, error) {
 	}
 	node.Region = strings.TrimSpace(node.Region)
 	node.Tags = normalizeTags(node.Tags)
+	if node.LastError != "" {
+		node.LastError = redactSecrets(node.LastError, node.Password)
+	}
 
 	p.mu.Lock()
 	if prev, exists := p.nodes[node.ID]; exists {
@@ -360,7 +368,7 @@ func (p *ProxyPool) RecordResult(id string, ok bool, latencyMs int64, err error)
 		n.Healthy = false
 		n.FailCount++
 		if err != nil {
-			n.LastError = err.Error()
+			n.LastError = redactSecrets(err.Error(), n.Password)
 		} else {
 			n.LastError = "proxy request failed"
 		}
@@ -429,12 +437,16 @@ func (p *ProxyPool) CheckNode(ctx context.Context, id string, checkURL string) (
 	if target == "" {
 		target = DefaultHealthCheckURL
 	}
+	if _, err := validateHTTPURL(target); err != nil {
+		return node, fmt.Errorf("invalid health_check_url: %w", err)
+	}
 
 	tr, err := BuildProxyTransport(node)
 	if err != nil {
-		p.RecordResult(node.ID, false, 0, err)
+		redErr := errors.New(redactSecrets(err.Error(), node.Password))
+		p.RecordResult(node.ID, false, 0, redErr)
 		updated, _ := p.Get(node.ID)
-		return updated, err
+		return updated, redErr
 	}
 	defer tr.CloseIdleConnections()
 
@@ -443,9 +455,10 @@ func (p *ProxyPool) CheckNode(ctx context.Context, id string, checkURL string) (
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, target, nil)
 	if err != nil {
-		p.RecordResult(node.ID, false, 0, err)
+		redErr := errors.New(redactSecrets(err.Error(), node.Password))
+		p.RecordResult(node.ID, false, 0, redErr)
 		updated, _ := p.Get(node.ID)
-		return updated, err
+		return updated, redErr
 	}
 	req.Header.Set("User-Agent", "cap-gateway-healthcheck/1.0")
 
@@ -467,9 +480,10 @@ func (p *ProxyPool) CheckNode(ctx context.Context, id string, checkURL string) (
 		latency = 1
 	}
 	if err != nil {
-		p.RecordResult(node.ID, false, latency, err)
+		redErr := errors.New(redactSecrets(err.Error(), node.Password))
+		p.RecordResult(node.ID, false, latency, redErr)
 		updated, _ := p.Get(node.ID)
-		return updated, err
+		return updated, redErr
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
@@ -543,13 +557,16 @@ func (p *ProxyPool) FetchFromProviderURL(ctx context.Context, providerURL, forma
 	if providerURL == "" {
 		return 0, len(p.List()), errors.New("proxy provider URL is empty")
 	}
+	if _, err := validateHTTPURL(providerURL); err != nil {
+		return 0, len(p.List()), fmt.Errorf("invalid proxy provider URL: %w", err)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, providerURL, nil)
 	if err != nil {
-		return 0, len(p.List()), fmt.Errorf("build provider request: %w", err)
+		return 0, len(p.List()), fmt.Errorf("build provider request: %s", redactSecrets(err.Error()))
 	}
 	req.Header.Set("User-Agent", "cap-gateway/1.0")
 
@@ -559,7 +576,7 @@ func (p *ProxyPool) FetchFromProviderURL(ctx context.Context, providerURL, forma
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, len(p.List()), fmt.Errorf("fetch proxy provider: %w", err)
+		return 0, len(p.List()), fmt.Errorf("fetch proxy provider: %s", redactSecrets(err.Error()))
 	}
 	defer resp.Body.Close()
 
@@ -604,11 +621,13 @@ func (p *ProxyPool) FetchFromProviderURL(ctx context.Context, providerURL, forma
 		existingByURL[canonicalProxyKey(n)] = id
 	}
 	for _, n := range parsed {
-		normURL, err := NormalizeProxyURL(n.URL)
+		cleanURL, user, pass, err := splitProxyURLCredentials(n.URL, n.Username, n.Password)
 		if err != nil {
 			continue
 		}
-		n.URL = normURL
+		n.URL = cleanURL
+		n.Username = user
+		n.Password = pass
 		n.Enabled = true
 		n.Healthy = true
 		n.Tags = normalizeTags(append(n.Tags, "provider"))
@@ -643,9 +662,14 @@ func (p *ProxyPool) FetchFromProviderURL(ctx context.Context, providerURL, forma
 }
 
 // StartAutoRefresh launches a background refresh loop if ProviderURL and
-// RefreshIntervalSec > 0 are configured. Calling it restarts any previous loop.
+// RefreshIntervalSec > 0 are configured. Calling it atomically stops any
+// previous loop before launching a new one.
 func (p *ProxyPool) StartAutoRefresh(ctx context.Context) {
-	p.StopAutoRefresh()
+	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
+
+	p.stopAutoRefreshLocked()
+
 	cfg := p.Config()
 	if strings.TrimSpace(cfg.ProviderURL) == "" || cfg.RefreshIntervalSec <= 0 {
 		return
@@ -660,10 +684,8 @@ func (p *ProxyPool) StartAutoRefresh(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 
-	p.refreshMu.Lock()
 	p.refreshCancel = cancel
 	p.refreshDone = done
-	p.refreshMu.Unlock()
 
 	go func() {
 		defer close(done)
@@ -683,17 +705,44 @@ func (p *ProxyPool) StartAutoRefresh(ctx context.Context) {
 // StopAutoRefresh cancels any active background provider refresh loop.
 func (p *ProxyPool) StopAutoRefresh() {
 	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
+	p.stopAutoRefreshLocked()
+}
+
+func (p *ProxyPool) stopAutoRefreshLocked() {
 	cancel := p.refreshCancel
 	done := p.refreshDone
 	p.refreshCancel = nil
 	p.refreshDone = nil
-	p.refreshMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	if done != nil {
 		<-done
 	}
+}
+
+func splitProxyURLCredentials(rawURL, username, password string) (cleanURL, user, pass string, err error) {
+	normURL, err := NormalizeProxyURL(rawURL)
+	if err != nil {
+		return "", "", "", err
+	}
+	u, err := url.Parse(normURL)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid proxy URL %q: %w", redactURLString(rawURL), err)
+	}
+	user = username
+	pass = password
+	if u.User != nil {
+		if user == "" {
+			user = u.User.Username()
+		}
+		if pass == "" {
+			pass, _ = u.User.Password()
+		}
+		u.User = nil
+	}
+	return u.String(), user, pass, nil
 }
 
 func canonicalProxyKey(n ProxyNode) string {
@@ -715,7 +764,7 @@ func NormalizeProxyURL(raw string) (string, error) {
 	}
 	u, err := url.Parse(s)
 	if err != nil {
-		return "", fmt.Errorf("invalid proxy URL %q: %w", raw, err)
+		return "", fmt.Errorf("invalid proxy URL %q: %s", redactURLString(raw), redactSecrets(err.Error()))
 	}
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
@@ -724,7 +773,7 @@ func NormalizeProxyURL(raw string) (string, error) {
 		return "", fmt.Errorf("unsupported proxy scheme %q (supported: http, https, socks5, socks5h)", u.Scheme)
 	}
 	if u.Host == "" || u.Hostname() == "" {
-		return "", fmt.Errorf("proxy URL %q is missing host", raw)
+		return "", fmt.Errorf("proxy URL %q is missing host", redactURLString(raw))
 	}
 	u.Scheme = scheme
 	return u.String(), nil

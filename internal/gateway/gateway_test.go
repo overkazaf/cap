@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1152,4 +1153,294 @@ func TestGatewayCORSPOSTBodyMetricsCheckAllAndFridaRPC(t *testing.T) {
 	if _, ok := paths["/gw/disabled-api"]; ok {
 		t.Fatalf("OpenAPI should exclude disabled route /gw/disabled-api")
 	}
+}
+
+func TestCredentialRedactionAcrossProxyUpstreamAndSigner(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer func() { _ = mgr.Shutdown() }()
+
+	// 1. Proxy Upsert extracts embedded credentials from URL into Username/Password
+	//    and scrubs them from node.URL so display & transport deduplication work cleanly.
+	deadSrv := httptest.NewServer(http.NotFoundHandler())
+	deadHost := strings.TrimPrefix(deadSrv.URL, "http://")
+	deadSrv.Close()
+
+	secretPass := "S3cr3tPr0xyPass!"
+	savedProxy, err := mgr.SaveProxy(ProxyNode{
+		ID:      "p-auth-dead",
+		Name:    "Auth Dead Proxy",
+		URL:     "http://alice:" + secretPass + "@" + deadHost,
+		Enabled: true,
+		Healthy: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveProxy: %v", err)
+	}
+	if strings.Contains(savedProxy.URL, secretPass) || strings.Contains(savedProxy.URL, "alice") {
+		t.Fatalf("expected credentials stripped from node.URL, got %q", savedProxy.URL)
+	}
+	if savedProxy.Username != "alice" || savedProxy.Password != secretPass {
+		t.Fatalf("expected extracted credentials alice/%s, got %q/%q", secretPass, savedProxy.Username, savedProxy.Password)
+	}
+
+	// 2. CheckNode error and ProxyNode.LastError must redact credentials.
+	checked, checkErr := mgr.CheckProxy(context.Background(), savedProxy.ID, "http://127.0.0.1:1/health")
+	if checkErr == nil {
+		t.Fatalf("expected CheckProxy failure against dead proxy")
+	}
+	if strings.Contains(checkErr.Error(), secretPass) || strings.Contains(checked.LastError, secretPass) {
+		t.Fatalf("proxy password leaked in check error=%q last_error=%q", checkErr.Error(), checked.LastError)
+	}
+
+	// 3. Upstream failure through password proxy + upstream userinfo must redact URL & error.
+	upstreamPass := "Upstr3amP@ss!"
+	_, err = mgr.SaveRoute(ServiceRoute{
+		Slug:           "cred-upstream",
+		Name:           "Cred Upstream",
+		Enabled:        true,
+		UpstreamMethod: "GET",
+		UpstreamURL:    "http://bob:" + upstreamPass + "@" + deadHost + "/api",
+		RequireProxy:   false,
+	})
+	if err != nil {
+		t.Fatalf("SaveRoute: %v", err)
+	}
+	// Re-mark proxy healthy so pipeline uses it and fails
+	savedProxy.Healthy = true
+	_, _ = mgr.SaveProxy(*savedProxy)
+
+	res, invErr := mgr.InvokeRoute(context.Background(), "cred-upstream", TestInvokeRequest{})
+	if invErr == nil || res == nil || res.OK {
+		t.Fatalf("expected failed invocation against dead proxy/upstream")
+	}
+	for _, field := range []string{res.UpstreamURL, res.Error, invErr.Error()} {
+		if strings.Contains(field, secretPass) || strings.Contains(field, upstreamPass) {
+			t.Fatalf("credential leaked in result/error: %q", field)
+		}
+	}
+	logs := mgr.ListLogs(5)
+	if len(logs) == 0 {
+		t.Fatalf("expected invocation log entry")
+	}
+	if strings.Contains(logs[0].UpstreamURL, upstreamPass) || strings.Contains(logs[0].Error, secretPass) || strings.Contains(logs[0].Error, upstreamPass) {
+		t.Fatalf("credential leaked in InvocationRecord: %+v", logs[0])
+	}
+
+	// 4. HTTP signer failure with embedded credentials in EndpointURL must redact credentials.
+	signerPass := "Sign3rSecret!"
+	_, sigErr := ExecuteSigner(context.Background(), &SignerProvider{
+		Name:        "Auth HTTP Signer",
+		Kind:        SignerKindHTTP,
+		Enabled:     true,
+		EndpointURL: "http://svc:" + signerPass + "@" + deadHost + "/sign",
+	}, SignerInput{Method: "GET"})
+	if sigErr == nil {
+		t.Fatalf("expected HTTP signer failure against dead host")
+	}
+	if strings.Contains(sigErr.Error(), signerPass) {
+		t.Fatalf("signer credential leaked in error: %q", sigErr.Error())
+	}
+}
+
+func TestTemplateInjectionAndSSRFHardening(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer func() { _ = mgr.Shutdown() }()
+
+	// 1. Disallowed URL schemes rejected in SaveRoute, CheckNode, FetchFromProviderURL
+	for _, badURL := range []string{"file:///etc/passwd", "gopher://127.0.0.1:6379/_INFO", "ftp://example.com/a", "javascript:alert(1)"} {
+		if _, err := mgr.SaveRoute(ServiceRoute{Slug: "bad", Name: "Bad", UpstreamURL: badURL}); err == nil {
+			t.Fatalf("SaveRoute should reject disallowed scheme %q", badURL)
+		}
+	}
+	if _, _, err := mgr.ProxyPool().FetchFromProviderURL(context.Background(), "file:///etc/passwd", ProviderFormatLines, ""); err == nil {
+		t.Fatalf("FetchFromProviderURL should reject file:// scheme")
+	}
+	px, _ := mgr.SaveProxy(ProxyNode{ID: "px-scheme", Name: "PX", URL: "http://127.0.0.1:8080", Enabled: true})
+	if _, err := mgr.ProxyPool().CheckNode(context.Background(), px.ID, "file:///etc/passwd"); err == nil {
+		t.Fatalf("CheckNode should reject file:// scheme")
+	}
+
+	// 2. RenderURLTemplate escapes path traversal, query & fragment injection
+	u, err := RenderURLTemplate("https://api.example.com/v1/users/{{input.uid}}?tag={{input.tag}}", TemplateContext{
+		Input: map[string]string{
+			"uid": "../../admin?role=super#frag",
+			"tag": "a&admin=1#x",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RenderURLTemplate path/query escape: %v", err)
+	}
+	if u.Host != "api.example.com" || u.Fragment != "" {
+		t.Fatalf("unexpected host/fragment after escaping: %s", u.String())
+	}
+	if u.Query().Get("role") != "" || u.Query().Get("admin") != "" || u.Query().Get("tag") != "a&admin=1#x" {
+		t.Fatalf("query smuggling occurred: %s", u.String())
+	}
+	if !strings.Contains(u.EscapedPath(), "%2F") || strings.Contains(u.EscapedPath(), "/admin") {
+		t.Fatalf("path traversal not properly escaped: %s", u.EscapedPath())
+	}
+
+	// ".." segment alone must also be percent-encoded
+	uDot, err := RenderURLTemplate("https://api.example.com/v1/{{input.seg}}/info", TemplateContext{
+		Input: map[string]string{"seg": ".."},
+	})
+	if err != nil {
+		t.Fatalf("RenderURLTemplate dotdot: %v", err)
+	}
+	if !strings.Contains(uDot.EscapedPath(), "%2E%2E") {
+		t.Fatalf("expected '..' percent-encoded, got %s", uDot.EscapedPath())
+	}
+
+	// Host hijack attempts in templated subdomain must be rejected
+	for _, evilSub := range []string{"169.254.169.254#", "evil.com@", "evil.com/path?", "a b"} {
+		if _, err := RenderURLTemplate("https://{{input.sub}}.example.com/v1", TemplateContext{
+			Input: map[string]string{"sub": evilSub},
+		}); err == nil {
+			t.Fatalf("RenderURLTemplate should reject host hijack input %q", evilSub)
+		}
+	}
+
+	// 3. RenderJSONTemplate blocks JSON structure injection inside and outside strings
+	injectedBody := RenderJSONTemplate(
+		`{"q":"{{input.keyword}}","count":{{input.count}},"raw_val":{{input.evil_unquoted}}}`,
+		TemplateContext{
+			Input: map[string]string{
+				"keyword":       `shoes","admin":true,"x":"`,
+				"count":         "42",
+				"evil_unquoted": `1,"admin":true`,
+			},
+		},
+	)
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(injectedBody), &decoded); err != nil {
+		t.Fatalf("RenderJSONTemplate produced invalid JSON: %v (body=%s)", err, injectedBody)
+	}
+	if _, injected := decoded["admin"]; injected {
+		t.Fatalf("JSON structure injection succeeded: %s", injectedBody)
+	}
+	if decoded["q"] != `shoes","admin":true,"x":"` || decoded["count"] != float64(42) || decoded["raw_val"] != `1,"admin":true` {
+		t.Fatalf("unexpected safely escaped JSON values: %+v", decoded)
+	}
+
+	// 4. {{env.*}} only exposes CAP_GW_* from host os.Getenv (arbitrary host secrets blocked)
+	t.Setenv("CAP_GW_PUBLIC_REGION", "us-east")
+	t.Setenv("SUPER_SECRET_HOST_TOKEN", "do-not-leak")
+	gotEnv := RenderTemplate("r={{env.CAP_GW_PUBLIC_REGION}}&s={{env.SUPER_SECRET_HOST_TOKEN}}", TemplateContext{})
+	if gotEnv != "r=us-east&s=" {
+		t.Fatalf("unexpected env expansion: %q (want r=us-east&s=)", gotEnv)
+	}
+}
+
+func TestSignerHeaderCaseOverrideFridaEscapingOpenAPIAndAutoRefreshRace(t *testing.T) {
+	// 1. ApplySignature overrides existing headers case-insensitively (no duplicate keys)
+	u, _ := url.Parse("https://api.example.com/v1")
+	existing := map[string]string{
+		"x-sign":   "old-lowercase-value",
+		"x-gorgon": "old-gorgon",
+	}
+	provider := &SignerProvider{
+		InjectTarget:  InjectTargetHeader,
+		InjectField:   "X-Sign",
+		OutputMapping: map[string]string{"g": "header:X-Gorgon"},
+	}
+	sigOut := &SignerOutput{
+		Sign:    "new-fresh-sig",
+		Headers: map[string]string{"X-Extra": "1"},
+		Raw:     map[string]any{"g": "new-gorgon"},
+	}
+	_, hdrs, _, err := ApplySignature(provider, sigOut, u, existing, "")
+	if err != nil {
+		t.Fatalf("ApplySignature: %v", err)
+	}
+	if _, dup := hdrs["x-sign"]; dup {
+		t.Fatalf("expected lowercase x-sign removed when X-Sign injected, got %+v", hdrs)
+	}
+	if _, dup := hdrs["x-gorgon"]; dup {
+		t.Fatalf("expected lowercase x-gorgon removed when X-Gorgon mapped, got %+v", hdrs)
+	}
+	if hdrs["X-Sign"] != "new-fresh-sig" || hdrs["X-Gorgon"] != "new-gorgon" {
+		t.Fatalf("unexpected headers after case-insensitive override: %+v", hdrs)
+	}
+
+	// 2. buildFridaRPCDriverScript escapes quotes/backslashes cleanly and yields valid Python syntax
+	trickyFrida := &SignerProvider{
+		FridaSerial:  `emu'1"\test`,
+		FridaPackage: `com.app."evil"'pkg`,
+		FridaExport:  `sign'Req"\n`,
+		ScriptCode:   "", // exercises fallback JS error message generation too
+	}
+	pyScript := buildFridaRPCDriverScript(trickyFrida)
+	if pyPath, err := exec.LookPath("python3"); err == nil {
+		tmpPy := filepath.Join(t.TempDir(), "frida_driver.py")
+		if err := os.WriteFile(tmpPy, []byte(pyScript), 0o600); err != nil {
+			t.Fatalf("write temp py: %v", err)
+		}
+		if out, err := exec.Command(pyPath, "-m", "py_compile", tmpPy).CombinedOutput(); err != nil {
+			t.Fatalf("generated Frida RPC python failed py_compile: %v\n%s\nscript:\n%s", err, string(out), pyScript)
+		}
+	}
+
+	// 3. OpenAPI 3.0.3 validity: normalized ":9090" server URL, no duplicate "raw" param, no requestBody on GET
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer func() { _ = mgr.Shutdown() }()
+
+	_ = mgr.UpdateConfig(GatewayConfig{ListenAddr: ":9090"})
+	_, err = mgr.SaveRoute(ServiceRoute{
+		Slug:           "get-with-raw-and-body",
+		Name:           "GET Edge Case",
+		Enabled:        true,
+		UpstreamMethod: "GET",
+		UpstreamURL:    "https://api.example.com/items?raw={{input.raw}}&id={{input.id}}",
+		BodyTemplate:   `{"ignored_for_openapi_get":true}`,
+	})
+	if err != nil {
+		t.Fatalf("SaveRoute: %v", err)
+	}
+
+	spec := mgr.OpenAPISpec()
+	servers, _ := spec["servers"].([]map[string]any)
+	if len(servers) == 0 || servers[0]["url"] != "http://127.0.0.1:9090" {
+		t.Fatalf("OpenAPI server URL = %+v, want http://127.0.0.1:9090", servers)
+	}
+	paths, _ := spec["paths"].(map[string]any)
+	pathItem, _ := paths["/gw/get-with-raw-and-body"].(map[string]any)
+	getOp, _ := pathItem["get"].(map[string]any)
+	if _, hasReqBody := getOp["requestBody"]; hasReqBody {
+		t.Fatalf("OpenAPI GET operation must not include requestBody")
+	}
+	params, _ := getOp["parameters"].([]map[string]any)
+	rawCount := 0
+	for _, p := range params {
+		if name, _ := p["name"].(string); strings.EqualFold(name, "raw") {
+			rawCount++
+		}
+	}
+	if rawCount != 1 {
+		t.Fatalf("expected exactly 1 'raw' query parameter in OpenAPI, got %d (%+v)", rawCount, params)
+	}
+
+	// 4. Concurrent StartAutoRefresh / StopAutoRefresh race test
+	pool := NewProxyPool(ProxyPoolConfig{
+		ProviderURL:        "http://127.0.0.1:1/proxies",
+		RefreshIntervalSec: 60,
+	})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.StartAutoRefresh(context.Background())
+		}()
+	}
+	wg.Wait()
+	pool.StopAutoRefresh()
 }

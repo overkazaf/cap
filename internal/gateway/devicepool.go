@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -657,7 +659,12 @@ func resolveTemplateExpr(expr string, vars TemplateContext, ts, tsMs int64, nonc
 				return v, true
 			}
 		}
-		return os.Getenv(key), true
+		// Only expose explicitly prefixed CAP_GW_* host environment variables to
+		// prevent accidental exfiltration of unrelated host secrets.
+		if strings.HasPrefix(strings.ToUpper(key), "CAP_GW_") {
+			return os.Getenv(key), true
+		}
+		return "", true
 	}
 
 	if field, ok := cutPrefixFold(expr, "device."); ok {
@@ -806,4 +813,287 @@ func TemplateUsesDevice(sources ...string) bool {
 		}
 	}
 	return false
+}
+
+var (
+	safeAuthorityExpansionRe = regexp.MustCompile(`^[a-zA-Z0-9._:-]*$`)
+	jsonNumberRe             = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+)
+
+// ValidateRouteURLTemplate checks that a route's UpstreamURL template uses an
+// http or https scheme and has a valid host structure.
+func ValidateRouteURLTemplate(rawTemplate string) error {
+	rawTemplate = strings.TrimSpace(rawTemplate)
+	if rawTemplate == "" {
+		return errors.New("upstream_url is required")
+	}
+	sentinelRaw := templateExprRe.ReplaceAllString(rawTemplate, "capplaceholder")
+	_, err := validateHTTPURL(sentinelRaw)
+	return err
+}
+
+// RenderURLTemplate expands `{{...}}` placeholders in a route URL template
+// safely:
+//   - Only http/https schemes are permitted.
+//   - Template expansions in URL path segments are escaped via url.PathEscape
+//     (and "." / ".." traversal segments are percent-encoded).
+//   - Template expansions in URL query strings are escaped via url.QueryEscape.
+//   - Template expansions inside authority/host portions reject authority
+//     delimiters (`@`, `/`, `?`, `#`, `\`, whitespace) to prevent host hijack.
+//   - Non-templated (fixed) scheme and host components in rawTemplate are
+//     verified unchanged after expansion.
+func RenderURLTemplate(rawTemplate string, vars TemplateContext) (*url.URL, error) {
+	rawTemplate = strings.TrimSpace(rawTemplate)
+	if rawTemplate == "" {
+		return nil, errors.New("upstream URL is empty")
+	}
+
+	const sentinel = "capplaceholder"
+	sentinelRaw := templateExprRe.ReplaceAllString(rawTemplate, sentinel)
+	tmplURL, err := validateHTTPURL(sentinelRaw)
+	if err != nil {
+		return nil, err
+	}
+	schemeFixed := !strings.Contains(tmplURL.Scheme, sentinel)
+	hostFixed := !strings.Contains(tmplURL.Host, sentinel)
+	userFixed := tmplURL.User == nil || !strings.Contains(tmplURL.User.String(), sentinel)
+
+	now := time.Now()
+	ts := vars.Timestamp
+	if ts == 0 {
+		ts = now.Unix()
+	}
+	tsMs := vars.TimestampMs
+	if tsMs == 0 {
+		tsMs = now.UnixMilli()
+	}
+	nonce := vars.Nonce
+	if nonce == "" {
+		nonce = randomHex(8)
+	}
+
+	schemeIdx := strings.Index(rawTemplate, "://")
+	if schemeIdx < 0 {
+		return nil, errors.New("upstream URL must include http:// or https:// scheme")
+	}
+	schemePart := rawTemplate[:schemeIdx]
+	rest := rawTemplate[schemeIdx+3:]
+
+	authEnd := strings.IndexAny(rest, "/?#")
+	var authorityPart, tail string
+	if authEnd < 0 {
+		authorityPart = rest
+	} else {
+		authorityPart = rest[:authEnd]
+		tail = rest[authEnd:]
+	}
+
+	var pathPart, queryPart, fragPart string
+	hasQuery := false
+	hasFrag := false
+	if hashIdx := strings.IndexByte(tail, '#'); hashIdx >= 0 {
+		fragPart = tail[hashIdx+1:]
+		tail = tail[:hashIdx]
+		hasFrag = true
+	}
+	if qIdx := strings.IndexByte(tail, '?'); qIdx >= 0 {
+		queryPart = tail[qIdx+1:]
+		pathPart = tail[:qIdx]
+		hasQuery = true
+	} else {
+		pathPart = tail
+	}
+
+	expandWith := func(part string, transform func(string) (string, error)) (string, error) {
+		if !strings.Contains(part, "{{") {
+			return part, nil
+		}
+		var out strings.Builder
+		last := 0
+		for _, loc := range templateExprRe.FindAllStringSubmatchIndex(part, -1) {
+			out.WriteString(part[last:loc[0]])
+			expr := strings.TrimSpace(part[loc[2]:loc[3]])
+			val, ok := resolveTemplateExpr(expr, vars, ts, tsMs, nonce)
+			if !ok {
+				val = ""
+			}
+			safeVal, err := transform(val)
+			if err != nil {
+				return "", err
+			}
+			out.WriteString(safeVal)
+			last = loc[1]
+		}
+		out.WriteString(part[last:])
+		return out.String(), nil
+	}
+
+	renderedScheme, err := expandWith(schemePart, func(v string) (string, error) {
+		s := strings.ToLower(strings.TrimSpace(v))
+		if s != "http" && s != "https" {
+			return "", fmt.Errorf("disallowed URL scheme %q", v)
+		}
+		return s, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	renderedAuthority, err := expandWith(authorityPart, func(v string) (string, error) {
+		if !safeAuthorityExpansionRe.MatchString(v) {
+			return "", fmt.Errorf("unsafe characters in host template expansion %q", redactSecrets(v))
+		}
+		return v, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	renderedPath, err := expandWith(pathPart, func(v string) (string, error) {
+		esc := url.PathEscape(v)
+		switch esc {
+		case ".":
+			return "%2E", nil
+		case "..":
+			return "%2E%2E", nil
+		default:
+			return esc, nil
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	renderedQuery, err := expandWith(queryPart, func(v string) (string, error) {
+		return url.QueryEscape(v), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	renderedFrag, err := expandWith(fragPart, func(v string) (string, error) {
+		return url.QueryEscape(v), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var rebuilt strings.Builder
+	rebuilt.WriteString(renderedScheme)
+	rebuilt.WriteString("://")
+	rebuilt.WriteString(renderedAuthority)
+	rebuilt.WriteString(renderedPath)
+	if hasQuery {
+		rebuilt.WriteByte('?')
+		rebuilt.WriteString(renderedQuery)
+	}
+	if hasFrag {
+		rebuilt.WriteByte('#')
+		rebuilt.WriteString(renderedFrag)
+	}
+
+	parsed, err := validateHTTPURL(rebuilt.String())
+	if err != nil {
+		return nil, err
+	}
+	if schemeFixed && !strings.EqualFold(parsed.Scheme, tmplURL.Scheme) {
+		return nil, fmt.Errorf("rendered URL scheme %q changed fixed scheme %q", parsed.Scheme, tmplURL.Scheme)
+	}
+	if hostFixed && !strings.EqualFold(parsed.Host, tmplURL.Host) {
+		return nil, fmt.Errorf("rendered URL host %q changed fixed host %q", parsed.Host, tmplURL.Host)
+	}
+	if userFixed && tmplURL.User == nil && parsed.User != nil {
+		return nil, errors.New("rendered URL unexpectedly introduced userinfo")
+	}
+	return parsed, nil
+}
+
+// RenderJSONTemplate expands `{{...}}` placeholders inside a JSON body template
+// while preventing JSON structure injection:
+//   - Expansions inside JSON string literals (`"..."`) have quotes, backslashes,
+//     and control characters JSON-escaped.
+//   - Expansions outside JSON string literals remain unquoted only if they are
+//     valid JSON numbers/booleans/null, otherwise they are JSON-quoted.
+func RenderJSONTemplate(tmpl string, vars TemplateContext) string {
+	if !strings.Contains(tmpl, "{{") {
+		return tmpl
+	}
+	now := time.Now()
+	ts := vars.Timestamp
+	if ts == 0 {
+		ts = now.Unix()
+	}
+	tsMs := vars.TimestampMs
+	if tsMs == 0 {
+		tsMs = now.UnixMilli()
+	}
+	nonce := vars.Nonce
+	if nonce == "" {
+		nonce = randomHex(8)
+	}
+
+	var out strings.Builder
+	last := 0
+	inString := false
+	escaped := false
+
+	advanceJSONState := func(chunk string) {
+		for i := 0; i < len(chunk); i++ {
+			ch := chunk[i]
+			if inString {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if ch == '\\' {
+					escaped = true
+				} else if ch == '"' {
+					inString = false
+				}
+			} else if ch == '"' {
+				inString = true
+			}
+		}
+	}
+
+	for _, loc := range templateExprRe.FindAllStringSubmatchIndex(tmpl, -1) {
+		chunk := tmpl[last:loc[0]]
+		out.WriteString(chunk)
+		advanceJSONState(chunk)
+
+		expr := strings.TrimSpace(tmpl[loc[2]:loc[3]])
+		val, ok := resolveTemplateExpr(expr, vars, ts, tsMs, nonce)
+		if !ok {
+			val = ""
+		}
+
+		if inString {
+			out.WriteString(escapeJSONStringContent(val))
+		} else if isSafeJSONLiteral(val) {
+			out.WriteString(val)
+		} else {
+			out.WriteString(jsonStringLiteral(val))
+		}
+		last = loc[1]
+	}
+	out.WriteString(tmpl[last:])
+	return out.String()
+}
+
+func escapeJSONStringContent(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil || len(b) < 2 {
+		return ""
+	}
+	return string(b[1 : len(b)-1])
+}
+
+func isSafeJSONLiteral(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	switch trimmed {
+	case "true", "false", "null":
+		return true
+	default:
+		return jsonNumberRe.MatchString(trimmed)
+	}
 }

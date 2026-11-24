@@ -445,8 +445,8 @@ func (m *Manager) GetRouteBySlug(slug string) (*ServiceRoute, bool) {
 
 func (m *Manager) SaveRoute(r ServiceRoute) (*ServiceRoute, error) {
 	r.UpstreamURL = strings.TrimSpace(r.UpstreamURL)
-	if r.UpstreamURL == "" {
-		return nil, errors.New("upstream_url is required")
+	if err := ValidateRouteURLTemplate(r.UpstreamURL); err != nil {
+		return nil, err
 	}
 	r.UpstreamMethod = strings.ToUpper(strings.TrimSpace(r.UpstreamMethod))
 	if r.UpstreamMethod == "" {

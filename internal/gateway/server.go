@@ -525,12 +525,20 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		ClientIP:  clientIP,
 	}
 
+	var secrets []string
+	trackSecret := func(s string) {
+		if s != "" {
+			secrets = append(secrets, s)
+		}
+	}
+
 	finishErr := func(httpCode int, errMsg string) (*TestInvokeResult, int) {
+		safeErr := redactSecrets(errMsg, secrets...)
 		elapsed := time.Since(start).Milliseconds()
 		rec.LatencyMs = elapsed
 		rec.StatusCode = httpCode
 		rec.OK = false
-		rec.Error = errMsg
+		rec.Error = safeErr
 		m.recordInvocation(rec)
 		return &TestInvokeResult{
 			OK:          false,
@@ -543,7 +551,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 			Device:      rec.DeviceName,
 			DeviceID:    rec.DeviceID,
 			Retries:     rec.Retries,
-			Error:       errMsg,
+			Error:       safeErr,
 		}, httpCode
 	}
 
@@ -600,6 +608,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 			wantProxy = false
 		} else {
 			initialProxy = pn
+			trackSecret(pn.Password)
 			rec.ProxyID = pn.ID
 			rec.ProxyName = pn.Name
 		}
@@ -615,10 +624,14 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		Nonce:       randomHex(8),
 	}
 
-	renderedURL := RenderTemplate(route.UpstreamURL, tplCtx)
-	parsedURL, err := url.Parse(renderedURL)
-	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		return finishErr(http.StatusBadRequest, fmt.Sprintf("invalid rendered upstream URL %q", renderedURL))
+	parsedURL, err := RenderURLTemplate(route.UpstreamURL, tplCtx)
+	if err != nil {
+		return finishErr(http.StatusBadRequest, fmt.Sprintf("invalid rendered upstream URL: %v", err))
+	}
+	if parsedURL.User != nil {
+		if pw, ok := parsedURL.User.Password(); ok {
+			trackSecret(pw)
+		}
 	}
 
 	q := parsedURL.Query()
@@ -666,7 +679,13 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 
 	var renderedBody string
 	if strings.TrimSpace(route.BodyTemplate) != "" {
-		renderedBody = RenderTemplate(route.BodyTemplate, tplCtx)
+		trimmedTpl := strings.TrimSpace(route.BodyTemplate)
+		ct := strings.ToLower(lookupMapFold(headers, "Content-Type"))
+		if strings.HasPrefix(trimmedTpl, "{") || strings.HasPrefix(trimmedTpl, "[") || strings.Contains(ct, "json") {
+			renderedBody = RenderJSONTemplate(route.BodyTemplate, tplCtx)
+		} else {
+			renderedBody = RenderTemplate(route.BodyTemplate, tplCtx)
+		}
 	} else {
 		renderedBody = req.Body
 	}
@@ -682,6 +701,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		if !signer.Enabled {
 			return finishErr(http.StatusBadGateway, fmt.Sprintf("signer %q is disabled", signer.Name))
 		}
+		trackSecret(signer.HMACSecret)
 
 		flatQuery := make(map[string]string)
 		for k, vals := range parsedURL.Query() {
@@ -719,7 +739,8 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 	}
 
 	finalURL := parsedURL.String()
-	rec.UpstreamURL = finalURL
+	redactedFinalURL := parsedURL.Redacted()
+	rec.UpstreamURL = redactedFinalURL
 
 	// Step 5: Forward to Upstream (with failover retries across healthy proxies)
 	timeoutSec := route.TimeoutSec
@@ -772,6 +793,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 
 		var transport http.RoundTripper = m.directTransport
 		if wantProxy && currentProxy != nil {
+			trackSecret(currentProxy.Password)
 			rec.ProxyID = currentProxy.ID
 			rec.ProxyName = currentProxy.Name
 			tr, trErr := m.proxies.TransportFor(currentProxy)
@@ -882,7 +904,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		Status:        upstreamResp.StatusCode,
 		LatencyMs:     elapsed,
 		SignerMs:      rec.SignerMs,
-		UpstreamURL:   finalURL,
+		UpstreamURL:   redactedFinalURL,
 		Proxy:         rec.ProxyName,
 		ProxyID:       rec.ProxyID,
 		Device:        rec.DeviceName,
@@ -905,10 +927,7 @@ func (m *Manager) OpenAPISpec() map[string]any {
 	if addr == "" {
 		addr = DefaultListenAddr
 	}
-	serverURL := addr
-	if !strings.HasPrefix(serverURL, "http://") && !strings.HasPrefix(serverURL, "https://") {
-		serverURL = "http://" + serverURL
-	}
+	serverURL := normalizeOpenAPIServerURL(addr)
 
 	paths := make(map[string]any)
 	for _, r := range m.ListRoutes() {
@@ -926,6 +945,9 @@ func (m *Manager) OpenAPISpec() map[string]any {
 		inputKeys := routeTemplateInputKeys(&r)
 		params := make([]map[string]any, 0, len(inputKeys)+1)
 		for _, k := range inputKeys {
+			if strings.EqualFold(k, "raw") {
+				continue
+			}
 			params = append(params, map[string]any{
 				"name":        k,
 				"in":          "query",
@@ -965,7 +987,7 @@ func (m *Manager) OpenAPISpec() map[string]any {
 			},
 		}
 
-		if opMethod == "post" || opMethod == "put" || opMethod == "patch" || strings.TrimSpace(r.BodyTemplate) != "" {
+		if opMethod == "post" || opMethod == "put" || opMethod == "patch" || (opMethod == "delete" && strings.TrimSpace(r.BodyTemplate) != "") {
 			props := make(map[string]any, len(inputKeys))
 			for _, k := range inputKeys {
 				props[k] = map[string]any{"type": "string"}
@@ -1095,14 +1117,26 @@ func isClientAutoHeader(name string) bool {
 	}
 }
 
-func setHeaderFold(headers map[string]string, key, val string) {
-	for existing := range headers {
-		if strings.EqualFold(existing, key) {
-			delete(headers, existing)
-			break
-		}
+func normalizeOpenAPIServerURL(addr string) string {
+	s := strings.TrimSpace(addr)
+	if s == "" {
+		s = DefaultListenAddr
 	}
-	headers[key] = val
+	scheme := "http"
+	if strings.HasPrefix(s, "https://") {
+		scheme = "https"
+		s = strings.TrimPrefix(s, "https://")
+	} else if strings.HasPrefix(s, "http://") {
+		s = strings.TrimPrefix(s, "http://")
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err == nil {
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		s = net.JoinHostPort(host, port)
+	}
+	return scheme + "://" + s
 }
 
 func formatCookieHeader(cookies map[string]string) string {
@@ -1138,7 +1172,8 @@ func diffQueryParams(before, after url.Values) map[string]string {
 func diffStringMaps(before, after map[string]string) map[string]string {
 	var diff map[string]string
 	for k, v := range after {
-		if bv, ok := before[k]; !ok || bv != v {
+		bv := lookupMapFold(before, k)
+		if bv != v || !hasKeyFold(before, k) {
 			if diff == nil {
 				diff = make(map[string]string)
 			}
@@ -1146,6 +1181,15 @@ func diffStringMaps(before, after map[string]string) map[string]string {
 		}
 	}
 	return diff
+}
+
+func hasKeyFold(m map[string]string, key string) bool {
+	for k := range m {
+		if strings.EqualFold(k, key) {
+			return true
+		}
+	}
+	return false
 }
 
 func clientIPFromRequest(r *http.Request) string {

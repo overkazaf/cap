@@ -9,8 +9,10 @@ package gateway
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -302,7 +304,72 @@ type TestInvokeResult struct {
 	SignedHeaders map[string]string `json:"signed_headers,omitempty"`
 }
 
-var idSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+var (
+	idSanitizeRe  = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+	urlUserInfoRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)([^/\s@]+)@`)
+)
+
+// redactSecrets scrubs embedded URL userinfo (scheme://user:pass@host) and any
+// explicitly provided secret values from logs and error messages.
+func redactSecrets(text string, secrets ...string) string {
+	if text == "" {
+		return ""
+	}
+	out := urlUserInfoRe.ReplaceAllString(text, "${1}REDACTED@")
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, secret, "[REDACTED]")
+		if esc := url.QueryEscape(secret); esc != "" && esc != secret {
+			out = strings.ReplaceAll(out, esc, "[REDACTED]")
+		}
+	}
+	return out
+}
+
+func redactURLString(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil {
+		return u.Redacted()
+	}
+	return redactSecrets(raw)
+}
+
+func validateHTTPURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL %q: %w", redactURLString(raw), err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("unsupported URL scheme %q (only http and https are allowed)", u.Scheme)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return nil, fmt.Errorf("URL %q is missing host", redactURLString(raw))
+	}
+	return u, nil
+}
+
+func setHeaderFold(headers map[string]string, key, val string) {
+	for existing := range headers {
+		if strings.EqualFold(existing, key) {
+			delete(headers, existing)
+			break
+		}
+	}
+	headers[key] = val
+}
+
+func jsonStringLiteral(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(b)
+}
 
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)

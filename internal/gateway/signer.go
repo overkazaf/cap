@@ -423,16 +423,16 @@ func runHTTPSigner(ctx context.Context, p *SignerProvider, input SignerInput) (*
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("call http signer %s: %w", endpoint, err)
+		return nil, fmt.Errorf("call http signer %s: %s", redactURLString(endpoint), redactSecrets(err.Error()))
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxSignerOutputSize))
 	if err != nil {
-		return nil, fmt.Errorf("read http signer response: %w", err)
+		return nil, fmt.Errorf("read http signer response: %s", redactSecrets(err.Error()))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http signer returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return nil, fmt.Errorf("http signer returned status %d: %s", resp.StatusCode, redactSecrets(strings.TrimSpace(string(bodyBytes))))
 	}
 
 	return parseSignerResponseBytes(bodyBytes)
@@ -475,8 +475,10 @@ func runFridaRPCSigner(ctx context.Context, p *SignerProvider, input SignerInput
 func buildFridaRPCDriverScript(p *SignerProvider) string {
 	jsCode := strings.TrimSpace(p.ScriptCode)
 	if jsCode == "" {
-		jsCode = fmt.Sprintf("rpc.exports = { %s: function(payload) { throw new Error('script_code not configured for export %s'); } };",
-			strconv.Quote(p.FridaExport), p.FridaExport)
+		jsCode = fmt.Sprintf("rpc.exports = { %s: function(payload) { throw new Error(%s); } };",
+			jsonStringLiteral(p.FridaExport),
+			jsonStringLiteral("script_code not configured for export "+p.FridaExport),
+		)
 	}
 	return fmt.Sprintf(`import json, sys
 import frida
@@ -508,10 +510,10 @@ finally:
     except Exception:
         pass
 `,
-		strconv.Quote(strings.TrimSpace(p.FridaSerial)),
-		strconv.Quote(strings.TrimSpace(p.FridaPackage)),
-		strconv.Quote(strings.TrimSpace(p.FridaExport)),
-		strconv.Quote(jsCode),
+		jsonStringLiteral(strings.TrimSpace(p.FridaSerial)),
+		jsonStringLiteral(strings.TrimSpace(p.FridaPackage)),
+		jsonStringLiteral(strings.TrimSpace(p.FridaExport)),
+		jsonStringLiteral(jsCode),
 	)
 }
 
@@ -638,7 +640,7 @@ func ApplySignature(p *SignerProvider, out *SignerOutput, targetURL *url.URL, he
 		q.Set(k, v)
 	}
 	for k, v := range out.Headers {
-		hdrs[k] = v
+		setHeaderFold(hdrs, k, v)
 	}
 	for k, v := range out.BodyFields {
 		bodyFields[k] = v
@@ -674,7 +676,7 @@ func ApplySignature(p *SignerProvider, out *SignerOutput, targetURL *url.URL, he
 			}
 			switch target {
 			case InjectTargetHeader:
-				hdrs[field] = stringifyScalar(val)
+				setHeaderFold(hdrs, field, stringifyScalar(val))
 			case InjectTargetBodyJSON:
 				bodyFields[field] = val
 			default:
@@ -687,7 +689,7 @@ func ApplySignature(p *SignerProvider, out *SignerOutput, targetURL *url.URL, he
 	if out.Sign != "" && !mappedSign {
 		switch defaultTarget {
 		case InjectTargetHeader:
-			hdrs[defaultField] = out.Sign
+			setHeaderFold(hdrs, defaultField, out.Sign)
 		case InjectTargetBodyJSON:
 			bodyFields[defaultField] = out.Sign
 		default:
@@ -716,7 +718,7 @@ func ApplySignature(p *SignerProvider, out *SignerOutput, targetURL *url.URL, he
 		}
 		updatedBody = string(encoded)
 		if lookupMapFold(hdrs, "Content-Type") == "" {
-			hdrs["Content-Type"] = "application/json"
+			setHeaderFold(hdrs, "Content-Type", "application/json")
 		}
 	}
 

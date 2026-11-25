@@ -409,6 +409,9 @@ func (a *App) InstallCompanionAPK(serial string) (*android.CompanionStatus, erro
 		st.Error = err.Error()
 		return &st, err
 	}
+	if certPath, _, caErr := proxy.EnsureCA(a.certDir); caErr == nil && certPath != "" {
+		_ = android.SyncCompanionCert(resolved, certPath)
+	}
 	st := android.GetCompanionStatus(resolved)
 	if connSt, stErr := a.GetDeviceConnectionStatus(resolved); stErr == nil {
 		a.events.Emit(EventDeviceStatus, connSt)

@@ -8,6 +8,7 @@ import android.provider.Settings;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
@@ -103,14 +104,28 @@ public final class ProxyCleaner {
         String[] paths = {
                 "/system/bin/su",
                 "/system/xbin/su",
+                "/system_ext/bin/su",
+                "/debug_ramdisk/su",
+                "/vendor/bin/su",
+                "/product/bin/su",
+                "/odm/bin/su",
                 "/sbin/su",
                 "/su/bin/su",
                 "/data/adb/magisk/su",
-                "/data/adb/ksu/bin/su"
+                "/data/adb/ksu/bin/su",
+                "/data/adb/ap/bin/su"
         };
         for (String p : paths) {
             if (new File(p).exists()) {
                 return true;
+            }
+        }
+        String pathEnv = System.getenv("PATH");
+        if (pathEnv != null && !pathEnv.isEmpty()) {
+            for (String dir : pathEnv.split(":")) {
+                if (dir != null && !dir.isEmpty() && new File(dir, "su").exists()) {
+                    return true;
+                }
             }
         }
         return false;
@@ -174,14 +189,42 @@ public final class ProxyCleaner {
         }
     }
 
+    public static File savePrivateCertBytes(Context ctx, byte[] certBytes) {
+        if (ctx == null || certBytes == null || certBytes.length == 0) {
+            return null;
+        }
+        File out = new File(ctx.getApplicationContext().getFilesDir(), "cap-ca.crt");
+        FileOutputStream fos = null;
+        try {
+            fos = new FileOutputStream(out, false);
+            fos.write(certBytes);
+            fos.flush();
+            return out;
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed caching CA cert into app-private storage: " + t.getMessage());
+            return null;
+        } finally {
+            if (fos != null) {
+                try {
+                    fos.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
     public static File findCertFile(Context ctx, String preferredPath) {
         if (preferredPath != null && !preferredPath.trim().isEmpty()) {
             File f = new File(preferredPath.trim());
-            if (f.isFile() && f.canRead()) {
+            if (isAllowedCertPath(ctx, f) && f.isFile() && f.canRead()) {
                 return f;
             }
         }
         if (ctx != null) {
+            File privateCert = new File(ctx.getApplicationContext().getFilesDir(), "cap-ca.crt");
+            if (privateCert.isFile() && privateCert.canRead()) {
+                return privateCert;
+            }
             File extDir = ctx.getExternalFilesDir(null);
             if (extDir != null) {
                 File appCert = new File(extDir, "cap-ca.crt");
@@ -199,5 +242,49 @@ public final class ProxyCleaner {
             return tmp;
         }
         return null;
+    }
+
+    public static boolean isAllowedCertPath(Context ctx, File candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        String lowerName = candidate.getName().toLowerCase(java.util.Locale.US);
+        if (!lowerName.endsWith(".crt")
+                && !lowerName.endsWith(".cer")
+                && !lowerName.endsWith(".pem")
+                && !lowerName.endsWith(".der")) {
+            return false;
+        }
+        try {
+            String canonical = candidate.getCanonicalPath();
+            java.util.ArrayList<File> allowedDirs = new java.util.ArrayList<File>();
+            if (ctx != null) {
+                File filesDir = ctx.getApplicationContext().getFilesDir();
+                if (filesDir != null) {
+                    allowedDirs.add(filesDir);
+                }
+                File extDir = ctx.getExternalFilesDir(null);
+                if (extDir != null) {
+                    allowedDirs.add(extDir);
+                }
+            }
+            allowedDirs.add(new File("/sdcard/Download"));
+            allowedDirs.add(new File("/storage/emulated/0/Download"));
+            allowedDirs.add(new File("/data/local/tmp"));
+
+            for (File dir : allowedDirs) {
+                try {
+                    String dirCanon = dir.getCanonicalPath();
+                    String prefix = dirCanon.endsWith(File.separator) ? dirCanon : dirCanon + File.separator;
+                    if (canonical.startsWith(prefix)) {
+                        return true;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+        return false;
     }
 }

@@ -27,8 +27,14 @@
     <string name="value_missing_perm">Not granted — reconnect via Cap</string>
     <string name="value_watchdog_running">Active (misses: %1$d/%2$d)</string>
     <string name="value_watchdog_stopped">Stopped</string>
-    <string name="value_cert_ready">Ready at /sdcard/Download/cap-ca.crt</string>
-    <string name="value_cert_missing">Not pushed yet</string>
+    <string name="value_cert_system">Installed · System CA (%1$s)</string>
+    <string name="value_cert_system_plain">Installed · System CA</string>
+    <string name="value_cert_user">Installed · User CA (%1$s)</string>
+    <string name="value_cert_user_plain">Installed · User CA</string>
+    <string name="value_cert_mismatch">Stale CA detected (fingerprint mismatch) — reinstall</string>
+    <string name="value_cert_legacy_only">Legacy /system only — missing from Android 14+ APEX</string>
+    <string name="value_cert_ready">Not installed · Cert file ready (tap below)</string>
+    <string name="value_cert_missing">Not installed (not detected in trust store)</string>
 
     <string name="btn_restore_network">Disconnect &amp; Clean Proxy</string>
     <string name="btn_install_cert">Install CA Certificate</string>
@@ -49,7 +55,9 @@
 
     <string name="toast_cleaned">Proxy cleared — network restored</string>
     <string name="toast_clean_failed">Could not clear proxy (missing WRITE_SECURE_SETTINGS)</string>
-    <string name="toast_cert_not_found">CA cert file not found at /sdcard/Download/cap-ca.crt</string>
+    <string name="toast_cert_not_found">CA cert file not found — install or push via Cap on desktop</string>
+    <string name="toast_cert_already_installed">Cap MITM CA is already trusted on this device</string>
+    <string name="toast_cert_verified">Cap MITM CA verified in Android trust store</string>
     <string name="toast_cert_launched">Follow system prompt to install Cap MITM CA</string>
     <string name="toast_cert_failed">Failed to launch certificate installer: %1$s</string>
 

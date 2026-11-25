@@ -117,7 +117,9 @@
   $: isRooted = Boolean(connStatus?.rooted || deviceEnv?.rooted)
 
   $: certStore = connStatus?.cert_status?.store || 'none'
-  $: certInstalled = Boolean(connStatus?.cert_status?.installed || certStore === 'system' || certStore === 'user')
+  $: certMethod = connStatus?.cert_status?.method || ''
+  $: certDetails = connStatus?.cert_status?.details || ''
+  $: certInstalled = Boolean(connStatus?.cert_status?.installed)
   $: certHash = connStatus?.cert_status?.hash || caCertInfo?.hash || ''
   $: certNeedsReboot = Boolean(connStatus?.cert_status?.needs_reboot)
 
@@ -131,13 +133,22 @@
   $: activeRouteMode = connStatus?.mode === 'vpn' ? $t('core.capture.device.modeVpn') : $t('core.capture.device.modeProxy')
 
   $: certStoreLabel =
-    certStore === 'system'
-      ? $t('core.capture.protection.certStoreSystem')
-      : certStore === 'user'
-        ? $t('core.capture.protection.certStoreUser')
-        : $t('core.capture.protection.certStoreNone')
+    certNeedsReboot && !certInstalled
+      ? $t('core.capture.protection.certNeedsReboot')
+      : certInstalled && certStore === 'system'
+        ? $t('core.capture.protection.certStoreSystem')
+        : certInstalled && certStore === 'user'
+          ? $t('core.capture.protection.certStoreUser')
+          : $t('core.capture.protection.certStoreNone')
 
-  $: certStoreVariant = certStore === 'system' ? 'success' : certStore === 'user' ? 'info' : 'warning'
+  $: certStoreVariant =
+    certNeedsReboot && !certInstalled
+      ? 'warning'
+      : certInstalled && certStore === 'system'
+        ? 'success'
+        : certInstalled && certStore === 'user'
+          ? 'info'
+          : 'warning'
 
   $: guardStatusLabel = companionWatchdog
     ? $t('core.capture.protection.guardWatchdogActive')
@@ -160,12 +171,15 @@
       id: 'cert',
       label: $t('core.capture.device.stepCert'),
       done: certInstalled,
+      warn: certNeedsReboot || (!certInstalled && (certMethod === 'legacy_system_only' || certMethod === 'fingerprint_mismatch')),
       detail:
-        certStore === 'system'
-          ? $t('core.capture.device.stepCertSystem')
-          : certStore === 'user'
-            ? $t('core.capture.device.stepCertUser')
-            : $t('core.capture.device.stepCertNone'),
+        certNeedsReboot && !certInstalled
+          ? $t('core.capture.protection.certNeedsReboot')
+          : certInstalled && certStore === 'system'
+            ? $t('core.capture.device.stepCertSystem')
+            : certInstalled && certStore === 'user'
+              ? $t('core.capture.device.stepCertUser')
+              : $t('core.capture.device.stepCertNone'),
     },
     {
       id: 'guard',
@@ -1263,6 +1277,11 @@
               <div class="prot-banner warn">
                 <Icon name="alert-triangle" size={13} />
                 <span>{$t('core.capture.protection.certNeedsReboot')}</span>
+              </div>
+            {:else if !certInstalled && (certMethod === 'legacy_system_only' || certMethod === 'fingerprint_mismatch') && certDetails}
+              <div class="prot-banner warn">
+                <Icon name="alert-triangle" size={13} />
+                <span>{certDetails}</span>
               </div>
             {:else if hasDevice && !isRooted && (lastManualCertPrompt || certStore !== 'system')}
               <div class="prot-banner info">

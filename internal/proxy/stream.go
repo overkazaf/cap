@@ -86,20 +86,26 @@ func (body *prefixedBody) Close() error {
 }
 
 func captureBody(body io.ReadCloser, limit int64) ([]byte, io.ReadCloser, error) {
-	prefix, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if limit < 0 {
+		limit = 0
+	}
+	readLimit := limit + 1
+	if limit == math.MaxInt64 {
+		readLimit = math.MaxInt64
+	}
+	prefix, err := io.ReadAll(io.LimitReader(body, readLimit))
 	if err != nil {
 		_ = body.Close()
 		return nil, nil, err
 	}
 	if int64(len(prefix)) <= limit {
 		_ = body.Close()
-		return prefix, &prefixedBody{
+		return bytes.Clone(prefix), &prefixedBody{
 			reader: bytes.NewReader(prefix),
-			closer: body,
 		}, nil
 	}
-	return prefix[:len(prefix)-1], &prefixedBody{
-		reader: io.MultiReader(bytes.NewReader(prefix[:len(prefix)-1]), body),
+	return bytes.Clone(prefix[:limit]), &prefixedBody{
+		reader: io.MultiReader(bytes.NewReader(prefix), body),
 		closer: body,
 	}, nil
 }
@@ -133,6 +139,8 @@ func (p *Proxy) websocketBody(body io.ReadCloser, flow *types.Flow) io.ReadClose
 		proxy:      p,
 		flowID:     flow.ID,
 		maxPayload: p.opts.MaxStreamPayloadBytes,
+		reader:     websocketFrameParser{maxPayload: p.opts.MaxStreamPayloadBytes},
+		writer:     websocketFrameParser{maxPayload: p.opts.MaxStreamPayloadBytes},
 	}
 }
 
@@ -170,6 +178,8 @@ type websocketFrameParser struct {
 	header      []byte
 	payload     []byte
 	payloadLeft int64
+	captureLeft int64
+	truncated   bool
 	fin         bool
 	opcode      byte
 	masked      bool
@@ -190,27 +200,36 @@ func (parser *websocketFrameParser) Feed(data []byte, direction StreamDirection,
 			take := min(len(data), needed-len(parser.header))
 			parser.header = append(parser.header, data[:take]...)
 			data = data[take:]
+			needed, valid = websocketHeaderSize(parser.header)
+			if !valid {
+				parser.state = websocketInvalid
+				continue
+			}
 			if len(parser.header) == needed {
-				parser.startFrame()
+				parser.startFrame(direction, body)
 			}
 
 		case websocketPayload:
-			take := min(int64(len(data)), parser.payloadLeft)
-			destination := parser.payload[len(parser.payload)-int(parser.payloadLeft):]
-			copy(destination, data[:take])
+			take := min(int64(len(data)), parser.captureLeft)
+			start := len(parser.payload)
+			parser.payload = append(parser.payload, data[:take]...)
 			if parser.masked {
 				maskOffset := parser.maskOffset
-				for index := 0; int64(index) < take; index++ {
+				destination := parser.payload[start:]
+				for index := range destination {
 					destination[index] ^= parser.mask[maskOffset%len(parser.mask)]
 					maskOffset++
 				}
 				parser.maskOffset = maskOffset
 			}
+			parser.captureLeft -= take
 			parser.payloadLeft -= take
 			data = data[take:]
 			if parser.payloadLeft == 0 {
-				body.emitFrame(direction, parser.fin, parser.opcode, parser.payload, false)
+				body.emitFrame(direction, parser.fin, parser.opcode, parser.payload, parser.truncated)
 				parser.reset()
+			} else if parser.captureLeft == 0 {
+				parser.state = websocketDiscard
 			}
 
 		case websocketDiscard:
@@ -258,7 +277,7 @@ func websocketHeaderSize(header []byte) (int, bool) {
 	return size, true
 }
 
-func (parser *websocketFrameParser) startFrame() {
+func (parser *websocketFrameParser) startFrame(direction StreamDirection, body *websocketCaptureBody) {
 	parser.fin = parser.header[0]&0x80 != 0
 	parser.opcode = parser.header[0] & 0x0f
 	parser.masked = parser.header[1]&0x80 != 0
@@ -269,22 +288,44 @@ func (parser *websocketFrameParser) startFrame() {
 		length = int64(binary.BigEndian.Uint16(parser.header[offset:]))
 		offset += 2
 	case 127:
-		length = int64(binary.BigEndian.Uint64(parser.header[offset:]))
+		raw := binary.BigEndian.Uint64(parser.header[offset:])
+		if raw > math.MaxInt64 {
+			parser.state = websocketInvalid
+			return
+		}
+		length = int64(raw)
 		offset += 8
 	}
-	if length < 0 || length > math.MaxInt64 {
-		parser.state = websocketInvalid
-		return
+	if parser.masked {
+		copy(parser.mask[:], parser.header[offset:offset+4])
+	} else {
+		parser.mask = [4]byte{}
 	}
-	copy(parser.mask[:], parser.header[offset:])
 	parser.payloadLeft = length
+	parser.maskOffset = 0
 
-	if length > parser.maxPayload {
-		parser.payload = make([]byte, min(parser.maxPayload, 0))
-		parser.state = websocketDiscard
+	if length == 0 {
+		body.emitFrame(direction, parser.fin, parser.opcode, nil, false)
+		parser.reset()
 		return
 	}
-	parser.payload = make([]byte, length)
+
+	limit := max(parser.maxPayload, 0)
+	if length > limit {
+		parser.truncated = true
+		parser.captureLeft = limit
+		if limit == 0 {
+			parser.payload = nil
+			parser.state = websocketDiscard
+			return
+		}
+		parser.payload = make([]byte, 0, limit)
+		parser.state = websocketPayload
+		return
+	}
+	parser.truncated = false
+	parser.captureLeft = length
+	parser.payload = make([]byte, 0, length)
 	parser.state = websocketPayload
 }
 
@@ -292,6 +333,9 @@ func (parser *websocketFrameParser) reset() {
 	parser.header = parser.header[:0]
 	parser.payload = nil
 	parser.payloadLeft = 0
+	parser.captureLeft = 0
+	parser.truncated = false
+	parser.mask = [4]byte{}
 	parser.maskOffset = 0
 	parser.state = websocketHeader
 }

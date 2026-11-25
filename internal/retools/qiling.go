@@ -129,32 +129,32 @@ type qilingTemplateParams struct {
 }
 
 func renderQilingPythonSource(p qilingTemplateParams) string {
-	regSetup := `    ql.arch.regs.x0 = in_addr
-    ql.arch.regs.x1 = len(payload)
-    ql.arch.regs.x2 = out_addr
-    ql.arch.regs.x3 = 0x100
-    ql.arch.regs.lr = stop_addr`
+	regSetup := `        ql.arch.regs.x0 = in_addr
+        ql.arch.regs.x1 = len(payload)
+        ql.arch.regs.x2 = out_addr
+        ql.arch.regs.x3 = 0x100
+        ql.arch.regs.lr = stop_addr`
 	retReg := "ql.arch.regs.x0"
 	switch p.Arch {
 	case "arm":
-		regSetup = `    ql.arch.regs.r0 = in_addr
-    ql.arch.regs.r1 = len(payload)
-    ql.arch.regs.r2 = out_addr
-    ql.arch.regs.r3 = 0x100
-    ql.arch.regs.lr = stop_addr`
+		regSetup = `        ql.arch.regs.r0 = in_addr
+        ql.arch.regs.r1 = len(payload)
+        ql.arch.regs.r2 = out_addr
+        ql.arch.regs.r3 = 0x100
+        ql.arch.regs.lr = stop_addr`
 		retReg = "ql.arch.regs.r0"
 	case "x86_64":
-		regSetup = `    ql.arch.regs.rdi = in_addr
-    ql.arch.regs.rsi = len(payload)
-    ql.arch.regs.rdx = out_addr
-    ql.arch.regs.rcx = 0x100
-    ql.stack_push(stop_addr)`
+		regSetup = `        ql.arch.regs.rdi = in_addr
+        ql.arch.regs.rsi = len(payload)
+        ql.arch.regs.rdx = out_addr
+        ql.arch.regs.rcx = 0x100
+        ql.stack_push(stop_addr)`
 		retReg = "ql.arch.regs.rax"
 	case "x86":
-		regSetup = `    ql.stack_push(len(payload))
-    ql.stack_push(in_addr)
-    ql.stack_push(stop_addr)
-    ql.arch.regs.eax = in_addr`
+		regSetup = `        ql.stack_push(len(payload))
+        ql.stack_push(in_addr)
+        ql.stack_push(stop_addr)
+        ql.arch.regs.eax = in_addr`
 		retReg = "ql.arch.regs.eax"
 	}
 

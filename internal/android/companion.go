@@ -12,21 +12,26 @@ const (
 	// CompanionPackage is the Android application ID of the embedded Cap Guard APK.
 	CompanionPackage = "com.overkazaf.cap.companion"
 	// CompanionVersionCode is the versionCode baked into the embedded APK.
-	CompanionVersionCode = 1
+	CompanionVersionCode = 2
 	// CompanionVersionName is the versionName baked into the embedded APK.
-	CompanionVersionName = "1.0.0"
+	CompanionVersionName = "1.1.0"
 	// CompanionService is the full component name of ProxyGuardService.
 	CompanionService = CompanionPackage + "/.ProxyGuardService"
 	// CompanionActivity is the full component name of MainActivity.
 	CompanionActivity = CompanionPackage + "/.MainActivity"
+	// CompanionCertReceiver is the BroadcastReceiver that queries AndroidCAStore
+	// and syncs CA cert metadata into app-private storage without requiring root.
+	CompanionCertReceiver = CompanionPackage + "/.CertStatusReceiver"
 	// CompanionCertPath is the standard path on device storage where CA certs are pushed.
 	CompanionCertPath = "/sdcard/Download/cap-ca.crt"
 	// companionAppCertPath is inside the companion app's own external files dir
 	// so Android 11+ Scoped Storage always allows MainActivity to read it.
 	companionAppCertPath = "/sdcard/Android/data/" + CompanionPackage + "/files/cap-ca.crt"
 
-	companionActionStart = CompanionPackage + ".ACTION_START"
-	companionActionStop  = CompanionPackage + ".ACTION_STOP"
+	companionActionStart     = CompanionPackage + ".ACTION_START"
+	companionActionStop      = CompanionPackage + ".ACTION_STOP"
+	companionActionCheckCert = CompanionPackage + ".ACTION_CHECK_CERT"
+	companionActionSyncCert  = CompanionPackage + ".ACTION_SYNC_CERT"
 )
 
 // CompanionStatus describes the installation, permissions, and watchdog state
@@ -77,7 +82,21 @@ func InstallCompanion(serial string) error {
 			// Fallback without -g for older or stricter OEM package installers
 			out2, err2 := AdbCmd(serial, "install", "-r", tmpPath)
 			if err2 != nil {
-				return fmt.Errorf("install companion apk: %v (%s / %s)", err2, out, out2)
+				combined := out + " / " + out2
+				if strings.Contains(combined, "INSTALL_FAILED_UPDATE_INCOMPATIBLE") ||
+					strings.Contains(combined, "INSTALL_FAILED_VERSION_DOWNGRADE") {
+					// Cleanly replace only our own companion package when local signing key changed.
+					_, _ = AdbCmd(serial, "uninstall", CompanionPackage)
+					out3, err3 := AdbCmd(serial, "install", "-g", tmpPath)
+					if err3 != nil {
+						out4, err4 := AdbCmd(serial, "install", tmpPath)
+						if err4 != nil {
+							return fmt.Errorf("install companion apk after clean replace: %v (%s / %s)", err4, out3, out4)
+						}
+					}
+				} else {
+					return fmt.Errorf("install companion apk: %v (%s)", err2, combined)
+				}
 			}
 		}
 	}
@@ -204,11 +223,19 @@ func TriggerCompanionCertInstall(serial, certPath string) error {
 	if certBytes, readErr := os.ReadFile(certPath); readErr == nil && len(certBytes) > 0 && len(certBytes) < 32*1024 {
 		extraB64 = " --es cert_b64 " + shellQuote(base64.StdEncoding.EncodeToString(certBytes))
 	}
+	extraMeta := ""
+	if hashName := CertHashFilename(certPath); hashName != "" {
+		extraMeta += " --es cert_hash " + shellQuote(hashName)
+	}
+	if fp := CertSHA256Fingerprint(certPath); fp != "" {
+		extraMeta += " --es cert_fp " + shellQuote(fp)
+	}
 
 	launchCmd := fmt.Sprintf(
-		"am start -n %s --ez install_cert true --es cert_path %s%s",
+		"am start -n %s --ez install_cert true --es cert_path %s%s%s",
 		CompanionActivity,
 		shellQuote(CompanionCertPath),
+		extraMeta,
 		extraB64,
 	)
 	out, err := AdbShell(serial, launchCmd)
@@ -216,6 +243,174 @@ func TriggerCompanionCertInstall(serial, certPath string) error {
 		return fmt.Errorf("launch companion cert installer: %v (%s)", err, out)
 	}
 	return nil
+}
+
+// SyncCompanionCert pushes the active CA certificate metadata (hash, SHA-256
+// fingerprint) and PEM bytes silently into the Companion APK's app-private
+// storage via CertStatusReceiver so the APK can verify the exact host CA and
+// launch KeyChain even under Android 11+ Scoped Storage.
+func SyncCompanionCert(serial, certPath string) error {
+	if certPath == "" {
+		return nil
+	}
+	hashName := CertHashFilename(certPath)
+	fp := CertSHA256Fingerprint(certPath)
+	if hashName == "" && fp == "" {
+		return nil
+	}
+	var extras strings.Builder
+	if hashName != "" {
+		extras.WriteString(" --es expected_hash " + shellQuote(hashName))
+	}
+	if fp != "" {
+		extras.WriteString(" --es expected_fp " + shellQuote(fp))
+	}
+	if certBytes, err := os.ReadFile(certPath); err == nil && len(certBytes) > 0 && len(certBytes) < 32*1024 {
+		extras.WriteString(" --es cert_b64 " + shellQuote(base64.StdEncoding.EncodeToString(certBytes)))
+	}
+	cmd := fmt.Sprintf(
+		"am broadcast --include-stopped-packages -n %s -a %s%s",
+		CompanionCertReceiver,
+		companionActionSyncCert,
+		extras.String(),
+	)
+	out, err := AdbShell(serial, cmd)
+	if err != nil || strings.Contains(out, "Error:") {
+		return fmt.Errorf("sync companion cert: %v (%s)", err, out)
+	}
+	return nil
+}
+
+// CheckCertViaCompanion queries the installed Cap Guard Companion APK's
+// CertStatusReceiver over an ordered ADB broadcast to inspect Android's live
+// AndroidCAStore without requiring root (especially critical on non-rooted
+// Android 10–15 where adb shell cannot read /data/misc/user/0/cacerts-added).
+func CheckCertViaCompanion(serial, certPath string) (CertStatus, bool) {
+	hashName := CertHashFilename(certPath)
+	fp := CertSHA256Fingerprint(certPath)
+	if hashName == "" && fp == "" {
+		return CertStatus{}, false
+	}
+	var extras strings.Builder
+	if hashName != "" {
+		extras.WriteString(" --es expected_hash " + shellQuote(hashName))
+	}
+	if fp != "" {
+		extras.WriteString(" --es expected_fp " + shellQuote(fp))
+	}
+	cmd := fmt.Sprintf(
+		"am broadcast --include-stopped-packages -n %s -a %s%s",
+		CompanionCertReceiver,
+		companionActionCheckCert,
+		extras.String(),
+	)
+	out, err := AdbShell(serial, cmd)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return CertStatus{}, false
+	}
+	return ParseCompanionCertBroadcast(hashName, out)
+}
+
+// ParseCompanionCertBroadcast parses `am broadcast` ordered output returned by
+// CertStatusReceiver (e.g. `Broadcast completed: result=-1, data="installed=true;store=user;..."`).
+func ParseCompanionCertBroadcast(fallbackHash, output string) (CertStatus, bool) {
+	targetLine := output
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "Broadcast completed:") && strings.Contains(line, `data="`) {
+			targetLine = strings.TrimSpace(line)
+			break
+		}
+	}
+	idx := strings.Index(targetLine, `data="`)
+	if idx < 0 {
+		return CertStatus{}, false
+	}
+	rest := targetLine[idx+len(`data="`):]
+	endIdx := strings.LastIndexByte(rest, '"')
+	if endIdx < 0 {
+		return CertStatus{}, false
+	}
+	payload := strings.TrimSpace(rest[:endIdx])
+	if payload == "" {
+		return CertStatus{}, false
+	}
+
+	kv := make(map[string]string, 12)
+	for _, part := range strings.Split(payload, ";") {
+		if eq := strings.IndexByte(part, '='); eq > 0 {
+			kv[strings.TrimSpace(part[:eq])] = strings.TrimSpace(part[eq+1:])
+		}
+	}
+	if _, ok := kv["installed"]; !ok {
+		return CertStatus{}, false
+	}
+
+	installed := strings.EqualFold(kv["installed"], "true")
+	store := kv["store"]
+	if store == "" {
+		store = "none"
+	}
+	method := kv["method"]
+	hash := kv["hash"]
+	if hash == "" {
+		hash = fallbackHash
+	}
+	hasApexDir := strings.EqualFold(kv["apex_dir"], "true")
+	legacyOnly := strings.EqualFold(kv["legacy_only"], "true")
+	fpMismatch := strings.EqualFold(kv["fp_mismatch"], "true")
+
+	if installed && store == "system" {
+		m := "system"
+		details := "verified in AndroidCAStore system trust store (via Cap Guard)"
+		if hasApexDir {
+			m = "apex"
+			details = "verified in Android 14+ AndroidCAStore / APEX system trust store (via Cap Guard)"
+		}
+		return CertStatus{
+			Installed: true,
+			Store:     "system",
+			Hash:      hash,
+			Method:    m,
+			Details:   details,
+		}, true
+	}
+	if installed && store == "user" {
+		details := "verified in AndroidCAStore user trust store (via Cap Guard)"
+		if hasApexDir {
+			details = "verified in user trust store via AndroidCAStore (missing from Android 14+ APEX system store)"
+		}
+		return CertStatus{
+			Installed: true,
+			Store:     "user",
+			Hash:      hash,
+			Method:    "user",
+			Details:   details,
+		}, true
+	}
+	if fpMismatch {
+		return CertStatus{
+			Installed: false,
+			Store:     "none",
+			Hash:      hash,
+			Method:    "fingerprint_mismatch",
+			Details:   "different Cap CA certificate detected in AndroidCAStore (fingerprint mismatch)",
+		}, true
+	}
+	if legacyOnly || method == "legacy_system_only" {
+		return CertStatus{
+			Installed: false,
+			Store:     "none",
+			Hash:      hash,
+			Method:    "legacy_system_only",
+			Details:   "present in legacy /system only — missing from Android 14+ APEX Conscrypt",
+		}, true
+	}
+	return CertStatus{
+		Installed: false,
+		Store:     "none",
+		Hash:      hash,
+		Details:   "CA certificate not detected in AndroidCAStore",
+	}, true
 }
 
 // GetCompanionStatus inspects the connected device in a single batched

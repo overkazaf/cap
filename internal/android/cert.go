@@ -38,11 +38,22 @@ func parseCertFile(certPath string) (*x509.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block found in %s", certPath)
+	rest := data
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" || block.Type == "TRUSTED CERTIFICATE" {
+			return x509.ParseCertificate(block.Bytes)
+		}
 	}
-	return x509.ParseCertificate(block.Bytes)
+	// Fallback for raw DER-encoded X.509 certificate files
+	if cert, err := x509.ParseCertificate(data); err == nil {
+		return cert, nil
+	}
+	return nil, fmt.Errorf("no valid X.509 certificate found in %s", certPath)
 }
 
 // CertHashFilename computes the filename Android's native trust store
@@ -88,6 +99,24 @@ func subjectHashOld(rawSubject []byte) uint32 {
 	return binary.LittleEndian.Uint32(sum[:4])
 }
 
+// buildRootCertProbeCmd builds a root shell probe that checks:
+//   - Android 14+ APEX Conscrypt cacerts in both global and zygote mount namespaces
+//   - Magisk staged cap-cert module
+//   - User trust stores across all Android users (/data/misc/user/*/cacerts-added)
+func buildRootCertProbeCmd(hashName string) string {
+	return fmt.Sprintf(
+		`[ -f /apex/com.android.conscrypt/cacerts/%s ] && echo APEX; `+
+			`for ZP in $(pidof zygote64 zygote 2>/dev/null); do `+
+			`nsenter --mount="/proc/$ZP/ns/mnt" -- test -f /apex/com.android.conscrypt/cacerts/%s 2>/dev/null && echo APEX && break; `+
+			`done; `+
+			`[ -f /data/adb/modules/cap-cert/system/etc/security/cacerts/%s ] && echo MAGISK; `+
+			`for UDIR in /data/misc/user/*/cacerts-added; do `+
+			`[ -f "$UDIR/%s" ] && echo USER && break; `+
+			`done; true`,
+		hashName, hashName, hashName, hashName,
+	)
+}
+
 // CheckCertStatus inspects the device's system, APEX Conscrypt, Magisk module,
 // and user trust stores to report accurate CA certificate installation status.
 // On Android 14+ (where /apex/com.android.conscrypt/cacerts exists), a cert
@@ -122,16 +151,24 @@ func CheckCertStatus(serial, certPath string) CertStatus {
 		}
 	}
 
-	// /data/adb/modules is root-only on Magisk; probe via su only if not already in system/apex
+	// Unprivileged adb shell cannot read /data/adb/modules or /data/misc/user/0/cacerts-added
+	// (Permission denied on Android 10–15) and may sit in a separate Magisk mount namespace.
+	// Probe via root whenever not yet confirmed installed (including legacy_system_only!).
 	status := ParseCertCheckOutput(hashName, out)
-	if !status.Installed && status.Method == "" && IsRooted(serial) {
-		suOut, _ := SuShell(serial, fmt.Sprintf(
-			`[ -f /data/adb/modules/cap-cert/system/etc/security/cacerts/%s ] && echo MAGISK; `+
-				`[ -f /data/misc/user/0/cacerts-added/%s ] && echo USER; true`,
-			hashName, hashName,
-		))
-		if suOut != "" {
+	if !status.Installed && IsRooted(serial) {
+		suOut, _ := SuShellMountMaster(serial, buildRootCertProbeCmd(hashName))
+		if strings.TrimSpace(suOut) != "" {
 			status = ParseCertCheckOutput(hashName, out+"\n"+suOut)
+		}
+	}
+
+	// Zero-root fallback: on non-rooted Android 10–15, adb shell gets Permission denied on
+	// /data/misc/user/0/cacerts-added, so ask Cap Guard's CertStatusReceiver to inspect the
+	// live AndroidCAStore directly.
+	if !status.Installed {
+		if compStatus, ok := CheckCertViaCompanion(serial, certPath); ok &&
+			(compStatus.Installed || (status.Method == "" && compStatus.Method == "fingerprint_mismatch")) {
+			status = compStatus
 		}
 	}
 	return status
@@ -304,6 +341,7 @@ func installCACertRootedDetailed(serial, certPath, hashName string) (CertInstall
 	if err := installBindMount(serial, hashName, remotePath); err == nil {
 		verified := CheckCertStatus(serial, certPath)
 		if verified.Installed && verified.Store == "system" {
+			_ = SyncCompanionCert(serial, certPath)
 			fmt.Println("CA cert injected via mount --bind (active until reboot)")
 			return CertInstallResult{
 				Success: true,

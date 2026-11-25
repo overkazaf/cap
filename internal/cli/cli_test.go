@@ -406,6 +406,20 @@ func TestAndroidCLIFlagsAndStatusRendering(t *testing.T) {
 			t.Errorf("ZH android status missing %q:\n%s", want, zhText)
 		}
 	}
+
+	// Magisk staged cert awaiting reboot (Installed=false, Store="system", NeedsReboot=true)
+	// must NOT render a green checkmark as if already active.
+	i18n.SetLang("en")
+	rebootBadge := tui.StripANSI(formatCertStatusBadge(th, android.CertStatus{
+		Installed:   false,
+		Store:       "system",
+		Hash:        "d7932d1e.0",
+		Method:      "magisk",
+		NeedsReboot: true,
+	}))
+	if strings.Contains(rebootBadge, "✓") || !strings.Contains(rebootBadge, "reboot") {
+		t.Errorf("expected reboot-pending badge without checkmark, got %q", rebootBadge)
+	}
 }
 
 func TestFridaCLICommands(t *testing.T) {

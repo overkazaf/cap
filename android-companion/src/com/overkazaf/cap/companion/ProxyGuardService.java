@@ -35,6 +35,8 @@ public class ProxyGuardService extends Service {
     public static final String EXTRA_REDIR_PORT = "redir_port";
     public static final String EXTRA_HEARTBEAT_MS = "heartbeat_ms";
     public static final String EXTRA_MISS_THRESHOLD = "miss_threshold";
+    public static final String EXTRA_CERT_HASH = "cert_hash";
+    public static final String EXTRA_CERT_FP = "cert_fp";
 
     public static final String CHANNEL_ACTIVE = "cap_guard_active";
     public static final String CHANNEL_EVENTS = "cap_guard_events";
@@ -95,6 +97,11 @@ public class ProxyGuardService extends Service {
             }
             heartbeatMs = clamp(readIntExtra(intent, EXTRA_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS), 1000, 30000);
             missThreshold = clamp(readIntExtra(intent, EXTRA_MISS_THRESHOLD, DEFAULT_MISS_THRESHOLD), 1, 20);
+            String certHash = intent.getStringExtra(EXTRA_CERT_HASH);
+            String certFp = intent.getStringExtra(EXTRA_CERT_FP);
+            if ((certHash != null && !certHash.trim().isEmpty()) || (certFp != null && !certFp.trim().isEmpty())) {
+                GuardPrefs.saveCertMeta(this, certHash, certFp, null);
+            }
         } else {
             // Restarted by system — restore saved session
             proxyHost = GuardPrefs.getProxyHost(this);

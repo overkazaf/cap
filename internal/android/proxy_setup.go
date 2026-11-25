@@ -136,8 +136,11 @@ func SetupDetailed(opts SetupOptions) (*SetupResult, error) {
 		fmt.Printf("device %s: proxy set to %s\n", serial, proxySetting)
 	}
 
-	// Step 4: Start Companion Guard watchdog pointing at host:port
+	// Step 4: Start Companion Guard watchdog pointing at host:port & sync CA cert metadata
 	if !opts.NoCompanion && companionReady {
+		if opts.CACertPath != "" {
+			_ = SyncCompanionCert(serial, opts.CACertPath)
+		}
 		if err := StartCompanionGuardWithConfig(serial, host, port, mode, redirPort, opts.HeartbeatMs, opts.MissThreshold); err != nil {
 			res.CompanionWarning = fmt.Sprintf("companion watchdog failed to start: %v", err)
 		}
@@ -354,17 +357,24 @@ func GetDeviceStatus(serial, certPath string) (*DeviceStatus, error) {
 
 	st := ParseBatchedDeviceStatusOutput(serial, hashName, certPath != "", out)
 
-	// /data/adb/modules is root-only on Magisk; probe via su only if rooted
-	// and cert was not already detected in system/APEX.
-	if hashName != "" && !st.CertStatus.Installed && st.CertStatus.Method == "" && st.Rooted {
-		suOut, _ := SuShell(serial, fmt.Sprintf(
-			`[ -f /data/adb/modules/cap-cert/system/etc/security/cacerts/%s ] && echo MAGISK; `+
-				`[ -f /data/misc/user/0/cacerts-added/%s ] && echo USER; true`,
-			hashName, hashName,
-		))
+	// Unprivileged adb shell cannot read /data/adb/modules or /data/misc/user/0/cacerts-added
+	// (Permission denied on Android 10–15) and may sit in an isolated mount namespace.
+	// Probe via root whenever not yet confirmed installed (including legacy_system_only!).
+	if hashName != "" && !st.CertStatus.Installed && st.Rooted {
+		suOut, _ := SuShellMountMaster(serial, buildRootCertProbeCmd(hashName))
 		if strings.TrimSpace(suOut) != "" {
 			certSec := extractSection(out, "===CAP_CERT===", "===CAP_PKG===")
 			st.CertStatus = ParseCertCheckOutput(hashName, certSec+"\n"+suOut)
+		}
+	}
+
+	// Zero-root fallback: when still not confirmed installed and Companion Guard is
+	// present, query Android's live AndroidCAStore via CertStatusReceiver so non-rooted
+	// User CA installs and fingerprint mismatches are detected accurately on Android 10–15.
+	if hashName != "" && !st.CertStatus.Installed && st.CompanionStatus.Installed {
+		if compStatus, ok := CheckCertViaCompanion(serial, certPath); ok &&
+			(compStatus.Installed || (st.CertStatus.Method == "" && compStatus.Method == "fingerprint_mismatch")) {
+			st.CertStatus = compStatus
 		}
 	}
 

@@ -363,14 +363,120 @@ func TestProxyCapturesWebSocketUpgradeAndFrames(t *testing.T) {
 
 	first := awaitStreamEvent(t, events)
 	second := awaitStreamEvent(t, events)
-	if first.Direction != proxy.StreamDirectionClientServer || first.Opcode != "text" || string(first.Payload) != "hello" {
+	if first.Direction != proxy.StreamDirectionClientServer || first.Opcode != "text" || string(first.Payload) != "hello" || first.Truncated {
 		t.Errorf("client frame = %+v", first)
 	}
-	if second.Direction != proxy.StreamDirectionServerClient || second.Opcode != "text" || string(second.Payload) != "echo: hello" {
+	if second.Direction != proxy.StreamDirectionServerClient || second.Opcode != "text" || string(second.Payload) != "echo: hello" || second.Truncated {
 		t.Errorf("server frame = %+v", second)
 	}
 	if first.FlowID != flow.ID || second.FlowID != flow.ID {
 		t.Errorf("stream flow IDs (%q, %q) do not match flow %q", first.FlowID, second.FlowID, flow.ID)
+	}
+}
+
+func TestProxyWebSocketExtendedLengthAndTruncation(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		for {
+			messageType, payload, err := connection.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := connection.WriteMessage(messageType, payload); err != nil {
+				return
+			}
+		}
+	}))
+	defer backend.Close()
+
+	// Cap stream payload capture at 200 bytes so a 160-byte frame (16-bit extended
+	// WebSocket length >= 126) captures intact, while a 300-byte frame relays intact
+	// and reports Truncated=true with a bounded 200-byte prefix, followed by a clean
+	// small frame proving parser synchronization.
+	p, flows, events := startProxy(t, proxy.Options{MaxStreamPayloadBytes: 200})
+	proxyURL, err := url.Parse("http://" + p.Addr())
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+
+	dialer := websocket.Dialer{
+		NetDial: func(network, address string) (net.Conn, error) {
+			return net.Dial(network, address)
+		},
+		Proxy: http.ProxyURL(proxyURL),
+	}
+	websocketURL := strings.Replace(backend.URL, "http://", "ws://", 1) + "/stream-ext"
+	connection, _, err := dialer.Dial(websocketURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket through proxy: %v", err)
+	}
+	defer connection.Close()
+
+	_ = awaitFlow(t, flows)
+
+	// 1. 160-byte frame (uses 16-bit extended length field 126, un-truncated)
+	extMsg := strings.Repeat("A", 160)
+	if err := connection.WriteMessage(websocket.TextMessage, []byte(extMsg)); err != nil {
+		t.Fatalf("write 160B message: %v", err)
+	}
+	_, gotExt, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatalf("read 160B response: %v", err)
+	}
+	if string(gotExt) != extMsg {
+		t.Fatalf("160B echoed payload len=%d, want 160", len(gotExt))
+	}
+	ev1 := awaitStreamEvent(t, events)
+	ev2 := awaitStreamEvent(t, events)
+	for _, ev := range []proxy.StreamEvent{ev1, ev2} {
+		if ev.Truncated || string(ev.Payload) != extMsg {
+			t.Errorf("160B captured frame mismatch: truncated=%v len=%d", ev.Truncated, len(ev.Payload))
+		}
+	}
+
+	// 2. 300-byte frame (exceeds 200-byte MaxStreamPayloadBytes -> truncated capture, intact relay)
+	bigMsg := strings.Repeat("B", 200) + strings.Repeat("C", 100)
+	if err := connection.WriteMessage(websocket.TextMessage, []byte(bigMsg)); err != nil {
+		t.Fatalf("write 300B message: %v", err)
+	}
+	_, gotBig, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatalf("read 300B response: %v", err)
+	}
+	if string(gotBig) != bigMsg {
+		t.Fatalf("300B echoed payload len=%d, want 300", len(gotBig))
+	}
+	ev3 := awaitStreamEvent(t, events)
+	ev4 := awaitStreamEvent(t, events)
+	wantPrefix := strings.Repeat("B", 200)
+	for _, ev := range []proxy.StreamEvent{ev3, ev4} {
+		if !ev.Truncated || string(ev.Payload) != wantPrefix {
+			t.Errorf("300B captured frame mismatch: truncated=%v len=%d", ev.Truncated, len(ev.Payload))
+		}
+	}
+
+	// 3. Subsequent small frame proves parser stays synchronized after discard
+	if err := connection.WriteMessage(websocket.TextMessage, []byte("after-big")); err != nil {
+		t.Fatalf("write follow-up message: %v", err)
+	}
+	_, gotAfter, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatalf("read follow-up response: %v", err)
+	}
+	if string(gotAfter) != "after-big" {
+		t.Fatalf("follow-up payload = %q, want after-big", gotAfter)
+	}
+	ev5 := awaitStreamEvent(t, events)
+	ev6 := awaitStreamEvent(t, events)
+	for _, ev := range []proxy.StreamEvent{ev5, ev6} {
+		if ev.Truncated || string(ev.Payload) != "after-big" {
+			t.Errorf("follow-up captured frame mismatch: %+v", ev)
+		}
 	}
 }
 
@@ -421,15 +527,18 @@ func TestProxyCapturesSSEEventsWhileRelaying(t *testing.T) {
 }
 
 func TestProxyBodyCaptureIsBounded(t *testing.T) {
+	wantReq := bytes.Repeat([]byte("a"), 64)
+	wantResp := bytes.Repeat([]byte("z"), 64)
+	var gotReq []byte
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		w.Write(bytes.Repeat([]byte("z"), 64))
+		gotReq, _ = io.ReadAll(r.Body)
+		w.Write(wantResp)
 	}))
 	defer backend.Close()
 
 	p, flows, _ := startProxy(t, proxy.Options{MaxBodyBytes: 8})
 	client := proxyClient(t, p)
-	request, err := http.NewRequest(http.MethodPost, backend.URL+"/upload", bytes.NewReader(bytes.Repeat([]byte("a"), 64)))
+	request, err := http.NewRequest(http.MethodPost, backend.URL+"/upload", bytes.NewReader(wantReq))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -442,7 +551,10 @@ func TestProxyBodyCaptureIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	if len(gotResponse) != 64 {
+	if !bytes.Equal(gotReq, wantReq) {
+		t.Fatalf("backend request length = %d, want 64", len(gotReq))
+	}
+	if !bytes.Equal(gotResponse, wantResp) {
 		t.Fatalf("response length = %d, want 64", len(gotResponse))
 	}
 

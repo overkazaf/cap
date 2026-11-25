@@ -149,12 +149,16 @@ func DecompileAPK(ctx context.Context, apkPath, jadxPath, cacheDir string, maxCl
 	if strings.TrimSpace(cacheDir) == "" {
 		cacheDir = filepath.Join(os.TempDir(), "cap-repro-jadx-cache")
 	}
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	absCacheDir, err := filepath.Abs(cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve cache dir: %w", err)
+	}
+	if err := os.MkdirAll(absCacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 
 	cacheKey := computeJadxCacheKey(absAPK, st.ModTime().UnixNano(), st.Size())
-	workspaceDir := filepath.Join(cacheDir, cacheKey)
+	workspaceDir := filepath.Join(absCacheDir, cacheKey)
 
 	// Reuse existing valid cache if present.
 	if meta, ok := readJadxCacheMeta(workspaceDir); ok && meta.CacheKey == cacheKey {
@@ -359,21 +363,22 @@ func hasJavaFiles(workspaceDir string) bool {
 	return found
 }
 
-// ListClasses lists decompiled Java classes in workspaceDir, flagging classes
-// that declare native methods.
-func ListClasses(workspaceDir, filter string, limit int) ([]JadxClassEntry, error) {
-	root, err := sourcesRootDir(workspaceDir)
-	if err != nil {
-		return nil, err
-	}
+type safeJavaFile struct {
+	realPath string
+	relSlash string
+	fqcn     string
+	size     int64
+}
+
+// collectSafeJavaFiles walks root, rejects symlinks escaping root, stats the
+// resolved target (not the symlink), and returns sorted in-bounds .java files.
+func collectSafeJavaFiles(root string) ([]safeJavaFile, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		realRoot = root
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
 
-	filterLow := strings.ToLower(strings.TrimSpace(filter))
-	entries := make([]JadxClassEntry, 0)
-
+	var files []safeJavaFile
 	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -387,33 +392,63 @@ func ListClasses(workspaceDir, filter string, limit int) ([]JadxClassEntry, erro
 		if !strings.HasSuffix(d.Name(), ".java") {
 			return nil
 		}
-		if d.Type()&os.ModeSymlink != 0 {
-			resolved, rerr := filepath.EvalSymlinks(p)
-			if rerr != nil || !isSubPath(realRoot, resolved) {
-				return nil
-			}
+		realPath, rerr := filepath.EvalSymlinks(p)
+		if rerr != nil || !isSubPath(realRoot, realPath) {
+			return nil
 		}
-
+		st, serr := os.Stat(realPath)
+		if serr != nil || st.IsDir() {
+			return nil
+		}
 		rel, rerr := filepath.Rel(root, p)
 		if rerr != nil {
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
 		fqcn := strings.ReplaceAll(strings.TrimSuffix(relSlash, ".java"), "/", ".")
-		if filterLow != "" && !strings.Contains(strings.ToLower(fqcn), filterLow) && !strings.Contains(strings.ToLower(relSlash), filterLow) {
-			return nil
+		files = append(files, safeJavaFile{
+			realPath: realPath,
+			relSlash: relSlash,
+			fqcn:     fqcn,
+			size:     st.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].fqcn < files[j].fqcn
+	})
+	return files, nil
+}
+
+// ListClasses lists decompiled Java classes in workspaceDir, flagging classes
+// that declare native methods.
+func ListClasses(workspaceDir, filter string, limit int) ([]JadxClassEntry, error) {
+	root, err := sourcesRootDir(workspaceDir)
+	if err != nil {
+		return nil, err
+	}
+
+	files, err := collectSafeJavaFiles(root)
+	if err != nil {
+		return nil, err
+	}
+
+	filterLow := strings.ToLower(strings.TrimSpace(filter))
+	entries := make([]JadxClassEntry, 0, len(files))
+
+	for _, jf := range files {
+		if filterLow != "" && !strings.Contains(strings.ToLower(jf.fqcn), filterLow) && !strings.Contains(strings.ToLower(jf.relSlash), filterLow) {
+			continue
 		}
 
-		var size int64
-		if info, ierr := d.Info(); ierr == nil {
-			size = info.Size()
-		}
-
-		pkgName, simpleName := splitFQCN(fqcn)
+		pkgName, simpleName := splitFQCN(jf.fqcn)
 		var nativeNames []string
-		if size <= maxJavaReadBytes {
-			if raw, rerr := os.ReadFile(p); rerr == nil && bytes.Contains(raw, []byte("native")) {
-				decls := extractNativeMethodsFromJava(string(raw), fqcn, relSlash)
+		if jf.size <= maxJavaReadBytes {
+			if raw, rerr := readBoundedFile(jf.realPath, maxJavaReadBytes); rerr == nil && bytes.Contains(raw, []byte("native")) {
+				decls := extractNativeMethodsFromJava(string(raw), jf.fqcn, jf.relSlash)
 				for _, decl := range decls {
 					nativeNames = append(nativeNames, decl.MethodName)
 				}
@@ -421,25 +456,17 @@ func ListClasses(workspaceDir, filter string, limit int) ([]JadxClassEntry, erro
 		}
 
 		entries = append(entries, JadxClassEntry{
-			ClassName:     fqcn,
+			ClassName:     jf.fqcn,
 			PackageName:   pkgName,
 			SimpleName:    simpleName,
-			RelPath:       relSlash,
-			Size:          size,
+			RelPath:       jf.relSlash,
+			Size:          jf.size,
 			HasNative:     len(nativeNames) > 0,
 			NativeMethods: nativeNames,
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].ClassName < entries[j].ClassName
-	})
-	if limit > 0 && len(entries) > limit {
-		entries = entries[:limit]
+		if limit > 0 && len(entries) >= limit {
+			break
+		}
 	}
 	return entries, nil
 }
@@ -524,18 +551,29 @@ func sanitizeClassTarget(className string) (relSlash string, fqcn string, err er
 
 	if strings.HasSuffix(raw, ".java") || strings.Contains(raw, "/") {
 		clean := filepath.ToSlash(filepath.Clean(raw))
-		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+		if clean == "." || clean == ".." || clean == ".java" || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
 			return "", "", fmt.Errorf("path traversal rejected for %q", className)
 		}
 		if !strings.HasSuffix(clean, ".java") {
 			clean += ".java"
 		}
-		for _, seg := range strings.Split(clean, "/") {
-			if seg == "" || seg == "." || seg == ".." {
-				return "", "", fmt.Errorf("path traversal rejected for %q", className)
+		segs := strings.Split(clean, "/")
+		for idx, seg := range segs {
+			if seg == "" || seg == "." || seg == ".." || seg == ".java" {
+				return "", "", fmt.Errorf("invalid class path %q", className)
+			}
+			if idx == len(segs)-1 {
+				stem := strings.TrimSuffix(seg, ".java")
+				if stem == "" || strings.HasPrefix(stem, ".") {
+					return "", "", fmt.Errorf("invalid class name %q", className)
+				}
 			}
 		}
-		return clean, strings.ReplaceAll(strings.TrimSuffix(clean, ".java"), "/", "."), nil
+		fqcnOut := strings.ReplaceAll(strings.TrimSuffix(clean, ".java"), "/", ".")
+		if fqcnOut == "" {
+			return "", "", fmt.Errorf("invalid class name %q", className)
+		}
+		return clean, fqcnOut, nil
 	}
 
 	// Dotted FQCN (e.g. com.example.app.NativeSigner)
@@ -576,44 +614,25 @@ func SearchSource(workspaceDir, query string, maxHits int) ([]JadxSearchHit, err
 	}
 	qLow := strings.ToLower(q)
 
-	var files []string
-	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && p != root {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(d.Name(), ".java") {
-			files = append(files, p)
-		}
-		return nil
-	})
+	files, err := collectSafeJavaFiles(root)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(files)
 
 	hits := make([]JadxSearchHit, 0)
-	for _, p := range files {
+	for _, jf := range files {
 		if len(hits) >= maxHits {
 			break
 		}
-		rel, rerr := filepath.Rel(root, p)
-		if rerr != nil {
+		if jf.size > maxJavaReadBytes {
 			continue
 		}
-		relSlash := filepath.ToSlash(rel)
-		fqcn := strings.ReplaceAll(strings.TrimSuffix(relSlash, ".java"), "/", ".")
 
-		f, ferr := os.Open(p)
+		f, ferr := os.Open(jf.realPath)
 		if ferr != nil {
 			continue
 		}
-		scanner := bufio.NewScanner(f)
+		scanner := bufio.NewScanner(io.LimitReader(f, maxJavaReadBytes))
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		lineNo := 0
 		for scanner.Scan() {
@@ -626,8 +645,8 @@ func SearchSource(workspaceDir, query string, maxHits int) ([]JadxSearchHit, err
 					snippet = snippet[:240] + "..."
 				}
 				hits = append(hits, JadxSearchHit{
-					ClassName: fqcn,
-					RelPath:   relSlash,
+					ClassName: jf.fqcn,
+					RelPath:   jf.relSlash,
 					Line:      lineNo,
 					Column:    idx + 1,
 					Snippet:   snippet,
@@ -658,38 +677,22 @@ func LinkJavaToNative(workspaceDir, soPath string, registerNativesJSON string) (
 		Bindings:     []JavaNativeBinding{},
 	}
 
-	// 1. Scan all decompiled Java files for native method declarations.
-	var javaFiles []string
-	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && p != root {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(d.Name(), ".java") {
-			javaFiles = append(javaFiles, p)
-		}
-		return nil
-	})
+	// 1. Scan all in-bounds decompiled Java files for native method declarations.
+	javaFiles, err := collectSafeJavaFiles(root)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(javaFiles)
 
 	var decls []NativeMethodDecl
-	for _, p := range javaFiles {
-		raw, rerr := os.ReadFile(p)
+	for _, jf := range javaFiles {
+		if jf.size > maxJavaReadBytes {
+			continue
+		}
+		raw, rerr := readBoundedFile(jf.realPath, maxJavaReadBytes)
 		if rerr != nil || !bytes.Contains(raw, []byte("native")) {
 			continue
 		}
-		rel, _ := filepath.Rel(root, p)
-		relSlash := filepath.ToSlash(rel)
-		fqcn := strings.ReplaceAll(strings.TrimSuffix(relSlash, ".java"), "/", ".")
-		decls = append(decls, extractNativeMethodsFromJava(string(raw), fqcn, relSlash)...)
+		decls = append(decls, extractNativeMethodsFromJava(string(raw), jf.fqcn, jf.relSlash)...)
 	}
 
 	// 2. Parse ELF exported symbols if soPath provided.
@@ -710,6 +713,10 @@ func LinkJavaToNative(workspaceDir, soPath string, registerNativesJSON string) (
 		addSyms := func(syms []elf.Symbol) {
 			for _, s := range syms {
 				if s.Name == "" || s.Section == elf.SHN_UNDEF {
+					continue
+				}
+				// Exclude file-local (static) symbols so non-exported functions are never misclassified as JNI exports.
+				if elf.ST_BIND(s.Info) == elf.STB_LOCAL {
 					continue
 				}
 				if _, exists := exports[s.Name]; !exists {
@@ -818,8 +825,11 @@ func LinkJavaToNative(workspaceDir, soPath string, registerNativesJSON string) (
 // per the official JNI Specification (escaping _ -> _1, ; -> _2, [ -> _3, and
 // non-alphanumeric Unicode code units -> _0xxxx).
 func MangleJNIName(className, methodName, paramDescriptor string) (shortName, longName string) {
-	cls := strings.ReplaceAll(strings.TrimSpace(className), "/", ".")
-	cls = strings.TrimSuffix(strings.TrimPrefix(cls, "L"), ";")
+	cls := strings.TrimSpace(className)
+	if strings.HasPrefix(cls, "L") && strings.HasSuffix(cls, ";") && len(cls) > 2 {
+		cls = cls[1 : len(cls)-1]
+	}
+	cls = strings.ReplaceAll(cls, "/", ".")
 	escapedClass := escapeJNIPart(cls, true)
 	escapedMethod := escapeJNIPart(methodName, false)
 	shortName = "Java_" + escapedClass + "_" + escapedMethod
@@ -1258,8 +1268,10 @@ func parseRegisterNativesJSON(raw string) ([]dynamicNativeEntry, string, error) 
 
 	out := make([]dynamicNativeEntry, 0, len(items))
 	for _, it := range items {
-		cls := firstNonEmptyStr(it.Class, it.ClassName, it.JavaClass)
-		cls = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cls), "L"), ";")
+		cls := strings.TrimSpace(firstNonEmptyStr(it.Class, it.ClassName, it.JavaClass))
+		if strings.HasPrefix(cls, "L") && strings.HasSuffix(cls, ";") && len(cls) > 2 {
+			cls = cls[1 : len(cls)-1]
+		}
 		cls = strings.ReplaceAll(cls, "/", ".")
 		meth := firstNonEmptyStr(it.Name, it.Method, it.MethodName)
 		if cls == "" || meth == "" {
@@ -1521,8 +1533,9 @@ func parseMinimalDEXClasses(data []byte) ([]minimalDEXClass, error) {
 			virtualMethods, n := readULEB128(data[pos:])
 			pos += n
 
-			// Skip encoded_field entries (field_idx_diff, access_flags)
-			for f := uint32(0); f < staticFields+instFields && pos < len(data); f++ {
+			// Skip encoded_field entries (field_idx_diff, access_flags) using uint64 to avoid wraparound.
+			totalFields := uint64(staticFields) + uint64(instFields)
+			for f := uint64(0); f < totalFields && pos < len(data); f++ {
 				_, n1 := readULEB128(data[pos:])
 				pos += n1
 				_, n2 := readULEB128(data[pos:])

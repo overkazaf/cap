@@ -29,12 +29,14 @@ const (
 	mhFlagAllowStackExec = 0x00020000
 	mhFlagPIE            = 0x00200000
 
-	// Safety limits for IPA archive extraction.
-	maxIPAPlistBytes  = 4 * 1024 * 1024
-	maxIPABinaryBytes = 256 * 1024 * 1024
-	maxIPAEntries     = 50000
-	maxObjCStrings    = 4000
-	maxMachOExports   = 1000
+	// Safety limits for IPA archive extraction and Mach-O/plist parsing.
+	maxIPAPlistBytes     = 4 * 1024 * 1024
+	maxIPABinaryBytes    = 256 * 1024 * 1024
+	maxIPAEntries        = 50000
+	maxObjCStrings       = 4000
+	maxMachOExports      = 1000
+	maxMachOSectionBytes = 32 * 1024 * 1024
+	maxPlistDepth        = 64
 )
 
 // AnalyzeIOSBinary performs static security and metadata inspection on a
@@ -161,17 +163,25 @@ func analyzeIPA(ipaPath string, report *IOSBinaryReport) error {
 	mainEntryPath := appDir + "/" + execName
 	mainEntry := filesByCleanName[mainEntryPath]
 	if mainEntry == nil {
-		// Fallback: locate any top-level Mach-O inside Payload/<App>.app/
+		// Fallback: deterministically locate the first top-level Mach-O inside Payload/<App>.app/.
 		prefix := appDir + "/"
-		for name, zf := range filesByCleanName {
-			if !strings.HasPrefix(name, prefix) || zf.FileInfo().IsDir() {
+		candNames := make([]string, 0, len(filesByCleanName))
+		for name := range filesByCleanName {
+			if strings.HasPrefix(name, prefix) {
+				candNames = append(candNames, name)
+			}
+		}
+		sort.Strings(candNames)
+		for _, name := range candNames {
+			zf := filesByCleanName[name]
+			if zf.FileInfo().IsDir() {
 				continue
 			}
 			rest := strings.TrimPrefix(name, prefix)
 			if strings.Contains(rest, "/") || strings.HasSuffix(rest, ".plist") || strings.HasSuffix(rest, ".mobileprovision") {
 				continue
 			}
-			head, herr := readZipFileBounded(zf, 4)
+			head, herr := peekZipFileHead(zf, 4)
 			if herr == nil && isMachOMagic(head) {
 				mainEntry = zf
 				execName = rest
@@ -214,6 +224,20 @@ func validateZipEntryPath(name string) (string, bool) {
 		return "", false
 	}
 	return clean, true
+}
+
+func peekZipFileHead(zf *zip.File, n int) ([]byte, error) {
+	rc, err := zf.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	buf := make([]byte, n)
+	readN, err := io.ReadFull(io.LimitReader(rc, int64(n)), buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buf[:readN], nil
 }
 
 func readZipFileBounded(zf *zip.File, limit int64) ([]byte, error) {
@@ -437,8 +461,12 @@ func inspectMachOSlice(
 	}
 	if mf.Symtab != nil {
 		for _, sym := range mf.Symtab.Syms {
+			// Skip STAB debug symbols (N_STAB = 0xe0) for export classification.
+			if (sym.Type & 0xe0) != 0 {
+				continue
+			}
 			checkSymIndicators(sym.Name)
-			// Defined external symbol: N_EXT (0x01) and sect != 0
+			// Defined external symbol: non-STAB, N_EXT (0x01), and sect != 0
 			if sym.Name != "" && sym.Sect != 0 && (sym.Type&0x01) != 0 {
 				exportSet[sym.Name] = true
 			}
@@ -447,6 +475,9 @@ func inspectMachOSlice(
 
 	// ObjC sections: __TEXT/__objc_classname, __TEXT/__objc_methname, __DATA/__objc_classlist
 	for _, sec := range mf.Sections {
+		if sec.Size == 0 || sec.Size > maxMachOSectionBytes {
+			continue
+		}
 		switch {
 		case sec.Name == "__objc_classname":
 			if data, err := sec.Data(); err == nil {
@@ -470,7 +501,7 @@ func inspectMachOSlice(
 				}
 				symByAddr := make(map[uint64]string)
 				for _, sym := range mf.Symtab.Syms {
-					if sym.Value != 0 && strings.HasPrefix(sym.Name, "_OBJC_CLASS_$_") {
+					if (sym.Type&0xe0) == 0 && sym.Value != 0 && strings.HasPrefix(sym.Name, "_OBJC_CLASS_$_") {
 						symByAddr[sym.Value] = strings.TrimPrefix(sym.Name, "_OBJC_CLASS_$_")
 					}
 				}
@@ -679,12 +710,15 @@ func parseXMLPlistRoot(dec *xml.Decoder) (map[string]any, error) {
 			return nil, err
 		}
 		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == "dict" {
-			return parseXMLPlistDict(dec)
+			return parseXMLPlistDict(dec, 1)
 		}
 	}
 }
 
-func parseXMLPlistDict(dec *xml.Decoder) (map[string]any, error) {
+func parseXMLPlistDict(dec *xml.Decoder, depth int) (map[string]any, error) {
+	if depth > maxPlistDepth {
+		return nil, fmt.Errorf("XML plist nesting depth exceeds %d", maxPlistDepth)
+	}
 	out := make(map[string]any)
 	var currentKey string
 	for {
@@ -705,7 +739,7 @@ func parseXMLPlistDict(dec *xml.Decoder) (map[string]any, error) {
 				}
 				currentKey = strings.TrimSpace(k)
 			} else {
-				val, err := parseXMLPlistValue(dec, t)
+				val, err := parseXMLPlistValue(dec, t, depth+1)
 				if err != nil {
 					return out, err
 				}
@@ -718,7 +752,10 @@ func parseXMLPlistDict(dec *xml.Decoder) (map[string]any, error) {
 	}
 }
 
-func parseXMLPlistArray(dec *xml.Decoder) ([]any, error) {
+func parseXMLPlistArray(dec *xml.Decoder, depth int) ([]any, error) {
+	if depth > maxPlistDepth {
+		return nil, fmt.Errorf("XML plist nesting depth exceeds %d", maxPlistDepth)
+	}
 	var out []any
 	for {
 		tok, err := dec.Token()
@@ -731,7 +768,7 @@ func parseXMLPlistArray(dec *xml.Decoder) ([]any, error) {
 				return out, nil
 			}
 		case xml.StartElement:
-			val, err := parseXMLPlistValue(dec, t)
+			val, err := parseXMLPlistValue(dec, t, depth+1)
 			if err != nil {
 				return out, err
 			}
@@ -740,12 +777,15 @@ func parseXMLPlistArray(dec *xml.Decoder) ([]any, error) {
 	}
 }
 
-func parseXMLPlistValue(dec *xml.Decoder, start xml.StartElement) (any, error) {
+func parseXMLPlistValue(dec *xml.Decoder, start xml.StartElement, depth int) (any, error) {
+	if depth > maxPlistDepth {
+		return nil, fmt.Errorf("XML plist nesting depth exceeds %d", maxPlistDepth)
+	}
 	switch start.Name.Local {
 	case "dict":
-		return parseXMLPlistDict(dec)
+		return parseXMLPlistDict(dec, depth)
 	case "array":
-		return parseXMLPlistArray(dec)
+		return parseXMLPlistArray(dec, depth)
 	case "true":
 		_ = dec.Skip()
 		return true, nil
@@ -810,7 +850,7 @@ func GenerateUnidbgIOSHarness(opts UnidbgIOSOptions) *GeneratedToolScript {
 	objcClass := strings.TrimSpace(opts.ObjCClass)
 	objcSel := strings.TrimSpace(opts.ObjCSelector)
 	targetOff := strings.TrimSpace(opts.TargetOffset)
-	if targetSym == "" && objcClass == "" && targetOff == "" {
+	if targetSym == "" && targetOff == "" && (objcClass == "" || objcSel == "") {
 		targetSym = "_sign_payload"
 	}
 	sampleArg := "payload=hello&ts=1700000000"
@@ -892,9 +932,11 @@ import java.io.IOException;
                 throw new IllegalStateException("Mach-O symbol not found: " + TARGET_SYMBOL);
             }
             ret = sym.call(emulator, input);
-        } else {
+        } else if (!TARGET_OFFSET.isEmpty()) {
             long off = Long.decode(TARGET_OFFSET);
             ret = module.callFunction(emulator, off, input);
+        } else {
+            throw new IllegalStateException("No target symbol, ObjC class+selector, or offset configured");
         }
         if (ret == null) {
             return "";

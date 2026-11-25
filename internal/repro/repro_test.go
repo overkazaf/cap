@@ -765,6 +765,292 @@ func TestIOSHarnessAndStealthTemplates(t *testing.T) {
 	verifyNodeSyntax(t, "ios_stealth.js", stealth.Code)
 }
 
+// --- 5. Security & Correctness Audit Regressions -----------------------------
+
+func TestAuditInjectionHardening(t *testing.T) {
+	// 1. Adversarial JS comment/string injection via U+2028 / U+2029 / NUL / quotes
+	evilPkg := "com.evil\u2028process.exit(1);//\u2029'\"\\\x00\x07"
+	envScript := GenerateFridaEnvSnapshotScript(evilPkg)
+	if strings.ContainsAny(envScript.Code, "\u2028\u2029\x00\x07") {
+		t.Fatal("Frida env snapshot script contains raw U+2028/U+2029/control bytes")
+	}
+	verifyNodeSyntax(t, "evil_env_snapshot.js", envScript.Code)
+
+	iosStealth := GenerateIOSStealthScript(IOSStealthOptions{
+		BundleID:          evilPkg,
+		TargetBinary:      "App\u2028throw new Error('pwned');//\x00",
+		CustomHidePaths:   []string{"/tmp/bad\u2028'\"\\\x00path"},
+		CustomHideSchemes: []string{"bad\u2029'scheme://"},
+	})
+	if strings.ContainsAny(iosStealth.Code, "\u2028\u2029\x00\x07") {
+		t.Fatal("iOS stealth script contains raw U+2028/U+2029/control bytes")
+	}
+	verifyNodeSyntax(t, "evil_ios_stealth.js", iosStealth.Code)
+
+	// 2. Adversarial Java JLS §3.3 Unicode escape breakout (\u000a / \u000d) & NUL bytes
+	evilJavaLog := "java.lang.UnsupportedOperationException: callIntMethodV: com/evil/Foo->bar\\u000aRuntime.getRuntime();()I"
+	diag := AnalyzeUnidbgLog(evilJavaLog)
+	if strings.Contains(diag.AbstractJniSnippet, `\u000aRuntime`) {
+		// In comments, backslash must be defanged so JLS §3.3 cannot execute \u000a.
+		for _, line := range strings.Split(diag.AbstractJniSnippet, "\n") {
+			if idx := strings.Index(line, "//"); idx >= 0 {
+				if strings.Contains(line[idx:], `\u000a`) {
+					t.Fatalf("Java // comment contains raw JLS §3.3 breakout sequence: %s", line)
+				}
+			}
+		}
+	}
+
+	iosHarness := GenerateUnidbgIOSHarness(UnidbgIOSOptions{
+		BundleID:   `com.evil\u000aRuntime.getRuntime().exec("id");//` + "\x00",
+		BinaryPath: `/tmp/bin\u000d*/evil`,
+		ObjCClass:  "OnlyClassWithoutSelector",
+	})
+	if strings.ContainsAny(iosHarness.Code, "\x00\u2028\u2029") {
+		t.Fatal("Unidbg iOS harness contains raw control bytes")
+	}
+	for _, line := range strings.Split(iosHarness.Code, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") && (strings.Contains(line, `\u000a`) || strings.Contains(line, `\u000d`)) {
+			t.Fatalf("Unidbg iOS harness // comment contains raw JLS §3.3 sequence: %s", line)
+		}
+	}
+	// Incomplete ObjCClass without ObjCSelector must not fall through to Long.decode("")
+	if !strings.Contains(iosHarness.Code, `TARGET_SYMBOL = "_sign_payload"`) {
+		t.Errorf("expected fallback TARGET_SYMBOL when ObjCClass is set without ObjCSelector")
+	}
+
+	// 3. Adversarial Python injection with NUL byte + quote breakout
+	evilBundle := &SymbolBundle{
+		BinaryName: "lib\x00evil\"); __import__(\"os\").system(\"id\"); #",
+		Arch:       "arm64\x00\n#injected",
+		ImageBase:  "0x1000",
+		Functions: []SymbolItem{
+			{
+				Name:      "fn\"); __import__(\"os\").system(\"id\"); #",
+				Address:   "0x1234",
+				Signature: "void f(\x00)",
+				Comment:   "line1\n\x00\"'\\",
+			},
+		},
+		Comments: []CommentItem{
+			{
+				Address: "0x1234",
+				Text:    "cmt\"); __import__(\"os\").system(\"id\"); #\x00",
+			},
+		},
+	}
+	idaPy := ExportIDAPython(evilBundle)
+	if strings.ContainsRune(idaPy, 0) {
+		t.Fatal("ExportIDAPython output contains raw NUL byte")
+	}
+	verifyPythonSyntax(t, "evil_ida_bridge.py", idaPy)
+
+	ghidraPy := ExportGhidraPython(evilBundle)
+	if strings.ContainsRune(ghidraPy, 0) {
+		t.Fatal("ExportGhidraPython output contains raw NUL byte")
+	}
+	verifyPythonSyntax(t, "evil_ghidra_bridge.py", ghidraPy)
+}
+
+func TestAuditAutoStubRegressions(t *testing.T) {
+	rawLog := strings.Join([]string{
+		`WARN [com.github.unidbg.linux.android.SystemPropertyHook] (SystemPropertyHook.java:42) - __system_property_get("ro.build.fingerprint")`,
+		`WARN [SystemPropertyHook] (SystemPropertyHook.java:51) - key=ro.product.model`,
+		`WARN [ARM64SyscallHandler] - openat dirfd=-100, pathname=/data/app/~~abc123==/com.example.app-xyz==/base.apk, oflags=0x0 => -2`,
+		`java.lang.UnsupportedOperationException: android/content/pm/PackageInfo->versionCode:I`,
+		`java.lang.UnsupportedOperationException: android/app/ActivityThread->getApplication()Landroid/app/Application;`,
+		`java.lang.UnsupportedOperationException: callObjectMethodV: android/content/pm/Signature->toByteArray()[B`,
+		`java.io.FileNotFoundException: /proc/self/status`,
+	}, "\n")
+
+	diag := AnalyzeUnidbgLog(rawLog)
+
+	// 1. Log4j (SystemPropertyHook.java:42) must NOT capture SystemPropertyHook.java
+	if len(diag.MissingSysProps) != 2 {
+		t.Fatalf("expected 2 sys props, got %+v", diag.MissingSysProps)
+	}
+	for _, p := range diag.MissingSysProps {
+		if strings.Contains(p.Key, "SystemPropertyHook") {
+			t.Fatalf("false-positive sys prop key from logger prefix: %+v", p)
+		}
+	}
+	if diag.MissingSysProps[0].Key != "ro.build.fingerprint" || diag.MissingSysProps[1].Key != "ro.product.model" {
+		t.Errorf("unexpected sys props: %+v", diag.MissingSysProps)
+	}
+
+	// 2. Android 11+ /data/app/~~...==/... path preserved intact
+	foundAndroid11Path := false
+	for _, f := range diag.MissingFiles {
+		if f.Path == "/data/app/~~abc123==/com.example.app-xyz==/base.apk" {
+			foundAndroid11Path = true
+		}
+		if f.Path == "/proc/self/status" && strings.Contains(f.SuggestedContent, `\n`) {
+			t.Errorf("SuggestedContent should store raw newlines, not escaped \\n: %q", f.SuggestedContent)
+		}
+	}
+	if !foundAndroid11Path {
+		t.Errorf("Android 11+ path with ~ and = was truncated or missing: %+v", diag.MissingFiles)
+	}
+
+	// 3. hexToBytes helper must be defined when Signature->toByteArray()[B is emitted
+	if !strings.Contains(diag.AbstractJniSnippet, "private static byte[] hexToBytes(String hex)") {
+		t.Error("AbstractJniSnippet missing hexToBytes helper definition")
+	}
+
+	// 4. PackageInfo->versionCode:I routed to getIntField (not getObjectField), and ActivityThread->getApplication() routed to callObjectMethodV
+	for _, it := range diag.MissingJNI {
+		if it.Signature == "android/content/pm/PackageInfo->versionCode:I" && it.Callback != CallbackGetIntField {
+			t.Errorf("expected versionCode:I -> getIntField, got %q", it.Callback)
+		}
+		if it.Signature == "android/app/ActivityThread->getApplication()Landroid/app/Application;" && it.Callback != CallbackCallObjectMethodV {
+			t.Errorf("expected ActivityThread->getApplication() -> callObjectMethodV, got %q", it.Callback)
+		}
+	}
+	if !strings.Contains(diag.AbstractJniSnippet, "public int getIntField(") {
+		t.Error("AbstractJniSnippet missing getIntField override")
+	}
+
+	// 5. IOResolverSnippet properly Java-escapes raw tabs and newlines
+	if !strings.Contains(diag.IOResolverSnippet, `"Name:\tcom.example.app\nState:\tR (running)\nTracerPid:\t0\nUid:\t10240\t10240\t10240\t10240\n"`) {
+		t.Errorf("IOResolverSnippet /proc/self/status not cleanly javaQuoted:\n%s", diag.IOResolverSnippet)
+	}
+}
+
+func TestAuditJadxSecurityAndLinkingRegressions(t *testing.T) {
+	tmp := t.TempDir()
+	wsDir := filepath.Join(tmp, "ws")
+	srcDir := filepath.Join(wsDir, "sources")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default-package class starting with "L" (LoginActivity)
+	loginJava := `public class LoginActivity {
+    public native boolean check(int code);
+    public native void localOnly();
+}
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "LoginActivity.java"), []byte(loginJava), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Outside host file + symlink inside workspace trying to exfiltrate via SearchSource & LinkJavaToNative
+	outsideSecret := filepath.Join(tmp, "host_secret.java")
+	if err := os.WriteFile(outsideSecret, []byte("public class SecretLeak { public static final String TOKEN = \"TOP_SECRET_MARKER\"; public native void leaked(); }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideSecret, filepath.Join(srcDir, "SecretLeak.java")); err != nil {
+		t.Fatalf("symlink failed: %v", err)
+	}
+
+	// 1. SearchSource must NOT read through escaping symlinks
+	hits, err := SearchSource(wsDir, "TOP_SECRET_MARKER", 10)
+	if err != nil {
+		t.Fatalf("SearchSource failed: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("SearchSource leaked outside symlink contents: %+v", hits)
+	}
+
+	// 2. Empty FQCN ".java" / "foo/.java" rejected by ReadClassSource
+	for _, bad := range []string{".java", "com/.java", "com/..java"} {
+		if _, err := ReadClassSource(wsDir, bad); err == nil {
+			t.Errorf("expected ReadClassSource(%q) to fail", bad)
+		}
+	}
+
+	// 3. MangleJNIName must NOT corrupt default-package LoginActivity -> oginActivity
+	shortName, longName := MangleJNIName("LoginActivity", "check", "(I)Z")
+	if shortName != "Java_LoginActivity_check" || longName != "Java_LoginActivity_check__I" {
+		t.Errorf("MangleJNIName corrupted LoginActivity: short=%q long=%q", shortName, longName)
+	}
+	// Descriptor form LLoginActivity; still strips L...;
+	descShort, _ := MangleJNIName("LLoginActivity;", "check", "(I)Z")
+	if descShort != "Java_LoginActivity_check" {
+		t.Errorf("MangleJNIName failed on descriptor LLoginActivity;: %q", descShort)
+	}
+
+	// 4. LinkJavaToNative must ignore STB_LOCAL static ELF symbols AND escaping symlinks
+	soPath := filepath.Join(tmp, "libcheck.so")
+	elfBytes := buildTestELF64(t, []testELFSym{
+		{name: "Java_LoginActivity_check", addr: 0x2000, size: 32, local: false},
+		{name: "Java_LoginActivity_localOnly", addr: 0x2100, size: 32, local: true},
+	})
+	if err := os.WriteFile(soPath, elfBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := LinkJavaToNative(wsDir, soPath, "")
+	if err != nil {
+		t.Fatalf("LinkJavaToNative failed: %v", err)
+	}
+	if rep.TotalNativeMethods != 2 {
+		t.Fatalf("expected 2 native methods (symlinked SecretLeak excluded), got %d: %+v", rep.TotalNativeMethods, rep.Bindings)
+	}
+	if rep.StaticCount != 1 || rep.UnresolvedCount != 1 {
+		t.Fatalf("expected 1 static_export (check) and 1 unresolved (localOnly STB_LOCAL), got %+v", rep)
+	}
+}
+
+func TestAuditIOSBplistFallbackAndHardening(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Mach-O containing N_STAB debug symbol alongside real export
+	machoBytes := buildSyntheticMachO64(t, synthMachOOpts{
+		cpu:         macho.CpuArm64,
+		pie:         true,
+		nx:          true,
+		cryptID:     0,
+		minOSMajor:  16,
+		minOSMinor:  0,
+		dylibs:      []string{"/usr/lib/libSystem.B.dylib"},
+		imports:     []string{"_objc_release"},
+		exports:     []string{"_real_export"},
+		stabs:       []string{"/Users/dev/debug_stab.c"},
+		objcClasses: []string{"FallbackRunner"},
+		objcMethods: []string{"run"},
+	})
+
+	// IPA with binary plist (bplist00) AND renamed executable ("RenamedExec" != "MyApp")
+	ipaPath := filepath.Join(tmp, "RenamedBplist.ipa")
+	writeZipArchive(t, ipaPath, map[string][]byte{
+		"Payload/MyApp.app/Info.plist":  []byte("bplist00\x00\x01\x02stub"),
+		"Payload/MyApp.app/RenamedExec": machoBytes,
+	})
+
+	rep, err := AnalyzeIOSBinary(ipaPath)
+	if err != nil {
+		t.Fatalf("AnalyzeIOSBinary(bplist + renamed binary) failed: %v", err)
+	}
+	if rep.MainBinaryName != "RenamedExec" {
+		t.Errorf("expected MainBinaryName=RenamedExec, got %q", rep.MainBinaryName)
+	}
+	if rep.InfoPlist == nil || rep.InfoPlist.RawFormat != "bplist" {
+		t.Errorf("expected bplist InfoPlist, got %+v", rep.InfoPlist)
+	}
+	for _, exp := range rep.ExportedSymbols {
+		if strings.Contains(exp, "debug_stab.c") {
+			t.Errorf("N_STAB debug symbol leaked into ExportedSymbols: %v", rep.ExportedSymbols)
+		}
+	}
+
+	// Deeply nested XML plist (> maxPlistDepth) must fail gracefully instead of recursing unbounded
+	var deep strings.Builder
+	deep.WriteString(`<?xml version="1.0"?><plist version="1.0">`)
+	for i := 0; i < 80; i++ {
+		deep.WriteString("<dict><key>k</key>")
+	}
+	deep.WriteString("<string>v</string>")
+	for i := 0; i < 80; i++ {
+		deep.WriteString("</dict>")
+	}
+	deep.WriteString("</plist>")
+	pInfo, pWarn := parseInfoPlist([]byte(deep.String()))
+	if pInfo != nil || !strings.Contains(pWarn, "nesting depth") {
+		t.Errorf("expected depth limit error for deeply nested XML plist, got info=%+v warn=%q", pInfo, pWarn)
+	}
+}
+
 // --- Syntax Verification Helpers ---------------------------------------------
 
 func verifyNodeSyntax(t *testing.T, name, code string) {
@@ -802,9 +1088,10 @@ func verifyPythonSyntax(t *testing.T, name, code string) {
 // --- Synthetic Fixture Builders ----------------------------------------------
 
 type testELFSym struct {
-	name string
-	addr uint64
-	size uint64
+	name  string
+	addr  uint64
+	size  uint64
+	local bool
 }
 
 func buildTestELF64(t *testing.T, syms []testELFSym) []byte {
@@ -838,7 +1125,11 @@ func buildTestELF64(t *testing.T, syms []testELFSym) []byte {
 		nameOff := uint32(len(dynstr))
 		dynstr = append(dynstr, sym.name...)
 		dynstr = append(dynstr, 0)
-		writeSym(nameOff, elf.ST_INFO(elf.STB_GLOBAL, elf.STT_FUNC), 4, sym.addr, sym.size)
+		bind := elf.STB_GLOBAL
+		if sym.local {
+			bind = elf.STB_LOCAL
+		}
+		writeSym(nameOff, elf.ST_INFO(bind, elf.STT_FUNC), 4, sym.addr, sym.size)
 	}
 
 	textData := make([]byte, 0x100)
@@ -1024,6 +1315,7 @@ type synthMachOOpts struct {
 	dylibs      []string
 	imports     []string
 	exports     []string
+	stabs       []string
 	objcClasses []string
 	objcMethods []string
 }
@@ -1065,6 +1357,10 @@ func buildSyntheticMachO64(t *testing.T, opts synthMachOOpts) []byte {
 	for i, exp := range opts.exports {
 		val := uint64(0x100004000 + i*0x40)
 		addNlist(exp, 0x0f, 1, val) // N_EXT | N_SECT
+	}
+	for i, st := range opts.stabs {
+		val := uint64(0x100005000 + i*0x20)
+		addNlist(st, 0x25, 1, val) // N_STAB (0x20) | N_EXT (0x01) | N_SECT
 	}
 
 	// Prepare load commands (first compute exact load command bytes, then fixup file offsets).
@@ -1205,7 +1501,7 @@ func buildSyntheticMachO64(t *testing.T, opts synthMachOOpts) []byte {
 	symCmd.Cmd = macho.LoadCmdSymtab
 	symCmd.Len = symtabSize
 	symCmd.Symoff = symOff
-	symCmd.Nsyms = uint32(len(opts.imports) + len(opts.exports))
+	symCmd.Nsyms = uint32(len(opts.imports) + len(opts.exports) + len(opts.stabs))
 	symCmd.Stroff = strOff
 	symCmd.Strsize = uint32(len(strtab))
 	var sb bytes.Buffer

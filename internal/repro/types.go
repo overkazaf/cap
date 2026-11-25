@@ -17,6 +17,7 @@ const (
 	CallbackCallStaticObjectMethodV = "callStaticObjectMethodV"
 	CallbackGetObjectField          = "getObjectField"
 	CallbackGetStaticObjectField    = "getStaticObjectField"
+	CallbackGetIntField             = "getIntField"
 	CallbackCallIntMethodV          = "callIntMethodV"
 	CallbackCallBooleanMethodV      = "callBooleanMethodV"
 	CallbackNewObjectV              = "newObjectV"

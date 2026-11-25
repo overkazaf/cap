@@ -11,7 +11,7 @@ var (
 	// Matches inline callback format:
 	//   UnsupportedOperationException: callObjectMethodV: android/content/Context->getPackageName()Ljava/lang/String;
 	//   UnsupportedOperationException: callStaticObjectMethodV android/provider/Settings$Secure->getString(...)
-	inlineCallbackRe = regexp.MustCompile(`UnsupportedOperationException:\s*(callObjectMethodV|callStaticObjectMethodV|getObjectField|getStaticObjectField|callIntMethodV|callBooleanMethodV|newObjectV|resolveClass)\s*[:=\s]+\s*([^\s,"']+)`)
+	inlineCallbackRe = regexp.MustCompile(`UnsupportedOperationException:\s*(callObjectMethodV|callStaticObjectMethodV|getObjectField|getStaticObjectField|getIntField|callIntMethodV|callBooleanMethodV|newObjectV|resolveClass)\s*[:=\s]+\s*([^\s,"']+)`)
 
 	// Matches generic Unidbg UnsupportedOperationException: <signature>
 	genericUoeRe = regexp.MustCompile(`UnsupportedOperationException:\s*([^\s,"']+(?:->[^\s,"']+)?)`)
@@ -19,17 +19,27 @@ var (
 	// Matches AbstractJni stack trace frame:
 	//   at com.github.unidbg.linux.android.dvm.AbstractJni.callObjectMethodV(AbstractJni.java:258)
 	//   at com.github.unidbg.linux.android.dvm.BaseVM.resolveClass(BaseVM.java:180)
-	stackCallbackRe = regexp.MustCompile(`(?:AbstractJni|BaseVM|DvmObject|DalvikVM)\.(callObjectMethodV|callStaticObjectMethodV|getObjectField|getStaticObjectField|callIntMethodV|callBooleanMethodV|newObjectV|resolveClass)\s*\(`)
+	stackCallbackRe = regexp.MustCompile(`(?:AbstractJni|BaseVM|DvmObject|DalvikVM)\.(callObjectMethodV|callStaticObjectMethodV|getObjectField|getStaticObjectField|getIntField|callIntMethodV|callBooleanMethodV|newObjectV|resolveClass)\s*\(`)
 
 	// Matches explicit resolveClass warnings/exceptions:
 	//   resolveClass: com/example/Foo  or  ClassNotFoundException: com/example/Foo
 	resolveClassLineRe = regexp.MustCompile(`(?i)(?:resolveClass|ClassNotFoundException)\s*[:=\s]+\s*([A-Za-z0-9_$/\.]+)`)
 
 	// Matches missing file paths opened during emulation (/proc/..., /data/..., /system/..., /sys/..., /dev/..., /vendor/...).
-	missingFilePathRe = regexp.MustCompile(`(?i)(?:FileNotFoundException|openat?|pathname\s*=|resolve(?:File)?[^\n]*?failed|No such file[^\n]*?|cannot open|failed to open|open\s*\()[^\n"'/]*(?:["'])?((?:/proc|/data|/system|/sys|/dev|/vendor|/sdcard|/storage|/etc)[A-Za-z0-9_./\-:@$]+)`)
+	missingFilePathRe = regexp.MustCompile(`(?i)(?:FileNotFoundException|openat?|pathname\s*=|resolve(?:File)?[^\n]*?failed|No such file[^\n]*?|cannot open|failed to open|open\s*\()[^\n"'/]*(?:["'])?((?:/proc|/data|/system|/sys|/dev|/vendor|/sdcard|/storage|/etc)[A-Za-z0-9_./\-:@$~=+]+)`)
 
-	// Matches __system_property_get / property_get / SystemPropertyHook log lines.
-	sysPropRe = regexp.MustCompile(`(?i)(?:__system_property_get|system_property_get|property_get|SystemPropertyHook|missing\s+sys(?:tem)?\s*prop(?:erty)?|unsupported\s+system\s+property)[\]\s:\-=(,]*(?:(?:missing|unsupported)\s+)?(?:(?:key|name|prop|property)\s*[:=]\s*)?["']?([a-z][a-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+)["']?`)
+	// Matches __system_property_get / property_get function-style log lines first (so logger prefixes like
+	// "(SystemPropertyHook.java:42)" never hijack the match).
+	sysPropFuncRe = regexp.MustCompile(`(?i)(?:__system_property_get|system_property_get|property_get)[\s:\-=(,]*(?:(?:key|name|prop|property)\s*[:=]\s*)?["']?([a-z][a-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+)["']?`)
+
+	// Matches explicit missing/unsupported system property messages.
+	sysPropMsgRe = regexp.MustCompile(`(?i)(?:missing\s+sys(?:tem)?\s*prop(?:erty)?|unsupported\s+system\s+property)[\s:\-=(,]*(?:(?:key|name|prop|property)\s*[:=]\s*)?["']?([a-z][a-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+)["']?`)
+
+	// Matches key=value or well-known Android property prefixes on SystemPropertyHook lines after stripping logger metadata.
+	sysPropHookKeyRe = regexp.MustCompile(`(?i)(?:(?:key|name|prop|property)\s*[:=]\s*["']?([a-z][a-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+)["']?|["']?((?:ro|persist|sys|dalvik|debug|gsm|net|init|service|vendor|hw|ril|crypto|security|pm|media)\.[A-Za-z0-9_.-]+)["']?)`)
+
+	// Strips Log4j/SLF4J logger brackets & Java source locations like "[com.foo.SystemPropertyHook] (SystemPropertyHook.java:42)".
+	logMetaStripRe = regexp.MustCompile(`\[[^\]]*\]|\([A-Za-z0-9_$]+\.(?:java|kt):\d+\)`)
 
 	// Matches missing .so library errors.
 	missingLibRe = regexp.MustCompile(`(?i)(?:library\s+not\s+found|cannot\s+load\s+library|resolveLibrary[^\n]*?failed|dlopen\s+failed[^\n]*?|need(?:ed)?\s+library|missing\s+library|unable\s+to\s+find\s+library)[^\n]*?(lib[A-Za-z0-9_.+\-]+\.so(?:\.[0-9]+)*)`)
@@ -190,8 +200,8 @@ func AnalyzeUnidbgLog(rawLog string) *UnidbgStubDiagnosis {
 		}
 
 		// 5. Missing Android system properties
-		if m := sysPropRe.FindStringSubmatch(line); len(m) == 2 {
-			addProp(m[1])
+		if key := extractSysPropFromLine(line); key != "" {
+			addProp(key)
 		}
 
 		// 6. Missing .so libraries
@@ -267,6 +277,41 @@ func AnalyzeUnidbgLog(rawLog string) *UnidbgStubDiagnosis {
 	return diag
 }
 
+func extractSysPropFromLine(line string) string {
+	isValidPropKey := func(k string) bool {
+		k = strings.TrimSpace(strings.Trim(k, "\"',;)"))
+		if k == "" || !strings.Contains(k, ".") {
+			return false
+		}
+		low := strings.ToLower(k)
+		for _, bad := range []string{".java", ".kt", ".so", ".class", ".dex", ".xml", ".apk"} {
+			if strings.HasSuffix(low, bad) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if m := sysPropFuncRe.FindStringSubmatch(line); len(m) == 2 && isValidPropKey(m[1]) {
+		return m[1]
+	}
+	if m := sysPropMsgRe.FindStringSubmatch(line); len(m) == 2 && isValidPropKey(m[1]) {
+		return m[1]
+	}
+	if strings.Contains(strings.ToLower(line), "systempropertyhook") {
+		cleaned := logMetaStripRe.ReplaceAllString(line, " ")
+		// Remove bare class name token so it cannot be mistaken for a property key.
+		cleaned = strings.ReplaceAll(cleaned, "SystemPropertyHook", " ")
+		if m := sysPropHookKeyRe.FindStringSubmatch(cleaned); len(m) >= 3 {
+			cand := firstNonEmptyStr(m[1], m[2])
+			if isValidPropKey(cand) {
+				return cand
+			}
+		}
+	}
+	return ""
+}
+
 func inferCallbackFromSignature(sig string) string {
 	if !strings.Contains(sig, "->") {
 		return CallbackResolveClass
@@ -278,6 +323,9 @@ func inferCallbackFromSignature(sig string) string {
 	}
 	// Field format: Class->FIELD:Ltype; or Class->FIELD:I
 	if !strings.Contains(rest, "(") && strings.Contains(rest, ":") {
+		if strings.HasSuffix(rest, ":I") {
+			return CallbackGetIntField
+		}
 		if strings.HasPrefix(cls, "android/os/Build") {
 			return CallbackGetStaticObjectField
 		}
@@ -293,7 +341,10 @@ func inferCallbackFromSignature(sig string) string {
 			return CallbackCallBooleanMethodV
 		}
 	}
-	if strings.Contains(cls, "Settings$Secure") || strings.Contains(cls, "SystemProperties") || cls == "java/lang/System" || cls == "android/app/ActivityThread" {
+	if strings.Contains(cls, "Settings$Secure") || strings.Contains(cls, "SystemProperties") || cls == "java/lang/System" {
+		return CallbackCallStaticObjectMethodV
+	}
+	if cls == "android/app/ActivityThread" && (strings.HasPrefix(rest, "currentActivityThread(") || strings.HasPrefix(rest, "currentApplication(") || strings.HasPrefix(rest, "currentPackageName(")) {
 		return CallbackCallStaticObjectMethodV
 	}
 	return CallbackCallObjectMethodV
@@ -321,22 +372,28 @@ func splitJNISignature(sig string) (className, memberName, descriptor string) {
 }
 
 func synthesizeJNIStubBody(callback, sig, cls, member, desc string) (code, note string, smart bool) {
-	// Smart defaults matched by exact signature or class/member pair.
-	switch sig {
-	case "android/content/Context->getPackageName()Ljava/lang/String;":
-		return `return new StringObject(vm, packageName);`, "Returns configured target package name.", true
-	case "android/content/Context->getPackageManager()Landroid/content/pm/PackageManager;":
-		return `return vm.resolveClass("android/content/pm/PackageManager").newObject(null);`, "Provides stub PackageManager instance.", true
-	case "android/content/Context->getContentResolver()Landroid/content/ContentResolver;":
-		return `return vm.resolveClass("android/content/ContentResolver").newObject(null);`, "Provides stub ContentResolver instance.", true
-	case "android/content/Context->getApplicationInfo()Landroid/content/pm/ApplicationInfo;":
-		return `return vm.resolveClass("android/content/pm/ApplicationInfo").newObject(null);`, "Provides ApplicationInfo instance (pair with sourceDir/dataDir field stubs).", true
-	case "android/content/Context->getFilesDir()Ljava/io/File;":
-		return `return vm.resolveClass("java/io/File").newObject("/data/user/0/" + packageName + "/files");`, "Maps app internal files directory.", true
-	case "android/content/Context->getCacheDir()Ljava/io/File;":
-		return `return vm.resolveClass("java/io/File").newObject("/data/user/0/" + packageName + "/cache");`, "Maps app internal cache directory.", true
-	case "android/content/Context->getSystemService(Ljava/lang/String;)Ljava/lang/Object;":
-		return `String svc = vaList.getObjectArg(0).getValue().toString();
+	isIntCB := callback == CallbackCallIntMethodV || callback == CallbackGetIntField
+	isBoolCB := callback == CallbackCallBooleanMethodV
+	isObjCB := callback == CallbackCallObjectMethodV || callback == CallbackCallStaticObjectMethodV ||
+		callback == CallbackGetObjectField || callback == CallbackGetStaticObjectField || callback == CallbackNewObjectV
+
+	// Smart defaults matched by exact signature, strictly respecting the Java return type of callback.
+	if isObjCB {
+		switch sig {
+		case "android/content/Context->getPackageName()Ljava/lang/String;":
+			return `return new StringObject(vm, packageName);`, "Returns configured target package name.", true
+		case "android/content/Context->getPackageManager()Landroid/content/pm/PackageManager;":
+			return `return vm.resolveClass("android/content/pm/PackageManager").newObject(null);`, "Provides stub PackageManager instance.", true
+		case "android/content/Context->getContentResolver()Landroid/content/ContentResolver;":
+			return `return vm.resolveClass("android/content/ContentResolver").newObject(null);`, "Provides stub ContentResolver instance.", true
+		case "android/content/Context->getApplicationInfo()Landroid/content/pm/ApplicationInfo;":
+			return `return vm.resolveClass("android/content/pm/ApplicationInfo").newObject(null);`, "Provides ApplicationInfo instance (pair with sourceDir/dataDir field stubs).", true
+		case "android/content/Context->getFilesDir()Ljava/io/File;":
+			return `return vm.resolveClass("java/io/File").newObject("/data/user/0/" + packageName + "/files");`, "Maps app internal files directory.", true
+		case "android/content/Context->getCacheDir()Ljava/io/File;":
+			return `return vm.resolveClass("java/io/File").newObject("/data/user/0/" + packageName + "/cache");`, "Maps app internal cache directory.", true
+		case "android/content/Context->getSystemService(Ljava/lang/String;)Ljava/lang/Object;":
+			return `String svc = vaList.getObjectArg(0).getValue().toString();
             if ("phone".equals(svc)) {
                 return vm.resolveClass("android/telephony/TelephonyManager").newObject(null);
             }
@@ -344,107 +401,122 @@ func synthesizeJNIStubBody(callback, sig, cls, member, desc string) (code, note 
                 return vm.resolveClass("android/net/wifi/WifiManager").newObject(null);
             }
             return vm.resolveClass("java/lang/Object").newObject(svc);`, "Dispatches common Android system services (phone, wifi).", true
-	case "android/content/pm/PackageManager->getPackageInfo(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;":
-		return `String pkg = vaList.getObjectArg(0).getValue().toString();
+		case "android/content/pm/PackageManager->getPackageInfo(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;":
+			return `String pkg = vaList.getObjectArg(0).getValue().toString();
             int flags = vaList.getIntArg(1);
             return vm.resolveClass("android/content/pm/PackageInfo").newObject(pkg + ":" + flags);`, "Returns PackageInfo wrapper; wire signatures/versionCode fields as needed.", true
-	case "android/content/pm/PackageInfo->signatures:[Landroid/content/pm/Signature;":
-		return `return new ArrayObject(vm.resolveClass("android/content/pm/Signature").newObject(SIGNING_CERT_HEX));`, "Returns single-element Signature[] populated with signing cert hex.", true
-	case "android/content/pm/Signature->toByteArray()[B":
-		return `return new ByteArray(vm, hexToBytes(SIGNING_CERT_HEX));`, "Returns DER-encoded APK signing certificate bytes.", true
-	case "android/content/pm/Signature->toCharsString()Ljava/lang/String;":
-		return `return new StringObject(vm, SIGNING_CERT_HEX);`, "Returns hex string of APK signing certificate.", true
-	case "android/provider/Settings$Secure->getString(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;":
-		return `String key = vaList.getObjectArg(1).getValue().toString();
+		case "android/content/pm/PackageInfo->signatures:[Landroid/content/pm/Signature;":
+			return `return new ArrayObject(vm.resolveClass("android/content/pm/Signature").newObject(SIGNING_CERT_HEX));`, "Returns single-element Signature[] populated with signing cert hex.", true
+		case "android/content/pm/Signature->toByteArray()[B":
+			return `return new ByteArray(vm, hexToBytes(SIGNING_CERT_HEX));`, "Returns DER-encoded APK signing certificate bytes.", true
+		case "android/content/pm/Signature->toCharsString()Ljava/lang/String;":
+			return `return new StringObject(vm, SIGNING_CERT_HEX);`, "Returns hex string of APK signing certificate.", true
+		case "android/provider/Settings$Secure->getString(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;":
+			return `String key = vaList.getObjectArg(1).getValue().toString();
             if ("android_id".equals(key)) {
                 return new StringObject(vm, ANDROID_ID);
             }
             return new StringObject(vm, "");`, "Returns realistic 64-bit hex android_id for Settings.Secure.ANDROID_ID.", true
-	case "android/os/Build->MODEL:Ljava/lang/String;":
-		return `return new StringObject(vm, "Pixel 7");`, "Device Build.MODEL.", true
-	case "android/os/Build->BRAND:Ljava/lang/String;":
-		return `return new StringObject(vm, "google");`, "Device Build.BRAND.", true
-	case "android/os/Build->MANUFACTURER:Ljava/lang/String;":
-		return `return new StringObject(vm, "Google");`, "Device Build.MANUFACTURER.", true
-	case "android/os/Build->FINGERPRINT:Ljava/lang/String;":
-		return `return new StringObject(vm, "google/panther/panther:13/TQ3A.230901.001/10750268:user/release-keys");`, "Device Build.FINGERPRINT.", true
-	case "android/os/Build->DEVICE:Ljava/lang/String;":
-		return `return new StringObject(vm, "panther");`, "Device Build.DEVICE.", true
-	case "android/os/Build->PRODUCT:Ljava/lang/String;":
-		return `return new StringObject(vm, "panther");`, "Device Build.PRODUCT.", true
-	case "android/os/Build->HARDWARE:Ljava/lang/String;":
-		return `return new StringObject(vm, "panther");`, "Device Build.HARDWARE.", true
-	case "android/os/Build->BOARD:Ljava/lang/String;":
-		return `return new StringObject(vm, "panther");`, "Device Build.BOARD.", true
-	case "android/os/Build->TAGS:Ljava/lang/String;":
-		return `return new StringObject(vm, "release-keys");`, "Device Build.TAGS.", true
-	case "android/os/Build->TYPE:Ljava/lang/String;":
-		return `return new StringObject(vm, "user");`, "Device Build.TYPE.", true
-	case "android/os/Build->ID:Ljava/lang/String;":
-		return `return new StringObject(vm, "TQ3A.230901.001");`, "Device Build.ID.", true
-	case "android/os/Build->SERIAL:Ljava/lang/String;":
-		return `return new StringObject(vm, "unknown");`, "Device Build.SERIAL.", true
-	case "android/os/Build$VERSION->RELEASE:Ljava/lang/String;":
-		return `return new StringObject(vm, "13");`, "Android OS release version.", true
-	case "android/os/Build$VERSION->CODENAME:Ljava/lang/String;":
-		return `return new StringObject(vm, "REL");`, "Android OS codename.", true
-	case "android/content/pm/ApplicationInfo->sourceDir:Ljava/lang/String;":
-		return `return new StringObject(vm, "/data/app/~~cap==/" + packageName + "/base.apk");`, "APK base path on device.", true
-	case "android/content/pm/ApplicationInfo->dataDir:Ljava/lang/String;":
-		return `return new StringObject(vm, "/data/user/0/" + packageName);`, "App private data directory.", true
-	case "android/content/pm/ApplicationInfo->nativeLibraryDir:Ljava/lang/String;":
-		return `return new StringObject(vm, "/data/app/~~cap==/" + packageName + "/lib/arm64");`, "App native library directory.", true
-	case "android/content/pm/ApplicationInfo->packageName:Ljava/lang/String;":
-		return `return new StringObject(vm, packageName);`, "ApplicationInfo.packageName.", true
-	case "java/io/File->getAbsolutePath()Ljava/lang/String;", "java/io/File->getPath()Ljava/lang/String;":
-		return `Object val = dvmObject.getValue();
+		case "android/os/Build->MODEL:Ljava/lang/String;":
+			return `return new StringObject(vm, "Pixel 7");`, "Device Build.MODEL.", true
+		case "android/os/Build->BRAND:Ljava/lang/String;":
+			return `return new StringObject(vm, "google");`, "Device Build.BRAND.", true
+		case "android/os/Build->MANUFACTURER:Ljava/lang/String;":
+			return `return new StringObject(vm, "Google");`, "Device Build.MANUFACTURER.", true
+		case "android/os/Build->FINGERPRINT:Ljava/lang/String;":
+			return `return new StringObject(vm, "google/panther/panther:13/TQ3A.230901.001/10750268:user/release-keys");`, "Device Build.FINGERPRINT.", true
+		case "android/os/Build->DEVICE:Ljava/lang/String;":
+			return `return new StringObject(vm, "panther");`, "Device Build.DEVICE.", true
+		case "android/os/Build->PRODUCT:Ljava/lang/String;":
+			return `return new StringObject(vm, "panther");`, "Device Build.PRODUCT.", true
+		case "android/os/Build->HARDWARE:Ljava/lang/String;":
+			return `return new StringObject(vm, "panther");`, "Device Build.HARDWARE.", true
+		case "android/os/Build->BOARD:Ljava/lang/String;":
+			return `return new StringObject(vm, "panther");`, "Device Build.BOARD.", true
+		case "android/os/Build->TAGS:Ljava/lang/String;":
+			return `return new StringObject(vm, "release-keys");`, "Device Build.TAGS.", true
+		case "android/os/Build->TYPE:Ljava/lang/String;":
+			return `return new StringObject(vm, "user");`, "Device Build.TYPE.", true
+		case "android/os/Build->ID:Ljava/lang/String;":
+			return `return new StringObject(vm, "TQ3A.230901.001");`, "Device Build.ID.", true
+		case "android/os/Build->SERIAL:Ljava/lang/String;":
+			return `return new StringObject(vm, "unknown");`, "Device Build.SERIAL.", true
+		case "android/os/Build$VERSION->RELEASE:Ljava/lang/String;":
+			return `return new StringObject(vm, "13");`, "Android OS release version.", true
+		case "android/os/Build$VERSION->CODENAME:Ljava/lang/String;":
+			return `return new StringObject(vm, "REL");`, "Android OS codename.", true
+		case "android/content/pm/ApplicationInfo->sourceDir:Ljava/lang/String;":
+			return `return new StringObject(vm, "/data/app/~~cap==/" + packageName + "/base.apk");`, "APK base path on device.", true
+		case "android/content/pm/ApplicationInfo->dataDir:Ljava/lang/String;":
+			return `return new StringObject(vm, "/data/user/0/" + packageName);`, "App private data directory.", true
+		case "android/content/pm/ApplicationInfo->nativeLibraryDir:Ljava/lang/String;":
+			return `return new StringObject(vm, "/data/app/~~cap==/" + packageName + "/lib/arm64");`, "App native library directory.", true
+		case "android/content/pm/ApplicationInfo->packageName:Ljava/lang/String;":
+			return `return new StringObject(vm, packageName);`, "ApplicationInfo.packageName.", true
+		case "java/io/File->getAbsolutePath()Ljava/lang/String;", "java/io/File->getPath()Ljava/lang/String;":
+			return `Object val = dvmObject.getValue();
             return new StringObject(vm, val != null ? val.toString() : "/data/user/0/" + packageName);`, "Returns wrapped File path.", true
-	case "java/io/File->exists()Z":
-		return `return true;`, "Reports synthetic File as existing.", true
-	case "java/io/File->isDirectory()Z":
-		return `return true;`, "Reports synthetic File path as directory.", true
-	case "java/io/File-><init>(Ljava/lang/String;)V":
-		return `String path = vaList.getObjectArg(0).getValue().toString();
+		case "java/io/File-><init>(Ljava/lang/String;)V":
+			if callback == CallbackNewObjectV {
+				return `String path = vaList.getObjectArg(0).getValue().toString();
             return dvmClass.newObject(path);`, "Constructs synthetic File holding pathname.", true
-	case "android/telephony/TelephonyManager->getDeviceId()Ljava/lang/String;":
-		return `return new StringObject(vm, "352099001761481");`, "Synthetic IMEI for TelephonyManager.getDeviceId().", true
-	case "android/telephony/TelephonyManager->getSubscriberId()Ljava/lang/String;":
-		return `return new StringObject(vm, "310260000000000");`, "Synthetic IMSI for TelephonyManager.getSubscriberId().", true
-	case "android/telephony/TelephonyManager->getNetworkOperatorName()Ljava/lang/String;":
-		return `return new StringObject(vm, "T-Mobile");`, "Synthetic carrier name.", true
-	case "android/telephony/TelephonyManager->getSimOperator()Ljava/lang/String;":
-		return `return new StringObject(vm, "310260");`, "Synthetic MCC+MNC.", true
-	case "android/telephony/TelephonyManager->getNetworkType()I":
-		return `return 13; // TelephonyManager.NETWORK_TYPE_LTE`, "Reports LTE network type.", true
-	case "android/app/ActivityThread->currentActivityThread()Landroid/app/ActivityThread;":
-		return `return dvmClass.newObject(null);`, "Provides stub ActivityThread.", true
-	case "android/app/ActivityThread->getApplication()Landroid/app/Application;":
-		return `return vm.resolveClass("android/app/Application", vm.resolveClass("android/content/Context")).newObject(null);`, "Provides Application extending Context.", true
-	case "android/os/Debug->isDebuggerConnected()Z":
-		return `return false;`, "Reports no debugger attached.", true
-	case "android/content/pm/PackageInfo->versionCode:I":
-		return `return 10000;`, "Synthetic app versionCode.", true
-	case "android/content/pm/PackageInfo->versionName:Ljava/lang/String;":
-		return `return new StringObject(vm, "1.0.0");`, "Synthetic app versionName.", true
-	case "java/lang/System->getProperty(Ljava/lang/String;)Ljava/lang/String;":
-		return `String key = vaList.getObjectArg(0).getValue().toString();
+			}
+		case "android/telephony/TelephonyManager->getDeviceId()Ljava/lang/String;":
+			return `return new StringObject(vm, "352099001761481");`, "Synthetic IMEI for TelephonyManager.getDeviceId().", true
+		case "android/telephony/TelephonyManager->getSubscriberId()Ljava/lang/String;":
+			return `return new StringObject(vm, "310260000000000");`, "Synthetic IMSI for TelephonyManager.getSubscriberId().", true
+		case "android/telephony/TelephonyManager->getNetworkOperatorName()Ljava/lang/String;":
+			return `return new StringObject(vm, "T-Mobile");`, "Synthetic carrier name.", true
+		case "android/telephony/TelephonyManager->getSimOperator()Ljava/lang/String;":
+			return `return new StringObject(vm, "310260");`, "Synthetic MCC+MNC.", true
+		case "android/app/ActivityThread->currentActivityThread()Landroid/app/ActivityThread;":
+			if callback == CallbackCallStaticObjectMethodV {
+				return `return dvmClass.newObject(null);`, "Provides stub ActivityThread.", true
+			}
+		case "android/app/ActivityThread->getApplication()Landroid/app/Application;":
+			return `return vm.resolveClass("android/app/Application", vm.resolveClass("android/content/Context")).newObject(null);`, "Provides Application extending Context.", true
+		case "android/content/pm/PackageInfo->versionName:Ljava/lang/String;":
+			return `return new StringObject(vm, "1.0.0");`, "Synthetic app versionName.", true
+		case "java/lang/System->getProperty(Ljava/lang/String;)Ljava/lang/String;":
+			return `String key = vaList.getObjectArg(0).getValue().toString();
             if ("http.agent".equals(key)) {
                 return new StringObject(vm, "Dalvik/2.1.0 (Linux; U; Android 13; Pixel 7 Build/TQ3A.230901.001)");
             }
             return new StringObject(vm, System.getProperty(key, ""));`, "Forwards JVM system property with realistic Android http.agent.", true
+		}
+
+		// Secondary heuristics by class/member
+		if cls == "android/telephony/TelephonyManager" && strings.HasSuffix(desc, "Ljava/lang/String;") {
+			return `return new StringObject(vm, "");`, "Fallback TelephonyManager string stub.", true
+		}
+		if cls == "android/content/pm/ApplicationInfo" && strings.HasSuffix(desc, "Ljava/lang/String;") {
+			return `return new StringObject(vm, "/data/user/0/" + packageName);`, "Fallback ApplicationInfo path field.", true
+		}
 	}
 
-	// Secondary heuristics by class/member
-	if cls == "android/telephony/TelephonyManager" && strings.HasSuffix(desc, "Ljava/lang/String;") {
-		return `return new StringObject(vm, "");`, "Fallback TelephonyManager string stub.", true
+	if isIntCB {
+		switch sig {
+		case "android/telephony/TelephonyManager->getNetworkType()I":
+			return `return 13; // TelephonyManager.NETWORK_TYPE_LTE`, "Reports LTE network type.", true
+		case "android/content/pm/PackageInfo->versionCode:I":
+			return `return 10000;`, "Synthetic app versionCode.", true
+		}
 	}
-	if cls == "android/content/pm/ApplicationInfo" && strings.HasSuffix(desc, "Ljava/lang/String;") {
-		return `return new StringObject(vm, "/data/user/0/" + packageName);`, "Fallback ApplicationInfo path field.", true
+
+	if isBoolCB {
+		switch sig {
+		case "java/io/File->exists()Z":
+			return `return true;`, "Reports synthetic File as existing.", true
+		case "java/io/File->isDirectory()Z":
+			return `return true;`, "Reports synthetic File path as directory.", true
+		case "android/os/Debug->isDebuggerConnected()Z":
+			return `return false;`, "Reports no debugger attached.", true
+		}
 	}
 
 	// Generic fallback based on callback type and return descriptor
 	switch callback {
-	case CallbackCallIntMethodV:
+	case CallbackCallIntMethodV, CallbackGetIntField:
 		return `return 0; // TODO: replace with observed int value for ` + sanitizeComment(sig), "Auto-generated integer stub.", false
 	case CallbackCallBooleanMethodV:
 		return `return false; // TODO: verify boolean return for ` + sanitizeComment(sig), "Auto-generated boolean stub.", false
@@ -477,6 +549,8 @@ func superCallFallback(callback, sig string) string {
 		return fmt.Sprintf("return super.getStaticObjectField(vm, dvmClass, signature); // TODO: implement %s", cmt)
 	case CallbackGetObjectField:
 		return fmt.Sprintf("return super.getObjectField(vm, dvmObject, signature); // TODO: implement %s", cmt)
+	case CallbackGetIntField:
+		return fmt.Sprintf("return super.getIntField(vm, dvmObject, signature); // TODO: implement %s", cmt)
 	default:
 		return fmt.Sprintf("return super.%s(vm, dvmObject, signature, vaList); // TODO: implement %s", callback, cmt)
 	}
@@ -492,22 +566,22 @@ func extractReturnDescriptor(desc string) string {
 func suggestFileContent(path string) (content, note string) {
 	switch path {
 	case "/proc/self/cmdline":
-		return "com.example.app\\0", "Process command line (NUL-terminated package name)."
+		return "com.example.app\x00", "Process command line (NUL-terminated package name)."
 	case "/proc/self/status":
-		return "Name:\tcom.example.app\\nState:\tR (running)\\nTracerPid:\t0\\nUid:\t10240\\t10240\\t10240\\t10240\\n", "Clean /proc/self/status with TracerPid: 0."
+		return "Name:\tcom.example.app\nState:\tR (running)\nTracerPid:\t0\nUid:\t10240\t10240\t10240\t10240\n", "Clean /proc/self/status with TracerPid: 0."
 	case "/proc/self/maps":
-		return "12c00000-13000000 rw-p 00000000 00:00 0          [anon:dalvik-main space]\\n", "Minimal clean memory map."
+		return "12c00000-13000000 rw-p 00000000 00:00 0          [anon:dalvik-main space]\n", "Minimal clean memory map."
 	case "/proc/cpuinfo":
-		return "Processor\\t: AArch64 Processor rev 1 (aarch64)\\nHardware\\t: Qualcomm Technologies, Inc SM8450\\nFeatures\\t: fp asimd evtstrm aes pmull sha1 sha2 crc32\\n", "Realistic ARM64 /proc/cpuinfo."
+		return "Processor\t: AArch64 Processor rev 1 (aarch64)\nHardware\t: Qualcomm Technologies, Inc SM8450\nFeatures\t: fp asimd evtstrm aes pmull sha1 sha2 crc32\n", "Realistic ARM64 /proc/cpuinfo."
 	case "/proc/version":
-		return "Linux version 5.10.149-android13-4-00001-g12345678 (build-user@build-host) (Android clang) #1 SMP PREEMPT\\n", "Android 13 kernel banner."
+		return "Linux version 5.10.149-android13-4-00001-g12345678 (build-user@build-host) (Android clang) #1 SMP PREEMPT\n", "Android 13 kernel banner."
 	case "/system/build.prop":
-		return "ro.build.version.release=13\\nro.build.version.sdk=33\\nro.product.model=Pixel 7\\nro.product.brand=google\\nro.build.tags=release-keys\\n", "Minimal /system/build.prop properties."
+		return "ro.build.version.release=13\nro.build.version.sdk=33\nro.product.model=Pixel 7\nro.product.brand=google\nro.build.tags=release-keys\n", "Minimal /system/build.prop properties."
 	case "/sys/devices/system/cpu/online":
-		return "0-7\\n", "8-core CPU topology."
+		return "0-7\n", "8-core CPU topology."
 	default:
 		if strings.HasPrefix(path, "/proc/") {
-			return "0\\n", "Synthetic procfs placeholder; replace with device capture if parsed strictly."
+			return "0\n", "Synthetic procfs placeholder; replace with device capture if parsed strictly."
 		}
 		return "", "Synthetic empty file; populate with real file pulled from device via adb."
 	}
@@ -579,9 +653,18 @@ func renderAbstractJniSnippet(items []MissingJNIItem) string {
 		CallbackCallStaticObjectMethodV,
 		CallbackGetStaticObjectField,
 		CallbackGetObjectField,
+		CallbackGetIntField,
 		CallbackCallIntMethodV,
 		CallbackCallBooleanMethodV,
 		CallbackNewObjectV,
+	}
+
+	needsHexToBytes := false
+	for _, it := range items {
+		if strings.Contains(it.SuggestedCode, "hexToBytes(") {
+			needsHexToBytes = true
+			break
+		}
 	}
 
 	for _, cb := range order {
@@ -598,7 +681,20 @@ func renderAbstractJniSnippet(items []MissingJNIItem) string {
 		for _, it := range resList {
 			fmt.Fprintf(&b, "    vm.resolveClass(%s);\n", javaQuote(it.ClassName))
 		}
-		b.WriteString("}\n")
+		b.WriteString("}\n\n")
+	}
+
+	if needsHexToBytes {
+		b.WriteString(`private static byte[] hexToBytes(String hex) {
+    int len = hex.length();
+    byte[] out = new byte[len / 2];
+    for (int i = 0; i + 1 < len; i += 2) {
+        out[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
+                + Character.digit(hex.charAt(i + 1), 16));
+    }
+    return out;
+}
+`)
 	}
 
 	return strings.TrimRight(b.String(), "\n")
@@ -637,6 +733,14 @@ func writeAbstractJniMethod(b *strings.Builder, cb string, items []MissingJNIIte
 			fmt.Fprintf(b, "        case %s:\n            %s\n", javaQuote(it.Signature), it.SuggestedCode)
 		}
 		b.WriteString("        default:\n            return super.getObjectField(vm, dvmObject, signature);\n    }\n}\n\n")
+
+	case CallbackGetIntField:
+		b.WriteString("@Override\npublic int getIntField(BaseVM vm, DvmObject<?> dvmObject, String signature) {\n")
+		b.WriteString("    switch (signature) {\n")
+		for _, it := range items {
+			fmt.Fprintf(b, "        case %s:\n            %s\n", javaQuote(it.Signature), it.SuggestedCode)
+		}
+		b.WriteString("        default:\n            return super.getIntField(vm, dvmObject, signature);\n    }\n}\n\n")
 
 	case CallbackCallIntMethodV:
 		b.WriteString("@Override\npublic int callIntMethodV(BaseVM vm, DvmObject<?> dvmObject, String signature, VaList vaList) {\n")
@@ -679,7 +783,7 @@ func renderIOResolverSnippet(files []MissingFileItem) string {
 		if f.Path == "/proc/self/cmdline" {
 			b.WriteString("            return FileResult.success(new ByteArrayFileIO(oflags, pathname, (packageName + \"\\0\").getBytes(StandardCharsets.UTF_8)));\n")
 		} else {
-			fmt.Fprintf(&b, "            return FileResult.success(new ByteArrayFileIO(oflags, pathname, \"%s\".getBytes(StandardCharsets.UTF_8)));\n", escapeJavaStringKeepEscapes(f.SuggestedContent))
+			fmt.Fprintf(&b, "            return FileResult.success(new ByteArrayFileIO(oflags, pathname, %s.getBytes(StandardCharsets.UTF_8)));\n", javaQuote(f.SuggestedContent))
 		}
 	}
 	b.WriteString("        default:\n")
@@ -993,34 +1097,89 @@ Java.perform(function () {
 
 // --- Shared escaping helpers -------------------------------------------------
 
+// javaQuote produces a safe single-line Java string literal, escaping quotes,
+// backslashes (preventing JLS §3.3 Unicode escape breakout), control bytes,
+// and Unicode line separators.
 func javaQuote(s string) string {
-	replacer := strings.NewReplacer(
-		`\`, `\\`,
-		`"`, `\"`,
-		"\n", `\n`,
-		"\r", `\r`,
-		"\t", `\t`,
-	)
-	return `"` + replacer.Replace(s) + `"`
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		default:
+			if r < 0x20 || r == 0x7f || r == 0x0085 || r == 0x2028 || r == 0x2029 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
-func escapeJavaStringKeepEscapes(s string) string {
-	return strings.ReplaceAll(s, `"`, `\"`)
-}
-
+// jsQuote produces a safe single-line JavaScript string literal, escaping
+// quotes, backslashes, all ASCII control chars (<0x20, 0x7f), and Unicode
+// line terminators (U+0085, U+2028, U+2029).
 func jsQuote(s string) string {
-	replacer := strings.NewReplacer(
-		`\`, `\\`,
-		`'`, `\'`,
-		"\n", `\n`,
-		"\r", `\r`,
-		"\t", `\t`,
-		"\u2028", `\u2028`,
-		"\u2029", `\u2029`,
-	)
-	return `'` + replacer.Replace(s) + `'`
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\'':
+			b.WriteString(`\'`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\x%02x`, r)
+			} else if r == 0x0085 || r == 0x2028 || r == 0x2029 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
 
+// sanitizeComment neutralizes comment breakout sequences across Java (JLS §3.3
+// \uXXXX), JavaScript (U+2028/U+2029), Python (NUL bytes & newlines), and block
+// comment terminators (*/).
 func sanitizeComment(s string) string {
-	return strings.NewReplacer("\r", " ", "\n", " ", "*/", "* /").Replace(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r < 0x20 || r == 0x7f || r == 0x0085 || r == 0x2028 || r == 0x2029:
+			b.WriteByte(' ')
+		case r == '\\':
+			// Defang backslash so Java JLS §3.3 \u000a / \u000d cannot terminate // comments.
+			b.WriteByte('/')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.ReplaceAll(strings.TrimSpace(b.String()), "*/", "* /")
 }

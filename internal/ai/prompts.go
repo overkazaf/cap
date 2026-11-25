@@ -360,11 +360,20 @@ func normalizeDiagnoseResult(res *DiagnoseResult) {
 	if len(res.CommandHints) > 0 {
 		cleaned := make([]string, 0, len(res.CommandHints))
 		for _, cmd := range res.CommandHints {
-			if t := strings.TrimSpace(cmd); t != "" {
-				cleaned = append(cleaned, t)
+			t := strings.TrimSpace(cmd)
+			if t == "" {
+				continue
 			}
+			if _, destructive := matchDestructivePattern(t); destructive {
+				continue
+			}
+			cleaned = append(cleaned, t)
 		}
-		res.CommandHints = cleaned
+		if len(cleaned) == 0 {
+			res.CommandHints = nil
+		} else {
+			res.CommandHints = cleaned
+		}
 	}
 
 	switch strings.ToLower(strings.TrimSpace(res.FixKind)) {

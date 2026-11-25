@@ -1368,3 +1368,283 @@ func TestRunAutoHealLoopAllExitPaths(t *testing.T) {
 		}
 	})
 }
+
+func TestAuditSecurityAndHardeningFixes(t *testing.T) {
+	t.Run("sensitive_extra_headers_redaction_and_case_insensitive_restore", func(t *testing.T) {
+		store, err := NewConfigStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewConfigStore: %v", err)
+		}
+		pub, err := store.UpsertProfile(ProviderConfig{
+			ID:       "azure-custom",
+			Provider: ProviderOpenAICompat,
+			BaseURL:  "https://azure.example.com/openai/deployments/gpt4",
+			APIKey:   "sk-primary-1234567890abcdef",
+			Model:    "gpt-4.1",
+			Enabled:  true,
+			ExtraHeaders: map[string]string{
+				"api-key":         "azure-plain-secret-value-888",
+				"x-goog-api-key":  "goog-custom-secret-777",
+				"X-Custom-Token":  "tenant-tok-666",
+				"X-Tenant-Note":   "proxy Bearer eyJhbGciOiJIUzI1NiJ9.abc.def",
+				"X-Public-Header": "cap-agent",
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpsertProfile: %v", err)
+		}
+
+		pubJSON := mustJSON(t, store.GetPublicConfig())
+		for _, secret := range []string{
+			"sk-primary-1234567890abcdef",
+			"azure-plain-secret-value-888",
+			"goog-custom-secret-777",
+			"tenant-tok-666",
+			"eyJhbGciOiJIUzI1NiJ9.abc.def",
+		} {
+			if strings.Contains(pubJSON, secret) {
+				t.Fatalf("secret %q leaked in GetPublicConfig(): %s", secret, pubJSON)
+			}
+		}
+		if pub.ExtraHeaders["api-key"] != "[REDACTED]" || pub.ExtraHeaders["x-goog-api-key"] != "[REDACTED]" || pub.ExtraHeaders["X-Custom-Token"] != "[REDACTED]" {
+			t.Fatalf("expected sensitive headers redacted: %+v", pub.ExtraHeaders)
+		}
+		if pub.ExtraHeaders["X-Public-Header"] != "cap-agent" {
+			t.Fatalf("non-sensitive header altered: %q", pub.ExtraHeaders["X-Public-Header"])
+		}
+
+		// Case-insensitive restore of [REDACTED] headers on UpsertProfile.
+		_, err = store.UpsertProfile(ProviderConfig{
+			ID:       "azure-custom",
+			Provider: ProviderOpenAICompat,
+			BaseURL:  "https://azure.example.com/openai/deployments/gpt4",
+			Model:    "gpt-4.1",
+			Enabled:  true,
+			ExtraHeaders: map[string]string{
+				"API-KEY":        "[REDACTED]",
+				"X-Goog-Api-Key": "[REDACTED]",
+				"x-custom-token": "[REDACTED]",
+				"X-Tenant-Note":  pub.ExtraHeaders["X-Tenant-Note"],
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpsertProfile case-insensitive restore: %v", err)
+		}
+		saved, ok := store.GetProfile("azure-custom")
+		if !ok {
+			t.Fatalf("profile missing")
+		}
+		if saved.ExtraHeaders["API-KEY"] != "azure-plain-secret-value-888" ||
+			saved.ExtraHeaders["X-Goog-Api-Key"] != "goog-custom-secret-777" ||
+			saved.ExtraHeaders["x-custom-token"] != "tenant-tok-666" ||
+			saved.ExtraHeaders["X-Tenant-Note"] != "proxy Bearer eyJhbGciOiJIUzI1NiJ9.abc.def" {
+			t.Fatalf("case-insensitive ExtraHeaders restore failed: %+v", saved.ExtraHeaders)
+		}
+	})
+
+	t.Run("manager_test_connection_restores_redacted_headers_and_scrubs_errors", func(t *testing.T) {
+		var mu sync.Mutex
+		var gotAPIKeyHdr string
+		var failMode atomic.Bool
+		baseURL, attach := startLocalHTTPTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hdr := r.Header.Get("api-key")
+			mu.Lock()
+			gotAPIKeyHdr = hdr
+			mu.Unlock()
+			if failMode.Load() {
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{"message": "rejected custom credential: " + hdr},
+				})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"role": "assistant", "content": "OK"}},
+				},
+			})
+		}))
+
+		mgr, err := NewManager(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		attach(mgr.client)
+		_, err = mgr.UpsertProfile(ProviderConfig{
+			ID:       "azure-prof",
+			Provider: ProviderOpenAICompat,
+			BaseURL:  baseURL + "/v1",
+			Model:    "gpt-4.1",
+			Enabled:  true,
+			ExtraHeaders: map[string]string{
+				"api-key": "non-sk-custom-tenant-secret-4242",
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpsertProfile: %v", err)
+		}
+
+		pub := mgr.GetPublicConfig().Profiles[0]
+		// Pass public [REDACTED] ExtraHeaders and nil ctx to verify both header restoration and nil ctx guard.
+		var nilCtx context.Context
+		res := mgr.TestConnection(nilCtx, ProviderConfig{
+			ID:           pub.ID,
+			Provider:     pub.Provider,
+			BaseURL:      pub.BaseURL,
+			Model:        pub.Model,
+			ExtraHeaders: pub.ExtraHeaders,
+			Enabled:      true,
+		})
+		if !res.OK {
+			t.Fatalf("Manager.TestConnection failed: %+v", res)
+		}
+		mu.Lock()
+		hdrSeen := gotAPIKeyHdr
+		mu.Unlock()
+		if hdrSeen != "non-sk-custom-tenant-secret-4242" {
+			t.Fatalf("Manager.TestConnection did not restore [REDACTED] ExtraHeader, got %q", hdrSeen)
+		}
+
+		// When server echoes non-sk custom ExtraHeader secret in 403 error, it must be scrubbed.
+		failMode.Store(true)
+		errRes := mgr.TestConnection(context.Background(), ProviderConfig{
+			ID:           pub.ID,
+			Provider:     pub.Provider,
+			BaseURL:      pub.BaseURL,
+			Model:        pub.Model,
+			ExtraHeaders: pub.ExtraHeaders,
+			Enabled:      true,
+		})
+		if errRes.OK {
+			t.Fatalf("expected HTTP 403 failure")
+		}
+		if strings.Contains(errRes.Error, "non-sk-custom-tenant-secret-4242") {
+			t.Fatalf("custom sensitive ExtraHeader value leaked in error: %s", errRes.Error)
+		}
+	})
+
+	t.Run("pem_spanning_line_40_truncated_pem_and_extra_headers_redaction", func(t *testing.T) {
+		var lines []string
+		for i := 1; i <= 38; i++ {
+			lines = append(lines, fmt.Sprintf("head-line-%02d", i))
+		}
+		// PEM block starts at line 39 and spans past line 40 into omitted middle!
+		lines = append(lines, "-----BEGIN RSA PRIVATE KEY-----")
+		lines = append(lines, "MIIEowIBAAKCAQEAline40SecretChunkOne")
+		lines = append(lines, "MIIEowIBAAKCAQEAline41SecretChunkTwo")
+		lines = append(lines, "MIIEowIBAAKCAQEAline42SecretChunkThree")
+		lines = append(lines, "-----END RSA PRIVATE KEY-----")
+		for i := 1; i <= 180; i++ {
+			lines = append(lines, fmt.Sprintf("body-line-%03d", i))
+		}
+		lines = append(lines, "api-key: azure-log-secret-111")
+		lines = append(lines, "x-access-token: access-tok-secret-222")
+		lines = append(lines, "x-session-token: session-tok-secret-333")
+
+		cleaned, count := RedactAndCompressLogs(strings.Join(lines, "\n"), true)
+		if count < 4 {
+			t.Fatalf("expected >=4 redactions, got %d", count)
+		}
+		for _, leak := range []string{
+			"MIIEowIBAAKCAQEAline40SecretChunkOne",
+			"MIIEowIBAAKCAQEAline41SecretChunkTwo",
+			"azure-log-secret-111",
+			"access-tok-secret-222",
+			"session-tok-secret-333",
+		} {
+			if strings.Contains(cleaned, leak) {
+				t.Fatalf("secret %q leaked after RedactAndCompressLogs:\n%s", leak, cleaned)
+			}
+		}
+
+		// Direct RedactSecrets call on an already-truncated PEM block without END marker.
+		trunc := "INFO loading key\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw\nMIIEvQIBADANBgkqhkiG9w0BAQEFSecondLine\n... [truncated] ...\nINFO still here"
+		redTrunc, tc := RedactSecrets(trunc)
+		if tc < 1 || strings.Contains(redTrunc, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw") || strings.Contains(redTrunc, "MIIEvQIBADANBgkqhkiG9w0BAQEFSecondLine") {
+			t.Fatalf("truncated PEM key was not redacted (count=%d):\n%s", tc, redTrunc)
+		}
+		if !strings.Contains(redTrunc, "INFO still here") {
+			t.Fatalf("truncated PEM redaction swallowed trailing log line:\n%s", redTrunc)
+		}
+	})
+
+	t.Run("destructive_command_hints_filtered", func(t *testing.T) {
+		raw := mustJSON(t, map[string]any{
+			"root_cause":     "missing tool",
+			"error_category": "missing_dependency",
+			"confidence":     0.9,
+			"fix_kind":       "command_hint",
+			"explanation":    "Install frida-tools",
+			"command_hints": []string{
+				"pip3 install frida-tools",
+				"rm -rf /",
+				"mkfs.ext4 /dev/sda1",
+				"dd if=/dev/zero of=/dev/sda",
+				":(){ :|:& };:",
+				"frida --version",
+			},
+		})
+		res, err := ParseDiagnoseJSON(raw)
+		if err != nil {
+			t.Fatalf("ParseDiagnoseJSON: %v", err)
+		}
+		if len(res.CommandHints) != 2 || res.CommandHints[0] != "pip3 install frida-tools" || res.CommandHints[1] != "frida --version" {
+			t.Fatalf("unexpected filtered CommandHints: %+v", res.CommandHints)
+		}
+	})
+
+	t.Run("scope_inferred_language_validation_and_nil_ctx_and_empty_openai_content", func(t *testing.T) {
+		// 1. Scope-inferred validation catches invalid JS when req.Language == "".
+		mgr := newTestManagerWithMockLLM(t, func(_ int, _, _, _ string) string {
+			return mustJSON(t, map[string]any{
+				"root_cause":     "syntax bug",
+				"error_category": "syntax_error",
+				"confidence":     0.8,
+				"fix_kind":       "code_patch",
+				"explanation":    "Broken JS returned",
+				"patched_code":   "function bad( { return ;",
+			})
+		})
+		var nilCtx context.Context
+		res, err := mgr.DiagnoseAndFix(nilCtx, DiagnoseRequest{
+			Scope: ScopeFrida,
+			// Intentionally empty Language -> must infer "javascript" and fail validation!
+			Code: "console.log(1);",
+			Logs: "Error: boom",
+		})
+		if err != nil {
+			t.Fatalf("DiagnoseAndFix with nil ctx: %v", err)
+		}
+		if res.Validation == nil || res.Validation.Passed || res.Validation.Validator == "basic" {
+			t.Fatalf("expected JS validator failure for ScopeFrida with empty Language, got %+v", res.Validation)
+		}
+
+		// RunAutoHealLoop with nil ctx should not panic.
+		healRes, err := mgr.RunAutoHealLoop(nilCtx, DiagnoseRequest{Scope: ScopeFrida, Code: "console.log(1);"}, 1, func(_ context.Context, _ string) (int, string, error) {
+			return 0, "ok", nil
+		}, nil)
+		if err != nil || !healRes.Healed || healRes.StopReason != StopReasonAlreadyOK {
+			t.Fatalf("RunAutoHealLoop nil ctx unexpected result: %+v err=%v", healRes, err)
+		}
+
+		// 2. Empty/whitespace openai_compat choices[0].message.content rejected.
+		emptyURL, attachEmpty := startLocalHTTPTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"role": "assistant", "content": "   \n\t  "}},
+				},
+			})
+		}))
+		c := NewClient()
+		attachEmpty(c)
+		if _, err := c.Complete(nilCtx, ProviderConfig{
+			Provider: ProviderOpenAICompat,
+			BaseURL:  emptyURL + "/v1",
+			Model:    "gpt-4.1",
+		}, "sys", "usr"); err == nil || !strings.Contains(err.Error(), "empty message content") {
+			t.Fatalf("expected empty message content error for openai_compat, got: %v", err)
+		}
+	})
+}

@@ -77,16 +77,23 @@ func (m *Manager) ListPresets() []ProviderPreset {
 }
 
 // TestConnection tests connectivity for profile. If profile.ID references a
-// saved profile and profile.APIKey is empty or masked, the stored key is reused
-// so frontends never need to handle raw secrets.
+// saved profile and profile.APIKey or sensitive ExtraHeaders are empty or
+// redacted, the stored credentials are reused so frontends never need to handle
+// raw secrets.
 func (m *Manager) TestConnection(ctx context.Context, profile ProviderConfig) TestConnectionResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	resolved := profile.Clone()
-	if id := strings.TrimSpace(resolved.ID); id != "" && !resolved.ClearAPIKey {
+	if id := strings.TrimSpace(resolved.ID); id != "" {
 		if existing, ok := m.store.GetProfile(id); ok {
-			incomingKey := strings.TrimSpace(resolved.APIKey)
-			if incomingKey == "" || IsMaskedAPIKey(incomingKey) || (existing.APIKey != "" && incomingKey == MaskAPIKey(existing.APIKey)) {
-				resolved.APIKey = existing.APIKey
+			if !resolved.ClearAPIKey {
+				incomingKey := strings.TrimSpace(resolved.APIKey)
+				if incomingKey == "" || IsMaskedAPIKey(incomingKey) || (existing.APIKey != "" && incomingKey == MaskAPIKey(existing.APIKey)) {
+					resolved.APIKey = existing.APIKey
+				}
 			}
+			resolved.ExtraHeaders = restoreRedactedExtraHeaders(resolved.ExtraHeaders, existing.ExtraHeaders)
 		}
 	}
 	return m.client.TestConnection(ctx, resolved)
@@ -94,6 +101,9 @@ func (m *Manager) TestConnection(ctx context.Context, profile ProviderConfig) Te
 
 // TestProfileByID tests a saved provider profile by ID.
 func (m *Manager) TestProfileByID(ctx context.Context, profileID string) TestConnectionResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	profile, ok := m.store.GetProfile(profileID)
 	if !ok {
 		return TestConnectionResult{
@@ -104,9 +114,28 @@ func (m *Manager) TestProfileByID(ctx context.Context, profileID string) TestCon
 	return m.client.TestConnection(ctx, profile)
 }
 
+func inferLanguageFromScope(scope, explicitLang string) string {
+	if lang := strings.TrimSpace(explicitLang); lang != "" {
+		return lang
+	}
+	switch NormalizeScope(scope) {
+	case ScopeUnidbg:
+		return "java"
+	case ScopeQiling, ScopeAngr:
+		return "python"
+	case ScopeFrida:
+		return "javascript"
+	default:
+		return ""
+	}
+}
+
 // DiagnoseAndFix runs local deterministic pre-diagnosis, optional secret
 // redaction, LLM completion, JSON extraction, unified diffing, and patch validation.
 func (m *Manager) DiagnoseAndFix(ctx context.Context, req DiagnoseRequest) (*DiagnoseResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	start := time.Now()
 	profile, err := m.resolveProfile(req.ProfileID)
 	if err != nil {
@@ -116,6 +145,7 @@ func (m *Manager) DiagnoseAndFix(ctx context.Context, req DiagnoseRequest) (*Dia
 	cfg := m.store.GetConfig()
 	scope := NormalizeScope(req.Scope)
 	locale := NormalizeLocale(req.Locale)
+	effectiveLang := inferLanguageFromScope(scope, req.Language)
 
 	// Run deterministic local pre-diagnosis on original logs before redacting
 	// so parsers see exact JNI signatures / paths / Unicorn addresses, then
@@ -125,6 +155,7 @@ func (m *Manager) DiagnoseAndFix(ctx context.Context, req DiagnoseRequest) (*Dia
 	sanitizedReq := req
 	sanitizedReq.Scope = scope
 	sanitizedReq.Locale = locale
+	sanitizedReq.Language = effectiveLang
 	compressedLogs, redactedCount := RedactAndCompressLogs(req.Logs, cfg.RedactSecrets)
 
 	if cfg.RedactSecrets {
@@ -175,7 +206,7 @@ func (m *Manager) DiagnoseAndFix(ctx context.Context, req DiagnoseRequest) (*Dia
 	res.ConfigChanges = SanitizeConfigChanges(res.ConfigChanges)
 	if res.FixKind == FixKindCodePatch {
 		res.UnifiedDiff = ComputeUnifiedDiff(req.Code, res.PatchedCode)
-		val := ValidatePatchedCode(req.Language, req.Code, res.PatchedCode)
+		val := ValidatePatchedCode(effectiveLang, req.Code, res.PatchedCode)
 		res.Validation = &val
 	}
 
@@ -221,6 +252,9 @@ func (m *Manager) RunAutoHealLoop(
 	runner func(ctx context.Context, code string) (exitCode int, logs string, err error),
 	onEvent func(AutoHealEvent),
 ) (*AutoHealRunResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if runner == nil {
 		return nil, errors.New("auto-heal runner callback is required")
 	}

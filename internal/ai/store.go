@@ -183,11 +183,89 @@ func (s *ConfigStore) GetPublicConfig() PublicAIConfig {
 	return pub
 }
 
-func toPublicProviderConfig(p ProviderConfig) PublicProviderConfig {
-	var safeHeaders map[string]string
-	if len(p.ExtraHeaders) > 0 {
-		safeHeaders = redaction.Headers(p.ExtraHeaders)
+var sensitiveExtraHeaderKeywords = []string{
+	"api-key",
+	"apikey",
+	"auth",
+	"token",
+	"secret",
+	"key",
+	"pass",
+	"cookie",
+	"credential",
+	"signature",
+}
+
+func isSensitiveHeaderName(key string) bool {
+	if redaction.IsSensitiveHeader(key) {
+		return true
 	}
+	low := strings.ToLower(strings.TrimSpace(key))
+	if low == "" {
+		return false
+	}
+	for _, kw := range sensitiveExtraHeaderKeywords {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactExtraHeadersForPublic(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	safe := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if isSensitiveHeaderName(k) {
+			safe[k] = redaction.Placeholder
+		} else {
+			cleaned, _ := RedactSecrets(v)
+			safe[k] = cleaned
+		}
+	}
+	return safe
+}
+
+func restoreRedactedExtraHeaders(incoming, existing map[string]string) map[string]string {
+	if len(incoming) == 0 || len(existing) == 0 {
+		return incoming
+	}
+	existingByLower := make(map[string]string, len(existing))
+	for k, v := range existing {
+		existingByLower[strings.ToLower(strings.TrimSpace(k))] = v
+	}
+	merged := make(map[string]string, len(incoming))
+	maps.Copy(merged, incoming)
+	for k, v := range merged {
+		if v == redaction.Placeholder || strings.Contains(v, redaction.Placeholder) {
+			if oldVal, ok := existingByLower[strings.ToLower(strings.TrimSpace(k))]; ok {
+				merged[k] = oldVal
+			}
+		}
+	}
+	return merged
+}
+
+func sensitiveExtraHeaderValues(headers map[string]string) []string {
+	if len(headers) == 0 {
+		return nil
+	}
+	var vals []string
+	for k, v := range headers {
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" || trimmed == redaction.Placeholder {
+			continue
+		}
+		if isSensitiveHeaderName(k) {
+			vals = append(vals, trimmed)
+		}
+	}
+	return vals
+}
+
+func toPublicProviderConfig(p ProviderConfig) PublicProviderConfig {
 	return PublicProviderConfig{
 		ID:            p.ID,
 		Name:          p.Name,
@@ -199,7 +277,7 @@ func toPublicProviderConfig(p ProviderConfig) PublicProviderConfig {
 		MaxTokens:     p.MaxTokens,
 		Temperature:   p.Temperature,
 		TimeoutSec:    p.TimeoutSec,
-		ExtraHeaders:  safeHeaders,
+		ExtraHeaders:  redactExtraHeadersForPublic(p.ExtraHeaders),
 		Enabled:       p.Enabled,
 	}
 }
@@ -293,19 +371,8 @@ func (s *ConfigStore) UpsertProfile(input ProviderConfig) (PublicProviderConfig,
 			p.APIKey = rawIncomingKey
 		}
 
-		// Preserve existing sensitive ExtraHeaders if caller echoed back [REDACTED].
-		if len(p.ExtraHeaders) > 0 && len(existing.ExtraHeaders) > 0 {
-			merged := make(map[string]string, len(p.ExtraHeaders))
-			maps.Copy(merged, p.ExtraHeaders)
-			for k, v := range merged {
-				if v == redaction.Placeholder {
-					if oldVal, ok := existing.ExtraHeaders[k]; ok {
-						merged[k] = oldVal
-					}
-				}
-			}
-			p.ExtraHeaders = merged
-		}
+		// Preserve existing sensitive ExtraHeaders if caller echoed back [REDACTED] (case-insensitive header match).
+		p.ExtraHeaders = restoreRedactedExtraHeaders(p.ExtraHeaders, existing.ExtraHeaders)
 		next.Profiles[foundIdx] = p
 	} else {
 		if clearKey || IsMaskedAPIKey(rawIncomingKey) {

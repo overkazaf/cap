@@ -84,6 +84,15 @@ var destructivePatterns = []struct {
 
 var javaTypeDeclRe = regexp.MustCompile(`\b(?:class|interface|enum|record)\s+[A-Za-z_$][A-Za-z0-9_$]*`)
 
+func matchDestructivePattern(text string) (string, bool) {
+	for _, pat := range destructivePatterns {
+		if pat.re.MatchString(text) {
+			return pat.name, true
+		}
+	}
+	return "", false
+}
+
 // ValidatePatchedCode checks patchedCode for emptiness, destructive command
 // patterns, and language-specific syntactic validity.
 func ValidatePatchedCode(lang, oldCode, patchedCode string) PatchValidation {
@@ -97,12 +106,10 @@ func ValidatePatchedCode(lang, oldCode, patchedCode string) PatchValidation {
 		return res
 	}
 
-	for _, pat := range destructivePatterns {
-		if pat.re.MatchString(patchedCode) {
-			res.Validator = "safety_guard"
-			res.Issues = append(res.Issues, fmt.Sprintf("blocked destructive pattern: %s", pat.name))
-			return res
-		}
+	if name, matched := matchDestructivePattern(patchedCode); matched {
+		res.Validator = "safety_guard"
+		res.Issues = append(res.Issues, fmt.Sprintf("blocked destructive pattern: %s", name))
+		return res
 	}
 
 	if strings.TrimSpace(oldCode) != "" && normalizeCodeForCompare(oldCode) == normalizeCodeForCompare(patchedCode) {

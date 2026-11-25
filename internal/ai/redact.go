@@ -18,20 +18,21 @@ const (
 )
 
 var (
-	// PEM private key blocks (RSA, EC, OPENSSH, ENCRYPTED, generic PKCS#8).
-	pemPrivateKeyRe = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	// PEM private key blocks (complete and truncated/unclosed).
+	pemPrivateKeyRe          = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	pemTruncatedPrivateKeyRe = regexp.MustCompile(`(?m)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n(?:[ \t]*[A-Za-z0-9+/=]+[ \t]*|[ \t]*|(?:Proc-Type|DEK-Info):[^\r\n]*))*`)
 
 	// Proxy / URL embedded credentials: scheme://user:pass@host
 	urlCredsRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)([^/\s:@"'` + "`" + `]+):([^/\s@"'` + "`" + `]+)@`)
 
-	// JSON sensitive header fields: "Authorization": "...", "X-Api-Key": "..."
-	jsonSensitiveHeaderRe = regexp.MustCompile(`(?i)("(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-goog-api-key)"\s*:\s*")([^"]+)(")`)
+	// JSON sensitive header fields: "Authorization": "...", "X-Api-Key": "...", "api-key": "..."
+	jsonSensitiveHeaderRe = regexp.MustCompile(`(?i)("(?:authorization|proxy-authorization|cookie|set-cookie|api-key|x-api-key|x-auth-token|x-access-token|x-session-token|x-goog-api-key)"\s*:\s*")([^"]+)(")`)
 
-	// Line-level HTTP headers (Cookie, Set-Cookie, Authorization, X-Api-Key, etc.)
-	lineSensitiveHeaderRe = regexp.MustCompile(`(?im)^([ \t]*(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-goog-api-key)[ \t]*:[ \t]*)([^\r\n]+)$`)
+	// Line-level HTTP headers (Cookie, Set-Cookie, Authorization, api-key, X-Api-Key, etc.)
+	lineSensitiveHeaderRe = regexp.MustCompile(`(?im)^([ \t]*(?:authorization|proxy-authorization|cookie|set-cookie|api-key|x-api-key|x-auth-token|x-access-token|x-session-token|x-goog-api-key)[ \t]*:[ \t]*)([^\r\n]+)$`)
 
 	// Inline sensitive headers embedded in logs or curl flags (e.g. -H 'X-Api-Key: secret').
-	inlineSensitiveHeaderRe = regexp.MustCompile(`(?i)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-goog-api-key)([ \t]*:[ \t]*)([^\r\n'"` + "`" + `]+)`)
+	inlineSensitiveHeaderRe = regexp.MustCompile(`(?i)\b(authorization|proxy-authorization|cookie|set-cookie|api-key|x-api-key|x-auth-token|x-access-token|x-session-token|x-goog-api-key)([ \t]*:[ \t]*)([^\r\n'"` + "`" + `]+)`)
 
 	// Standalone Bearer / Basic authorization tokens.
 	bearerBasicRe = regexp.MustCompile(`(?i)\b(Bearer|Basic)([ \t]+)([A-Za-z0-9._~+/=-]{8,})`)
@@ -132,8 +133,12 @@ func RedactSecrets(text string) (string, int) {
 	count := 0
 	out := text
 
-	// 1. PEM private key blocks.
+	// 1. PEM private key blocks (complete blocks first, then any truncated/unclosed PEM header + payload).
 	out = pemPrivateKeyRe.ReplaceAllStringFunc(out, func(_ string) string {
+		count++
+		return redaction.Placeholder
+	})
+	out = pemTruncatedPrivateKeyRe.ReplaceAllStringFunc(out, func(_ string) string {
 		count++
 		return redaction.Placeholder
 	})
@@ -212,27 +217,36 @@ func RedactSecrets(text string) (string, int) {
 	return out, count
 }
 
-// RedactAndCompressLogs compresses logs first (head 40 + tail 120, <= 24 KiB)
-// and redacts secrets when redact is true.
+// RedactAndCompressLogs redacts secrets before compressing (head 40 + tail 120,
+// <= 24 KiB) so multi-line secrets like PEM private keys or tokens straddling a
+// truncation boundary can never leak fragments.
 func RedactAndCompressLogs(raw string, redact bool) (string, int) {
-	compressed := CompressLogs(raw)
 	if !redact {
-		return compressed, 0
+		return CompressLogs(raw), 0
 	}
-	return RedactSecrets(compressed)
+	cleaned, count := RedactSecrets(raw)
+	return CompressLogs(cleaned), count
 }
 
 // RedactLiteralSecret strips any literal or URL-escaped occurrence of secret
 // from s, plus runs RedactSecrets to ensure errors never leak credentials.
 func RedactLiteralSecret(s, secret string) string {
+	return RedactLiteralSecrets(s, secret)
+}
+
+// RedactLiteralSecrets strips literal and URL-escaped occurrences of all
+// provided secrets from s, plus runs RedactSecrets.
+func RedactLiteralSecrets(s string, secrets ...string) string {
 	if s == "" {
 		return ""
 	}
 	out := s
-	if trimmed := strings.TrimSpace(secret); trimmed != "" {
-		out = strings.ReplaceAll(out, trimmed, redaction.Placeholder)
-		if escaped := url.QueryEscape(trimmed); escaped != "" && escaped != trimmed {
-			out = strings.ReplaceAll(out, escaped, redaction.Placeholder)
+	for _, secret := range secrets {
+		if trimmed := strings.TrimSpace(secret); trimmed != "" {
+			out = strings.ReplaceAll(out, trimmed, redaction.Placeholder)
+			if escaped := url.QueryEscape(trimmed); escaped != "" && escaped != trimmed {
+				out = strings.ReplaceAll(out, escaped, redaction.Placeholder)
+			}
 		}
 	}
 	cleaned, _ := RedactSecrets(out)

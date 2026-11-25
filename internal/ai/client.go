@@ -80,7 +80,11 @@ func ValidateBaseURL(raw string) (*url.URL, error) {
 
 // Complete executes one non-streaming chat completion request against profile.
 func (c *Client) Complete(ctx context.Context, profile ProviderConfig, systemPrompt, userPrompt string) (*CompletionResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	p := normalizeProfileDefaults(profile)
+	secrets := collectProfileSecrets(p)
 	if !IsValidProvider(p.Provider) {
 		return nil, fmt.Errorf("unsupported AI provider %q", p.Provider)
 	}
@@ -143,7 +147,7 @@ func (c *Client) Complete(ctx context.Context, profile ProviderConfig, systemPro
 		// cannot inject path traversal or query segments.
 		endpoint, err = joinGeminiEndpoint(baseURL, p.Model)
 		if err != nil {
-			return nil, sanitizeProviderError(err, p.APIKey)
+			return nil, sanitizeProviderError(err, secrets...)
 		}
 		body := map[string]any{
 			"contents": []map[string]any{
@@ -187,12 +191,12 @@ func (c *Client) Complete(ctx context.Context, profile ProviderConfig, systemPro
 		}
 	}
 	if err != nil {
-		return nil, sanitizeProviderError(fmt.Errorf("encode %s request: %w", p.Provider, err), p.APIKey)
+		return nil, sanitizeProviderError(fmt.Errorf("encode %s request: %w", p.Provider, err), secrets...)
 	}
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, sanitizeProviderError(fmt.Errorf("build HTTP request: %w", err), p.APIKey)
+		return nil, sanitizeProviderError(fmt.Errorf("build HTTP request: %w", err), secrets...)
 	}
 
 	// Apply custom extra headers first (ignoring dangerous/reserved headers),
@@ -216,13 +220,13 @@ func (c *Client) Complete(ctx context.Context, profile ProviderConfig, systemPro
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, sanitizeProviderError(fmt.Errorf("%s request failed: %w", p.Provider, err), p.APIKey)
+		return nil, sanitizeProviderError(fmt.Errorf("%s request failed: %w", p.Provider, err), secrets...)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := readBoundedBody(resp.Body, maxResponseBodyBytes)
 	if err != nil {
-		return nil, sanitizeProviderError(fmt.Errorf("read %s response: %w", p.Provider, err), p.APIKey)
+		return nil, sanitizeProviderError(fmt.Errorf("read %s response: %w", p.Provider, err), secrets...)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -235,13 +239,13 @@ func (c *Client) Complete(ctx context.Context, profile ProviderConfig, systemPro
 		}
 		return nil, sanitizeProviderError(
 			fmt.Errorf("%s HTTP %d: %s", p.Provider, resp.StatusCode, msg),
-			p.APIKey,
+			secrets...,
 		)
 	}
 
 	parsed, err := parseProviderResponse(p.Provider, respBody)
 	if err != nil {
-		return nil, sanitizeProviderError(err, p.APIKey)
+		return nil, sanitizeProviderError(err, secrets...)
 	}
 	return parsed, nil
 }
@@ -249,8 +253,12 @@ func (c *Client) Complete(ctx context.Context, profile ProviderConfig, systemPro
 // TestConnection performs a minimal prompt round-trip against profile to verify
 // reachability, authentication, and model availability.
 func (c *Client) TestConnection(ctx context.Context, profile ProviderConfig) TestConnectionResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	start := time.Now()
 	p := normalizeProfileDefaults(profile)
+	secrets := collectProfileSecrets(p)
 	if p.TimeoutSec > 30 {
 		p.TimeoutSec = 30
 	}
@@ -265,7 +273,7 @@ func (c *Client) TestConnection(ctx context.Context, profile ProviderConfig) Tes
 	res.LatencyMs = time.Since(start).Milliseconds()
 	if err != nil {
 		res.OK = false
-		res.Error = sanitizeProviderError(err, p.APIKey).Error()
+		res.Error = sanitizeProviderError(err, secrets...).Error()
 		return res
 	}
 	res.OK = true
@@ -331,11 +339,20 @@ func readBoundedBody(r io.Reader, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
-func sanitizeProviderError(err error, apiKey string) error {
+func collectProfileSecrets(p ProviderConfig) []string {
+	var secrets []string
+	if k := strings.TrimSpace(p.APIKey); k != "" {
+		secrets = append(secrets, k)
+	}
+	secrets = append(secrets, sensitiveExtraHeaderValues(p.ExtraHeaders)...)
+	return secrets
+}
+
+func sanitizeProviderError(err error, secrets ...string) error {
 	if err == nil {
 		return nil
 	}
-	return errors.New(RedactLiteralSecret(err.Error(), apiKey))
+	return errors.New(RedactLiteralSecrets(err.Error(), secrets...))
 }
 
 func extractAPIErrorMessage(body []byte) string {
@@ -375,6 +392,9 @@ func parseProviderResponse(provider string, body []byte) (*CompletionResponse, e
 		}
 		if len(resp.Choices) == 0 {
 			return nil, errors.New("openai_compat response contained no choices")
+		}
+		if strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
+			return nil, errors.New("openai_compat response contained empty message content")
 		}
 		return &CompletionResponse{
 			Content:          resp.Choices[0].Message.Content,

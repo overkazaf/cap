@@ -253,18 +253,34 @@ Native Wails v2 + Svelte 4 desktop workbench compiled into a single binary (no E
 - **Workbench Shell & Navigation**:
   - **4 Built-in Themes**: **Obsidian Dark** (default), **Porcelain Light**, **Mocha** (Catppuccin), and **Nord** with crisp 1px borders, layered elevation tokens, and `tabular-nums` monospace telemetry.
   - **Command Palette (`⌘K` / `Ctrl+K`)**: Instant jump across workspaces, proxy start/stop/pause, theme switching, and live `EN ↔ 简体中文` language toggling.
-  - **Collapsible Left Nav Rail (`⌘B`)** with `⌘1–9` / `⌘,` workspace shortcuts, live proxy, Frida hook, RE job & Service Gateway status badges, compact `EN / 中文` switcher, and an IDE-style bottom status bar.
-- **10 Integrated Workspaces**:
-  1. **Capture (`⌘1`)**: Live 4-KPI telemetry strip (`req/s` + bandwidth, total flows/bytes, active hosts + avg/P95 latency, error rate + TLS alerts), guided 4-step Android setup (`ADB Device` → `CA Certificate` → `Cap Companion Guard` → `Proxy Route`), domain scope filters, Frida server quick controls (Start/Stop/ABI/version + jump to Frida Studio), and a tabbed Activity Log / Active Hosts / TLS Alerts console.
-  2. **Flows (`⌘2`)**: Multi-facet filter toolbar (`/` focus, host suggestions, method/status/content-type pills, Flat vs API Groups), horizontal/vertical draggable `SplitPane`, keyboard navigation (`↑/↓`/`j/k`, `Esc`), tabbed inspector (`Params`, `Req/Resp Headers`, `Req/Resp Body` with JSON / XML / Protobuf / Hex + inline search, `Raw`, `Timing`, `Export` to cURL/Python/Go/Java/JS/Agent JSONL), Replay & Modify-Replay, Side-by-Side Flow Diff, Sign Analysis, 1-click **Publish to Gateway** handoff, HAR/Charles Import, native loopback **MJPEG Device Monitor** (`Fast` / `scrcpy`, live FPS & drag-swipe), and an inline **Plugins** mode (`PluginWorkbench`) for uninterrupted single-page Flow ↔ Plugin debugging.
-  3. **Rules (`⌘3`)**: Split-pane intercept rules engine + live **Held Breakpoints** queue (Forward Edited / Mock / Drop 403), 6 action types, priority ordering, and regex/substring path validation.
-  4. **DeepTrace (`⌘4`)**: Live 8-stage cancellable trace pipeline with real-time progress events, pure-Go DEX bytecode XRefs, 3-perspective interactive SVG Call Graph, and APK/JADX caching — plus 1-click **Hook in Frida**, **Emulate in RE Lab**, and **Scan Protection** handoffs from the Executive Report, module cards, and Native `.so` findings.
-  5. **Frida (`⌘5`)**: Dedicated **Frida Studio** workbench with full `frida-server` lifecycle (ABI auto-detect, GitHub Release auto-download or local `.xz` push, stealth binary rename, custom port + `adb forward`, host vs device version-match diagnostics), zero-CGO Python Frida Bridge (with automatic `frida-cli` fallback), searchable process/app picker, `Spawn (-f)` / `Attach`, **live script hot-reload (`⌘R`)** without restarting the app, structured `send()` JSON event cards & JSONL export, 7 built-in RE templates + `~/.cap/frida-scripts/` disk hot-reload, CodeShare & app fingerprint browser, and **From Trace** auto-hook generator.
-  6. **RE Lab (`⌘6`)**: Unified 6-tab Native Reverse Engineering workbench combining **Native / radare2 + iOS Mach-O/IPA** static inspection (pure-Go ELF fallback, FairPlay `cryptid` audit, ObjC classes/selectors, Unidbg iOS harness, iOS Stealth, and **IDA Pro / Ghidra / JSON Symbol Bridge**), **Unidbg · Qiling · angr** emulation & symbolic execution with **Unidbg Auto-Stub Assistant**, **Frida Env Snapshot**, live job streaming (`~/.cap/re-projects/*.json`), and JDK-first / Maven-cached / per-engine Python virtualenv auto-discovery, **JADX & Java↔JNI Cross-Linker**, **Deobf · Anti-Debug · VMP + Modern TLS / APK Certs / mTLS / Flutter & Cronet** diagnostics, **ExecTrace · Taint** dynamic trace analysis, and **CryptoLab** (CyberChef-style codec/cipher pipeline, schema-less Protobuf AST editor, and White-Box AES-128 Round-9 DFA solver).
-  7. **Plugins (`⌘7`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
-  8. **Service Gateway (`⌘8`)**: Production Open API HTTP Gateway (`:9090`) turning reverse-engineered mobile endpoints into resilient REST APIs — featuring 1-click Flow-to-Service route publishing, live Route Tester, API Key auth, per-route rate limiting, **Per-Route TTL Cache**, **Circuit Breaker**, **6 TLS/HTTP2 Fingerprint Profiles + JA3 + mTLS validation**, OpenAPI 3.0.3 export, **Proxy IP Pool**, **Device Pool** (virtual presets + ADB sync), **Multi-Account / Session Pool** with singleflight 401/403 auto-refresh, **Managed Signer Worker Pools** (`1..8` instances with health probes & auto-restart), **Pluggable Signer Providers**, **Prometheus `/metrics/prometheus`** telemetry drawer, **Docker / Compose** headless deployment export, and real-time Invocation Logs.
-  9. **Terminal (`⌘9`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
-  10. **Settings (`⌘,`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android / Frida Runtime Paths, RE Toolchain (`r2`, `java`, `mvn`, `unidbg`, `python3`, dedicated `qiling` / `angr` Python virtualenvs, `qiling rootfs`) & Default Gateway Address, Export & Storage, Shortcuts, and About & Diagnostics.
+  - **Collapsible Left Nav Rail (`⌘B`)** with `⌘1–9` / `⌘0` / `⌘,` workspace shortcuts across 4 clear groups (**Traffic**, **Reverse Engineering**, **Services**, **System**), live proxy, Frida hook, emulation job & Service Gateway status badges, compact `EN / 中文` switcher, and an IDE-style bottom status bar.
+- **13 Focused Workspaces (Zero Mega-Tabs)**:
+  - **Traffic**:
+    1. **Capture (`⌘1`)**: Live 4-KPI telemetry strip (`req/s` + bandwidth, total flows/bytes, active hosts + avg/P95 latency, error rate + TLS alerts), guided 4-step Android setup (`ADB Device` → `CA Certificate` → `Cap Companion Guard` → `Proxy Route`), domain scope filters, Frida server quick controls (Start/Stop/ABI/version + jump to Frida Studio), and a tabbed Activity Log / Active Hosts / TLS Alerts console.
+    2. **Flows (`⌘2`)**: Multi-facet filter toolbar (`/` focus, host suggestions, method/status/content-type pills, Flat vs API Groups), horizontal/vertical draggable `SplitPane`, keyboard navigation (`↑/↓`/`j/k`, `Esc`), tabbed inspector (`Params`, `Req/Resp Headers`, `Req/Resp Body` with JSON / XML / Protobuf / Hex + inline search, `Raw`, `Timing`, `Export` to cURL/Python/Go/Java/JS/Agent JSONL), Replay & Modify-Replay, Side-by-Side Flow Diff, Sign Analysis, 1-click **Publish to Gateway** handoff, HAR/Charles Import, native loopback **MJPEG Device Monitor** (`Fast` / `scrcpy`, live FPS & drag-swipe), and an inline **Plugins** mode (`PluginWorkbench`) for uninterrupted single-page Flow ↔ Plugin debugging.
+    3. **Rules (`⌘3`)**: Split-pane intercept rules engine + live **Held Breakpoints** queue (Forward Edited / Mock / Drop 403), 6 action types, priority ordering, and regex/substring path validation.
+    4. **Plugins (`⌘4`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
+  - **Reverse Engineering**:
+    5. **DeepTrace (`⌘5`)**: Live 8-stage cancellable trace pipeline with real-time progress events, pure-Go DEX bytecode XRefs, 3-perspective interactive SVG Call Graph, and APK/JADX caching — plus 1-click **Hook in Frida**, **Emulate in RE Lab**, and **Scan Protection** handoffs from the Executive Report, module cards, and Native `.so` findings.
+    6. **Static RE (`⌘6`)**: Focused static analysis workspace with single-tier tabs for **Native / r2 · iOS** (radare2 + pure-Go ELF fallback, iOS Mach-O/IPA FairPlay `cryptid` & ObjC inspector, Unidbg iOS harness, iOS Stealth, and **IDA Pro / Ghidra / JSON Symbol Bridge**) and **JADX · Java↔JNI** (cached APK/DEX decompiler, full-text search, and static + `RegisterNatives` Java↔JNI cross-linker).
+    7. **Frida (`⌘7`)**: Dedicated **Frida Studio** workbench with full `frida-server` lifecycle (ABI auto-detect, GitHub Release auto-download or local `.xz` push, stealth binary rename, custom port + `adb forward`, host vs device version-match diagnostics), zero-CGO Python Frida Bridge (with automatic `frida-cli` fallback), searchable process/app picker, `Spawn (-f)` / `Attach`, **live script hot-reload (`⌘R`)** without restarting the app, structured `send()` JSON event cards & JSONL export, 7 built-in RE templates + `~/.cap/frida-scripts/` disk hot-reload, CodeShare & app fingerprint browser, and **From Trace** auto-hook generator.
+    8. **Emulate & Trace (`⌘8`)**: Dedicated algorithm emulation & dynamic trace workspace combining **Unidbg · Qiling · angr** (with **Unidbg Auto-Stub Assistant**, **Frida Env Snapshot**, live job streaming, `~/.cap/re-projects/*.json` persistence, and JDK-first / Maven-cached / per-engine Python virtualenv auto-discovery) and **ExecTrace · Taint** (multi-format instruction trace parser, forward/backward register + memory taint slicing, crypto constant detection, ASLR-normalized diff, and Tenet export).
+    9. **Deobf & TLS (Sidebar / `⌘K`)**: Single-tier hardening & transport defense workspace directly exposing **Protection Audit** (13 packers, OLLVM, VMP, inline ARM64 `SVC #0`), **Stealth & Unpack Scripts**, **VMP Trace Analyzer**, and **TLS · Certs · Proxy** (APK cert/pin scan, mTLS validator, 6 JA3 profiles, Flutter/Cronet/mTLS compat Frida scripts).
+    10. **Crypto & DFA (Sidebar / `⌘K`)**: Single-tier cryptographic algorithm workspace directly exposing **Codec & Cipher Pipeline** (CyberChef-style composable Base64/SM4/AES/ChaCha20/RC4/XOR + Auto-Identify), **Protobuf Wire** (schema-less AST decode & lossless re-encode), and **White-Box AES-128 DFA** (Round-9 Master Key solver + Unidbg/Qiling fault-injection harness generator).
+  - **Services**:
+    11. **Gateway (`⌘9`)**: Production Open API HTTP Gateway (`:9090`) turning reverse-engineered mobile endpoints into resilient REST APIs — featuring 1-click Flow-to-Service route publishing, live Route Tester, API Key auth, per-route rate limiting, **Per-Route TTL Cache**, **Circuit Breaker**, **6 TLS/HTTP2 Fingerprint Profiles + JA3 + mTLS validation**, OpenAPI 3.0.3 export, **Proxy IP Pool**, **Device Pool** (virtual presets + ADB sync), **Multi-Account / Session Pool** with singleflight 401/403 auto-refresh, **Managed Signer Worker Pools** (`1..8` instances with health probes & auto-restart), **Pluggable Signer Providers**, **Prometheus `/metrics/prometheus`** telemetry drawer, **Docker / Compose** headless deployment export, and real-time Invocation Logs.
+  - **System**:
+    12. **Terminal (`⌘0`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
+    13. **Settings (`⌘,`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android / Frida Runtime Paths, RE Toolchain (`r2`, `java`, `mvn`, `unidbg`, `python3`, dedicated `qiling` / `angr` Python virtualenvs, `qiling rootfs`) & Default Gateway Address, Export & Storage, Shortcuts, and About & Diagnostics.
+
+| Shortcut | Workspace | Group |
+|----------|-----------|-------|
+| `⌘1` / `⌘2` / `⌘3` / `⌘4` | Capture · Flows · Rules · Plugins | Traffic |
+| `⌘5` / `⌘6` / `⌘7` / `⌘8` | DeepTrace · Static RE · Frida · Emulate & Trace | Reverse Engineering |
+| Sidebar / `⌘K` | Deobf & TLS · Crypto & DFA | Reverse Engineering |
+| `⌘9` | Gateway | Services |
+| `⌘0` / `⌘,` | Terminal · Settings | System |
+| `⌘K` / `⌘B` | Command Palette · Toggle Sidebar Rail | Shell |
 
 ### Full-Screen Interactive TUI (`cap tui` & `cap start --tui`)
 
@@ -320,7 +336,7 @@ Connecting a phone to a proxy should **never** leave the device stranded without
   - **Non-rooted devices**: Built-in `MainActivity` launches Android's `KeyChain` CA installer directly for `/sdcard/Download/cap-ca.crt` with guided verification.
 - **Desktop Auto-Teardown**: `cap start --auto-disconnect`, `cap tui --live --auto-disconnect`, and Desktop GUI `StopProxy()` / `App.Shutdown()` automatically tear down tracked Android devices before stopping the proxy.
 
-### Frida Dynamic Instrumentation Studio (`cap frida` & GUI `⌘5`)
+### Frida Dynamic Instrumentation Studio (`cap frida` & GUI `⌘7`)
 
 End-to-end Android dynamic instrumentation without CGO bloat or external Frida GUI tools:
 
@@ -338,7 +354,7 @@ cap frida run --pkg com.example.app --spawn \
 - **Built-in Script Library & CodeShare**: Ships 7 curated scripts (14+ Universal SSL Unpin, Anti-Root & Anti-Frida Stealth, OkHttp3/URLConnection Tracer, Crypto/Sign Tracer for MD5/SHA/HMAC/AES, JNI `RegisterNatives` & `dlopen` Tracer, SharedPreferences/SQLite Watcher, Dynamic Class Explorer), persistent custom scripts (`~/.cap/frida-scripts/*.json` with disk hot-reload), and integrated CodeShare search + app fingerprinting.
 - **DeepTrace → Frida Closed Loop**: Generate runnable Java, DEX XRef, and delayed `dlopen` Native `.so` hooks directly from any DeepTrace report, module card, or native export in one click.
 
-### RE Lab — Native Binary Analysis, Host Toolchain & Algorithm Emulation (`cap re` & GUI `⌘6`)
+### Static RE & Algorithm Emulation (`cap re` & GUI `⌘6` / `⌘8`)
 
 Full native `.so`/ELF/Mach-O reverse-engineering and algorithm emulation pipeline without leaving `cap`:
 
@@ -356,7 +372,7 @@ cap re gen -e unidbg --apk app.apk --so libsign.so \
 - **Unidbg · Qiling · angr Emulation & Symbolic Execution**: Ships curated starter templates, parameterized harness generators, and `cap re run` CLI/GUI job execution with live cancellable streaming and `~/.cap/re-projects/*.json` persistence.
 - **DeepTrace → RE Lab Closed Loop**: Click **Emulate in RE Lab** from any DeepTrace report or Native `.so` finding to synthesize a tailored Unidbg/Qiling/angr harness pre-filled with APK, `.so`, JNI symbols, and captured request inputs.
 
-### RE Pro Suite — Auto-Stub, JADX↔JNI, Symbol Bridge & iOS (`cap repro` & GUI `⌘6`)
+### RE Pro Suite — Auto-Stub, JADX↔JNI, Symbol Bridge & iOS (`cap repro` & GUI `⌘6` / `⌘8`)
 
 Commercial-grade productivity extensions for Android & iOS native reverse engineering:
 
@@ -375,7 +391,7 @@ cap repro ios-stealth --bundle-id com.acme.ios -o ios_stealth.js
 - **IDA Pro / Ghidra / JSON Symbol Bridge**: Imports/validates `SymbolBundle` JSON annotations (function names, comments, struct tags) and exports deterministic IDAPython or Ghidra Python scripts.
 - **iOS Mach-O / IPA Static Inspector & Harnesses**: Pure-Go parser for thin/universal Mach-O and `.ipa` archives covering `Info.plist`/ATS audit, FairPlay encryption (`cryptid`), PIE/NX/ARC/Canary mitigations, linked dylibs/frameworks, Objective-C classes & selectors, plus Unidbg `DarwinEmulatorBuilder` iOS harness and Frida iOS stealth generators.
 
-### CryptoLab & White-Box AES-128 DFA (`cap crypto` & GUI `⌘6`)
+### CryptoLab & White-Box AES-128 DFA (`cap crypto` & GUI Crypto & DFA)
 
 Built-in CyberChef-style cryptographic workbench, schema-less Protobuf inspector, and White-Box AES-128 Round-9 Differential Fault Analysis (DFA) solver:
 
@@ -392,7 +408,7 @@ cap crypto dfa-script -e unidbg --binary ./libwb.so --hook-addr 0x12a40 -o White
 - **Schema-less Protobuf Wire Inspector**: Decodes raw hex/Base64 Protobuf wire payloads into an editable nested AST without `.proto` definitions and losslessly re-encodes modified fields back to hex/Base64.
 - **White-Box AES-128 Round-9 DFA Solver**: Recovers the Round-10 subkey and inverted AES-128 Master Key directly from Round-9 single-byte faulty ciphertexts (with optional plaintext verification), and generates Unidbg (Java) or Qiling (Python) fault-injection scripts.
 
-### Modern TLS / mTLS & Proxy Compatibility Diagnostics (`cap tls` & GUI `⌘6` / `⌘8`)
+### Modern TLS / mTLS & Proxy Compatibility Diagnostics (`cap tls` & GUI Deobf & TLS / `⌘9`)
 
 Pure-Go TLS fingerprint profiling, APK certificate auditing, mTLS validation, and local-proxy compatibility templates:
 
@@ -411,7 +427,7 @@ cap tls curl-impersonate --json                            # Detect host curl-im
 - **APK Certificate / Pin Scanner & mTLS Validator**: Scans APKs (including binary AXML & plain `network_security_config.xml`) for embedded PEM/DER certificates, keystores, and public-key pins, and validates PEM client cert/key pairs (key match, chain length, ClientAuth EKU, expiry).
 - **Local-Proxy Diagnostic Templates**: Generates sanitized Frida scripts for Flutter local-proxy debugging, Cronet QUIC-to-HTTP/2 fallback, and strictly read-only mTLS KeyStore/SSLContext observation.
 
-### Anti-Obfuscation, Anti-Debug & VMP Analysis (`cap deobf` & GUI `⌘6`)
+### Anti-Obfuscation, Anti-Debug & VMP Analysis (`cap deobf` & GUI Deobf & TLS)
 
 Automated mobile hardening audit and composable bypass/deobfuscation script generation:
 
@@ -428,7 +444,7 @@ cap deobf vmp-trace ./vmp.log --base 0x7000000000          # Identify VMP dispat
 - **Composable Stealth & Unpacking Generators**: Auto-tailors Frida Anti-Debug / Anti-Frida stealth scripts (`TracerPid` / `/proc/self/maps`, `ptrace` / signal traps, inline ARM64 `SVC` patching with dry-run mode, timing / `inotify`, Java debug checks), in-memory DEX unpackers, OLLVM CFF de-flattening (`angr`), string decryption (Qiling / Unidbg), and Java deobfuscation scripts — with 1-click handoff to Frida Studio or RE Lab Emulation.
 - **VMP Tracing & Analysis**: Generates Frida Stalker, `RegisterNatives`, and Unidbg VMP collectors, and analyzes captured VMP instruction traces to recover dispatcher PCs, handler tables, hot blocks, and external API calls.
 
-### Execution Trace & Taint Analysis (`cap exectrace` & GUI `⌘6`)
+### Execution Trace & Taint Analysis (`cap exectrace` & GUI `⌘8`)
 
 Multi-engine dynamic instruction trace inspection, taint slicing, and differential analysis:
 
@@ -444,7 +460,7 @@ cap exectrace export <sessionID> -f tenet -o trace.tenet.txt
 - **Forward & Backward Register + Memory Taint**: Tracks register and concrete memory propagation (ARM64 shifted/extended addressing, x86 scaled indexing, constant kills, and per-thread hot loops) to slice from output signatures back to key inputs or vice versa.
 - **Crypto Detection, ASLR Diff & Export**: Automatically detects standard crypto constants (AES S-Box, MD5/SHA/CRC32/ChaCha/SM4/RC4), hot loops, and call trees; computes ASLR-normalized trace diffs across runs; generates ready-to-run Stalker / Java / Unidbg / Qiling collectors; and exports to **Tenet**, **JSONL**, or **Markdown**.
 
-### Service Gateway & Integration Hub (`cap gateway` & GUI `⌘8`)
+### Service Gateway & Integration Hub (`cap gateway` & GUI `⌘9`)
 
 Turn reverse-engineered mobile APIs into production-grade, observable, authenticated HTTP endpoints backed by proxy, device, account, and supervised signer worker pools:
 

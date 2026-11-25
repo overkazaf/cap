@@ -2,7 +2,8 @@
   import { onMount, onDestroy, tick } from 'svelte'
   import '../lib/locales/reLab.js'
   import { t, translate } from '../lib/i18n.js'
-  import { reLabState as S, reLabHandoff } from '../lib/reLabState.js'
+  import { reLabState as S, reLabHandoff, pageForSubTab } from '../lib/reLabState.js'
+  import { navigate } from '../lib/navigation.js'
   import { openFridaStudio } from '../lib/fridaState.js'
   import { toast } from '../lib/toast.js'
   import { copyToClipboard, formatBytes, formatDuration } from '../lib/format.js'
@@ -16,10 +17,13 @@
   import CodeEditor from '../components/CodeEditor.svelte'
   import EmptyState from '../components/EmptyState.svelte'
 
+  export let section = 're-static'
+
   const api = () => window?.go?.wailsgui?.App
   const runtimeApi = () => window?.runtime
 
   // ==================== Global Sub-Tab & Toolchain ====================
+  let mounted = false
   let subTab = S.subTab || 'native'
   let toolchain = null
   let probingToolchain = false
@@ -337,9 +341,67 @@
   let unsubHandoff = null
   let unregisterCmds = null
 
+  // ==================== Section <-> Sub-Tab Sync ====================
+  function syncSubTabToSection(sec) {
+    if (sec === 're-static') {
+      if (subTab !== 'native' && subTab !== 'jadx') {
+        subTab = S.lastStaticTab === 'jadx' ? 'jadx' : 'native'
+      }
+      if (mounted && subTab === 'jadx' && !jadxInfo) detectJadx()
+    } else if (sec === 're-emulate') {
+      if (subTab !== 'emulate' && subTab !== 'exectrace') {
+        subTab = S.lastEmulateTab === 'exectrace' ? 'exectrace' : 'emulate'
+      }
+      if (mounted && subTab === 'exectrace') loadExecTraces()
+    } else if (sec === 're-defense') {
+      showToolchainDrawer = false
+      if (subTab !== 'deobf') subTab = 'deobf'
+      if (mounted && deobfView === 'tls' && !tlsProfiles.length) loadTlsEnvironment()
+    } else if (sec === 're-crypto') {
+      showToolchainDrawer = false
+      if (subTab !== 'cryptolab') subTab = 'cryptolab'
+      if (mounted && !cryptoOps.length) loadCryptoOperations()
+    }
+  }
+
+  function goSubTab(nextTab, opts = {}) {
+    if (opts.deobfView) {
+      deobfView = opts.deobfView
+      if (deobfView === 'tls') {
+        if (!tlsApkPath && scanPath) tlsApkPath = scanPath
+        if (mounted && !tlsProfiles.length) loadTlsEnvironment()
+      }
+    }
+    if (opts.cryptoMode) {
+      cryptoMode = opts.cryptoMode
+    }
+    subTab = nextTab
+    if (nextTab === 'native' || nextTab === 'jadx') {
+      S.lastStaticTab = nextTab
+      if (mounted && nextTab === 'jadx' && !jadxInfo) detectJadx()
+    } else if (nextTab === 'emulate' || nextTab === 'exectrace') {
+      S.lastEmulateTab = nextTab
+      if (mounted && nextTab === 'exectrace') loadExecTraces()
+    } else if (nextTab === 'deobf') {
+      showToolchainDrawer = false
+      if (mounted && deobfView === 'tls' && !tlsProfiles.length) loadTlsEnvironment()
+    } else if (nextTab === 'cryptolab') {
+      showToolchainDrawer = false
+      if (mounted && !cryptoOps.length) loadCryptoOperations()
+    }
+    const targetPage = pageForSubTab(nextTab)
+    if (section !== targetPage) {
+      navigate(targetPage)
+    }
+  }
+
+  $: syncSubTabToSection(section)
+
   // ==================== State Persistence ====================
   $: {
     S.subTab = subTab
+    if (subTab === 'native' || subTab === 'jadx') S.lastStaticTab = subTab
+    if (subTab === 'emulate' || subTab === 'exectrace') S.lastEmulateTab = subTab
     S.binaryPath = binaryPath
     S.binaryAnalysis = binaryAnalysis
     S.nativeMode = nativeMode
@@ -498,6 +560,25 @@
     { key: 'qiling', label: 'Qiling', ready: Boolean(toolchain?.qiling_ready), info: toolchain?.qiling },
     { key: 'angr', label: 'angr', ready: Boolean(toolchain?.angr_ready), info: toolchain?.angr },
   ]
+
+  $: staticToolchainPills = [
+    { key: 'r2', label: 'r2', ready: Boolean(toolchain?.r2_ready), info: toolchain?.r2, action: 'drawer' },
+    {
+      key: 'jadx',
+      label: 'JADX',
+      ready: Boolean(jadxInfo?.available),
+      info: jadxInfo
+        ? {
+            version: jadxInfo.version || (jadxInfo.available ? 'OK' : ''),
+            path: jadxInfo.path || '',
+            issue: jadxInfo.issue || $t('reLab.jadx.jadxFallback'),
+          }
+        : null,
+      action: 'jadx',
+    },
+  ]
+
+  $: emulateToolchainPills = toolchainPills.filter((p) => p.key !== 'r2')
 
   // Sub-Tab 1 derived
   $: nativeFunctions = binaryAnalysis?.functions || []
@@ -764,6 +845,11 @@
   // Command palette registration
   $: {
     const _t = $t
+    const reCat = _t('common.nav.groups.inspect')
+    const staticPrefix = _t('common.nav.pages.re-static.label')
+    const emulatePrefix = _t('common.nav.pages.re-emulate.label')
+    const defensePrefix = _t('common.nav.pages.re-defense.label')
+    const cryptoPrefix = _t('common.nav.pages.re-crypto.label')
     if (unregisterCmds) {
       unregisterCmds()
       unregisterCmds = null
@@ -772,60 +858,91 @@
       unregisterCmds = registerCommands([
         {
           id: 'relab:native',
-          label: `RE Lab: ${_t('reLab.tabs.native')}`,
-          category: 'RE Lab',
+          label: `${staticPrefix}: ${_t('reLab.tabs.native')}`,
+          category: reCat,
           icon: 'cpu',
-          keywords: 'radare2 r2 elf disasm binary native ios macho ipa symbols ida ghidra',
-          run: () => (subTab = 'native'),
-        },
-        {
-          id: 'relab:emulate',
-          label: `RE Lab: ${_t('reLab.tabs.emulate')}`,
-          category: 'RE Lab',
-          icon: 'play',
-          keywords: 'unidbg qiling angr emulate symbolic autostub',
-          run: () => (subTab = 'emulate'),
+          keywords: 'radare2 r2 elf disasm binary native ios macho ipa symbols ida ghidra 静态 反汇编',
+          run: () => goSubTab('native'),
         },
         {
           id: 'relab:jadx',
-          label: `RE Lab: ${_t('reLab.tabs.jadx')}`,
-          category: 'RE Lab',
+          label: `${staticPrefix}: ${_t('reLab.tabs.jadx')}`,
+          category: reCat,
           icon: 'file-code',
-          keywords: 'jadx dex apk decompile java jni crosslink native',
-          run: () => {
-            subTab = 'jadx'
-            if (!jadxInfo) detectJadx()
-          },
+          keywords: 'jadx dex apk decompile java jni crosslink native 反编译 关联',
+          run: () => goSubTab('jadx'),
         },
         {
-          id: 'relab:deobf',
-          label: `RE Lab: ${_t('reLab.tabs.deobf')}`,
-          category: 'RE Lab',
-          icon: 'shield',
-          keywords: 'deobf ollvm antidebug vmp packer stealth tls cert mtls flutter cronet',
-          run: () => (subTab = 'deobf'),
+          id: 'relab:emulate',
+          label: `${emulatePrefix}: ${_t('reLab.tabs.emulate')}`,
+          category: reCat,
+          icon: 'play',
+          keywords: 'unidbg qiling angr emulate symbolic autostub 仿真 补环境 符号执行',
+          run: () => goSubTab('emulate'),
         },
         {
           id: 'relab:exectrace',
-          label: `RE Lab: ${_t('reLab.tabs.exectrace')}`,
-          category: 'RE Lab',
+          label: `${emulatePrefix}: ${_t('reLab.tabs.exectrace')}`,
+          category: reCat,
           icon: 'activity',
-          keywords: 'exectrace taint diff stalker tenet crypto',
-          run: () => {
-            subTab = 'exectrace'
-            loadExecTraces()
-          },
+          keywords: 'exectrace taint diff stalker tenet crypto 执行追踪 污点 差分',
+          run: () => goSubTab('exectrace'),
         },
         {
-          id: 'relab:cryptolab',
-          label: `RE Lab: ${_t('reLab.tabs.cryptolab')}`,
-          category: 'RE Lab',
+          id: 'relab:deobf:audit',
+          label: `${defensePrefix}: ${_t('reLab.deobf.views.audit')}`,
+          category: reCat,
+          icon: 'shield',
+          keywords: 'deobf packer ollvm antidebug vmp svc audit 加固 审计 检测',
+          run: () => goSubTab('deobf', { deobfView: 'audit' }),
+        },
+        {
+          id: 'relab:deobf:scripts',
+          label: `${defensePrefix}: ${_t('reLab.deobf.views.scripts')}`,
+          category: reCat,
+          icon: 'code',
+          keywords: 'stealth unpack dex ollvm string decrypt script 反调试 脱壳 对抗脚本',
+          run: () => goSubTab('deobf', { deobfView: 'scripts' }),
+        },
+        {
+          id: 'relab:deobf:vmp',
+          label: `${defensePrefix}: ${_t('reLab.deobf.views.vmpTrace')}`,
+          category: reCat,
+          icon: 'radar',
+          keywords: 'vmp trace dispatcher handler stalker 虚拟机 追踪',
+          run: () => goSubTab('deobf', { deobfView: 'vmp_trace' }),
+        },
+        {
+          id: 'relab:deobf:tls',
+          label: `${defensePrefix}: ${_t('reLab.deobf.views.tls')}`,
+          category: reCat,
+          icon: 'lock',
+          keywords: 'tls cert pin mtls flutter cronet ja3 curl-impersonate 证书 代理对抗',
+          run: () => goSubTab('deobf', { deobfView: 'tls' }),
+        },
+        {
+          id: 'relab:crypto:pipeline',
+          label: `${cryptoPrefix}: ${_t('reLab.cryptolab.modes.pipeline')}`,
+          category: reCat,
+          icon: 'sparkles',
+          keywords: 'crypto cyberchef aes sm4 chacha20 rc4 md5 sha256 base64 xor 加解密 管线',
+          run: () => goSubTab('cryptolab', { cryptoMode: 'pipeline' }),
+        },
+        {
+          id: 'relab:crypto:protobuf',
+          label: `${cryptoPrefix}: ${_t('reLab.cryptolab.modes.protobuf')}`,
+          category: reCat,
+          icon: 'layers',
+          keywords: 'protobuf proto wire decode encode ast 协议 解析',
+          run: () => goSubTab('cryptolab', { cryptoMode: 'protobuf' }),
+        },
+        {
+          id: 'relab:crypto:dfa',
+          label: `${cryptoPrefix}: ${_t('reLab.cryptolab.modes.dfa')}`,
+          category: reCat,
           icon: 'key',
-          keywords: 'crypto cyberchef aes sm4 chacha20 rc4 md5 sha256 protobuf dfa whitebox',
-          run: () => {
-            subTab = 'cryptolab'
-            if (!cryptoOps.length) loadCryptoOperations()
-          },
+          keywords: 'dfa whitebox aes128 fault key recovery 白盒 故障注入 主密钥',
+          run: () => goSubTab('cryptolab', { cryptoMode: 'dfa' }),
         },
       ])
     }
@@ -1119,7 +1236,7 @@
         })
         if (harness) {
           applyGeneratedHarness(harness)
-          subTab = 'emulate'
+          goSubTab('emulate')
           toast.success(translate('reLab.toast.harnessGenerated', { engine, name: harness.name }))
           return
         }
@@ -1137,15 +1254,14 @@
     projTargetAddr = addr
     projBuiltin = false
     projDirty = true
-    subTab = 'emulate'
+    goSubTab('emulate')
   }
 
   function sendBinaryToProtectionScan() {
     const path = binaryAnalysis?.file_path || binaryPath.trim()
     if (!path) return
     scanPath = path
-    deobfView = 'audit'
-    subTab = 'deobf'
+    goSubTab('deobf', { deobfView: 'audit' })
     scanProtection()
   }
 
@@ -2028,7 +2144,7 @@
       binaryPath = soPath
     }
     nativeMode = 'r2'
-    subTab = 'native'
+    goSubTab('native')
     if (soPath && binaryAnalysis?.file_path !== soPath) {
       await analyzeBinary()
     }
@@ -2060,7 +2176,7 @@
         })
         if (harness) {
           applyGeneratedHarness(harness)
-          subTab = 'emulate'
+          goSubTab('emulate')
           toast.success(translate('reLab.toast.harnessGenerated', { engine: 'unidbg', name: harness.name }))
           return
         }
@@ -2078,7 +2194,7 @@
     projTargetAddr = addr
     projBuiltin = false
     projDirty = true
-    subTab = 'emulate'
+    goSubTab('emulate')
   }
 
   // ==================== Sub-Tab 3 Actions: Deobf · Anti-Debug · VMP ====================
@@ -2257,7 +2373,7 @@
     if (extra.rootfs) projRootFS = extra.rootfs
     projBuiltin = false
     projDirty = true
-    subTab = 'emulate'
+    goSubTab('emulate')
     tick().then(() => emuEditorRef?.resetHistory?.(projCode))
     toast.success(translate('reLab.toast.loadedIntoEmulation', { name: projName, engine: projEngine }))
   }
@@ -3080,7 +3196,6 @@
   // ==================== Events, Handoff & Lifecycle ====================
   function applyHandoff(h) {
     if (!h) return
-    if (h.subTab) subTab = h.subTab
     if (h.binaryPath) {
       binaryPath = h.binaryPath
       projBinaryPath = h.binaryPath
@@ -3096,11 +3211,15 @@
     if (h.engine) projEngine = h.engine
     if (h.scanPath) {
       scanPath = h.scanPath
-      deobfView = 'audit'
     }
     if (h.generatedHarness) {
       applyGeneratedHarness(h.generatedHarness)
     }
+    const nextTab = h.subTab || subTab
+    goSubTab(nextTab, {
+      deobfView: h.deobfView || (h.scanPath ? 'audit' : ''),
+      cryptoMode: h.cryptoMode || '',
+    })
     reLabHandoff.set(null)
   }
 
@@ -3134,6 +3253,7 @@
   }
 
   onMount(async () => {
+    mounted = true
     subscribeEvents()
     unsubHandoff = reLabHandoff.subscribe((h) => {
       if (h) applyHandoff(h)
@@ -3172,136 +3292,298 @@
 <svelte:window on:keydown={handleKeydown} />
 
 <div class="relab-page">
-  <!-- ==================== 1. TOP STRIP: Sub-Tab Switcher + Host Toolchain ==================== -->
+  <!-- ==================== 1. TOP STRIP: Focused Single-Tier Section Bar ==================== -->
   <header class="top-strip">
-    <div class="subtab-nav" role="tablist">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={subTab === 'native'}
-        class="subtab-btn"
-        class:active={subTab === 'native'}
-        on:click={() => (subTab = 'native')}
-      >
-        <Icon name="cpu" size={13} />
-        <span>{$t('reLab.tabs.native')}</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={subTab === 'emulate'}
-        class="subtab-btn"
-        class:active={subTab === 'emulate'}
-        on:click={() => (subTab = 'emulate')}
-      >
-        <Icon name="play" size={13} />
-        <span>{$t('reLab.tabs.emulate')}</span>
-        {#if isJobRunning}
-          <span class="live-dot"></span>
-        {/if}
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={subTab === 'jadx'}
-        class="subtab-btn"
-        class:active={subTab === 'jadx'}
-        on:click={() => {
-          subTab = 'jadx'
-          if (!jadxInfo) detectJadx()
-        }}
-      >
-        <Icon name="file-code" size={13} />
-        <span>{$t('reLab.tabs.jadx')}</span>
-        {#if jadxWorkspace?.class_count > 0}
-          <span class="tab-cnt mono tabular-nums">{jadxWorkspace.class_count}</span>
-        {/if}
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={subTab === 'deobf'}
-        class="subtab-btn"
-        class:active={subTab === 'deobf'}
-        on:click={() => {
-          subTab = 'deobf'
-          if (deobfView === 'tls' && !tlsProfiles.length) loadTlsEnvironment()
-        }}
-      >
-        <Icon name="shield" size={13} />
-        <span>{$t('reLab.tabs.deobf')}</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={subTab === 'exectrace'}
-        class="subtab-btn"
-        class:active={subTab === 'exectrace'}
-        on:click={() => {
-          subTab = 'exectrace'
-          loadExecTraces()
-        }}
-      >
-        <Icon name="activity" size={13} />
-        <span>{$t('reLab.tabs.exectrace')}</span>
-        {#if traceSessions.length > 0}
-          <span class="tab-cnt mono tabular-nums">{traceSessions.length}</span>
-        {/if}
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={subTab === 'cryptolab'}
-        class="subtab-btn"
-        class:active={subTab === 'cryptolab'}
-        on:click={() => {
-          subTab = 'cryptolab'
-          if (!cryptoOps.length) loadCryptoOperations()
-        }}
-      >
-        <Icon name="key" size={13} />
-        <span>{$t('reLab.tabs.cryptolab')}</span>
-      </button>
-    </div>
-
-    <div class="strip-spacer"></div>
-
-    <!-- Live Host Toolchain Pills -->
-    <div class="toolchain-strip">
-      <span class="strip-label">{$t('reLab.toolchain.label')}</span>
-      <div class="tc-pills">
-        {#each toolchainPills as pill (pill.key)}
-          <button
-            type="button"
-            class="tc-pill"
-            class:ready={pill.ready}
-            title={tooltipForTool(pill)}
-            on:click={() => (showToolchainDrawer = !showToolchainDrawer)}
-          >
-            <span class="tc-dot"></span>
-            <span class="mono">{pill.label}</span>
-          </button>
-        {/each}
+    {#if section === 're-static'}
+      <div class="subtab-nav" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'native'}
+          class="subtab-btn"
+          class:active={subTab === 'native'}
+          on:click={() => goSubTab('native')}
+        >
+          <Icon name="cpu" size={13} />
+          <span>{$t('reLab.tabs.native')}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'jadx'}
+          class="subtab-btn"
+          class:active={subTab === 'jadx'}
+          on:click={() => goSubTab('jadx')}
+        >
+          <Icon name="file-code" size={13} />
+          <span>{$t('reLab.tabs.jadx')}</span>
+          {#if jadxWorkspace?.class_count > 0}
+            <span class="tab-cnt mono tabular-nums">{jadxWorkspace.class_count}</span>
+          {/if}
+        </button>
       </div>
-      <Button
-        variant="ghost"
-        size="xs"
-        icon="refresh"
-        iconOnly
-        loading={probingToolchain}
-        title={$t('reLab.toolchain.reprobe')}
-        on:click={() => loadToolchain(true)}
-      />
-      <Button
-        variant="secondary"
-        size="xs"
-        icon="settings"
-        active={showToolchainDrawer}
-        on:click={() => (showToolchainDrawer = !showToolchainDrawer)}
-      >
-        {$t('reLab.toolchain.configBtn')}
-      </Button>
-    </div>
+
+      <div class="strip-spacer"></div>
+
+      <div class="toolchain-strip">
+        <span class="strip-label">{$t('reLab.toolchain.label')}</span>
+        <div class="tc-pills">
+          {#each staticToolchainPills as pill (pill.key)}
+            <button
+              type="button"
+              class="tc-pill"
+              class:ready={pill.ready}
+              title={tooltipForTool(pill)}
+              on:click={() => {
+                if (pill.action === 'jadx') detectJadx()
+                else showToolchainDrawer = !showToolchainDrawer
+              }}
+            >
+              <span class="tc-dot"></span>
+              <span class="mono">{pill.label}</span>
+            </button>
+          {/each}
+        </div>
+        <Button
+          variant="ghost"
+          size="xs"
+          icon="refresh"
+          iconOnly
+          loading={probingToolchain || probingJadx}
+          title={$t('reLab.toolchain.reprobe')}
+          on:click={() => {
+            loadToolchain(true)
+            detectJadx()
+          }}
+        />
+        <Button
+          variant="secondary"
+          size="xs"
+          icon="settings"
+          active={showToolchainDrawer}
+          on:click={() => (showToolchainDrawer = !showToolchainDrawer)}
+        >
+          {$t('reLab.toolchain.configBtn')}
+        </Button>
+      </div>
+    {:else if section === 're-emulate'}
+      <div class="subtab-nav" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'emulate'}
+          class="subtab-btn"
+          class:active={subTab === 'emulate'}
+          on:click={() => goSubTab('emulate')}
+        >
+          <Icon name="play" size={13} />
+          <span>{$t('reLab.tabs.emulate')}</span>
+          {#if isJobRunning}
+            <span class="live-dot"></span>
+          {/if}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'exectrace'}
+          class="subtab-btn"
+          class:active={subTab === 'exectrace'}
+          on:click={() => goSubTab('exectrace')}
+        >
+          <Icon name="activity" size={13} />
+          <span>{$t('reLab.tabs.exectrace')}</span>
+          {#if traceSessions.length > 0}
+            <span class="tab-cnt mono tabular-nums">{traceSessions.length}</span>
+          {/if}
+        </button>
+      </div>
+
+      <div class="strip-spacer"></div>
+
+      <div class="toolchain-strip">
+        <span class="strip-label">{$t('reLab.toolchain.label')}</span>
+        <div class="tc-pills">
+          {#each emulateToolchainPills as pill (pill.key)}
+            <button
+              type="button"
+              class="tc-pill"
+              class:ready={pill.ready}
+              title={tooltipForTool(pill)}
+              on:click={() => (showToolchainDrawer = !showToolchainDrawer)}
+            >
+              <span class="tc-dot"></span>
+              <span class="mono">{pill.label}</span>
+            </button>
+          {/each}
+        </div>
+        <Button
+          variant="ghost"
+          size="xs"
+          icon="refresh"
+          iconOnly
+          loading={probingToolchain}
+          title={$t('reLab.toolchain.reprobe')}
+          on:click={() => loadToolchain(true)}
+        />
+        <Button
+          variant="secondary"
+          size="xs"
+          icon="settings"
+          active={showToolchainDrawer}
+          on:click={() => (showToolchainDrawer = !showToolchainDrawer)}
+        >
+          {$t('reLab.toolchain.configBtn')}
+        </Button>
+      </div>
+    {:else if section === 're-defense'}
+      <div class="subtab-nav" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={deobfView === 'audit'}
+          class="subtab-btn"
+          class:active={deobfView === 'audit'}
+          on:click={() => (deobfView = 'audit')}
+        >
+          <Icon name="shield" size={13} />
+          <span>{$t('reLab.deobf.views.audit')}</span>
+          {#if protectionReport}
+            <span class="tab-cnt mono tabular-nums">{riskScore}</span>
+          {/if}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={deobfView === 'scripts'}
+          class="subtab-btn"
+          class:active={deobfView === 'scripts'}
+          on:click={() => (deobfView = 'scripts')}
+        >
+          <Icon name="code" size={13} />
+          <span>{$t('reLab.deobf.views.scripts')}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={deobfView === 'vmp_trace'}
+          class="subtab-btn"
+          class:active={deobfView === 'vmp_trace'}
+          on:click={() => (deobfView = 'vmp_trace')}
+        >
+          <Icon name="radar" size={13} />
+          <span>{$t('reLab.deobf.views.vmpTrace')}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={deobfView === 'tls'}
+          class="subtab-btn"
+          class:active={deobfView === 'tls'}
+          on:click={() => {
+            deobfView = 'tls'
+            if (!tlsApkPath && scanPath) tlsApkPath = scanPath
+            if (!tlsProfiles.length) loadTlsEnvironment()
+          }}
+        >
+          <Icon name="lock" size={13} />
+          <span>{$t('reLab.deobf.views.tls')}</span>
+        </button>
+      </div>
+
+      <div class="strip-spacer"></div>
+
+      {#if deobfView === 'audit' && protectionReport}
+        <Badge
+          variant={riskScore >= 55 ? 'danger' : riskScore >= 30 ? 'warning' : 'success'}
+          size="xs"
+          mono
+        >
+          {riskScore}/100 · {$t(`reLab.deobf.hardening.${riskLevel}`)}
+        </Badge>
+      {:else if deobfView === 'tls' && tlsCurlInfo}
+        <div class="toolchain-strip">
+          <Badge variant={tlsCurlInfo.available ? 'success' : 'neutral'} size="xs" dot mono>
+            {tlsCurlInfo.available
+              ? $t('reLab.deobf.tls.curlReady', { bin: tlsCurlInfo.binary_name || 'curl-impersonate' })
+              : $t('reLab.deobf.tls.curlMissing')}
+          </Badge>
+          <Button
+            variant="ghost"
+            size="xs"
+            icon="refresh"
+            iconOnly
+            loading={loadingTlsProfiles}
+            title={$t('common.actions.refresh')}
+            on:click={loadTlsEnvironment}
+          />
+        </div>
+      {/if}
+    {:else if section === 're-crypto'}
+      <div class="subtab-nav" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={cryptoMode === 'pipeline'}
+          class="subtab-btn"
+          class:active={cryptoMode === 'pipeline'}
+          on:click={() => (cryptoMode = 'pipeline')}
+        >
+          <Icon name="sparkles" size={13} />
+          <span>{$t('reLab.cryptolab.modes.pipeline')}</span>
+          {#if cryptoSteps.length > 0}
+            <span class="tab-cnt mono tabular-nums">{cryptoSteps.length}</span>
+          {/if}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={cryptoMode === 'protobuf'}
+          class="subtab-btn"
+          class:active={cryptoMode === 'protobuf'}
+          on:click={() => (cryptoMode = 'protobuf')}
+        >
+          <Icon name="layers" size={13} />
+          <span>{$t('reLab.cryptolab.modes.protobuf')}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={cryptoMode === 'dfa'}
+          class="subtab-btn"
+          class:active={cryptoMode === 'dfa'}
+          on:click={() => (cryptoMode = 'dfa')}
+        >
+          <Icon name="key" size={13} />
+          <span>{$t('reLab.cryptolab.modes.dfa')}</span>
+        </button>
+      </div>
+
+      <div class="strip-spacer"></div>
+
+      {#if cryptoMode === 'pipeline'}
+        <div class="toolchain-strip">
+          <Button
+            variant="secondary"
+            size="xs"
+            icon="sparkles"
+            loading={identifyingCrypto}
+            disabled={!cryptoInput.trim()}
+            on:click={identifyCryptoPayload}
+          >
+            {identifyingCrypto ? $t('reLab.cryptolab.pipeline.identifying') : $t('reLab.cryptolab.pipeline.autoIdentifyBtn')}
+          </Button>
+          <Button
+            variant="primary"
+            size="xs"
+            icon="play"
+            loading={runningCrypto}
+            on:click={runCryptoPipeline}
+          >
+            {runningCrypto ? $t('reLab.cryptolab.pipeline.running') : $t('reLab.cryptolab.pipeline.runBtn')}
+          </Button>
+        </div>
+      {/if}
+    {/if}
   </header>
 
   <!-- Collapsible Host Toolchain Config Drawer -->
@@ -5193,51 +5475,25 @@
          ====================================================================== -->
     {:else if subTab === 'deobf'}
       <div class="subtab-pane">
-        <!-- Top Scanner Bar + Inner View Switcher -->
-        <section class="action-bar">
-          <div class="input-with-icon wide">
-            <Icon name="shield" size={13} />
-            <input
-              type="text"
-              class="cap-input mono flex-1"
-              bind:value={scanPath}
-              placeholder={$t('reLab.deobf.scanPlaceholder')}
-              on:keydown={(e) => { if (e.key === 'Enter') scanProtection() }}
-            />
-          </div>
-          <Button variant="primary" size="sm" icon="radar" loading={scanningProtection} on:click={scanProtection}>
-            {scanningProtection ? $t('reLab.deobf.scanning') : $t('reLab.deobf.scanBtn')}
-          </Button>
-
-          <span class="v-sep"></span>
-
-          <div class="seg-toggle">
-            <button type="button" class="seg-btn" class:active={deobfView === 'audit'} on:click={() => (deobfView = 'audit')}>
-              {$t('reLab.deobf.views.audit')}
-            </button>
-            <button type="button" class="seg-btn" class:active={deobfView === 'scripts'} on:click={() => (deobfView = 'scripts')}>
-              {$t('reLab.deobf.views.scripts')}
-            </button>
-            <button type="button" class="seg-btn" class:active={deobfView === 'vmp_trace'} on:click={() => (deobfView = 'vmp_trace')}>
-              {$t('reLab.deobf.views.vmpTrace')}
-            </button>
-            <button
-              type="button"
-              class="seg-btn"
-              class:active={deobfView === 'tls'}
-              on:click={() => {
-                deobfView = 'tls'
-                if (!tlsApkPath && scanPath) tlsApkPath = scanPath
-                if (!tlsProfiles.length) loadTlsEnvironment()
-              }}
-            >
-              {$t('reLab.deobf.views.tls')}
-            </button>
-          </div>
-        </section>
-
         <!-- VIEW A: Protection Audit Report -->
         {#if deobfView === 'audit'}
+          <!-- Protection Audit Target Scanner Bar -->
+          <section class="action-bar">
+            <div class="input-with-icon wide">
+              <Icon name="shield" size={13} />
+              <input
+                type="text"
+                class="cap-input mono flex-1"
+                bind:value={scanPath}
+                placeholder={$t('reLab.deobf.scanPlaceholder')}
+                on:keydown={(e) => { if (e.key === 'Enter') scanProtection() }}
+              />
+            </div>
+            <Button variant="primary" size="sm" icon="radar" loading={scanningProtection} on:click={scanProtection}>
+              {scanningProtection ? $t('reLab.deobf.scanning') : $t('reLab.deobf.scanBtn')}
+            </Button>
+          </section>
+
           <div class="scroll-workspace">
             {#if !protectionReport}
               <EmptyState
@@ -7603,30 +7859,6 @@
          ====================================================================== -->
     {:else if subTab === 'cryptolab'}
       <div class="subtab-pane">
-        <!-- Inner Mode Switcher -->
-        <section class="action-bar">
-          <div class="seg-toggle">
-            <button type="button" class="seg-btn" class:active={cryptoMode === 'pipeline'} on:click={() => (cryptoMode = 'pipeline')}>
-              {$t('reLab.cryptolab.modes.pipeline')}
-            </button>
-            <button type="button" class="seg-btn" class:active={cryptoMode === 'protobuf'} on:click={() => (cryptoMode = 'protobuf')}>
-              {$t('reLab.cryptolab.modes.protobuf')}
-            </button>
-            <button type="button" class="seg-btn" class:active={cryptoMode === 'dfa'} on:click={() => (cryptoMode = 'dfa')}>
-              {$t('reLab.cryptolab.modes.dfa')}
-            </button>
-          </div>
-          <div class="strip-spacer"></div>
-          {#if cryptoMode === 'pipeline'}
-            <Button variant="secondary" size="sm" icon="sparkles" loading={identifyingCrypto} disabled={!cryptoInput.trim()} on:click={identifyCryptoPayload}>
-              {identifyingCrypto ? $t('reLab.cryptolab.pipeline.identifying') : $t('reLab.cryptolab.pipeline.autoIdentifyBtn')}
-            </Button>
-            <Button variant="primary" size="sm" icon="play" loading={runningCrypto} on:click={runCryptoPipeline}>
-              {runningCrypto ? $t('reLab.cryptolab.pipeline.running') : $t('reLab.cryptolab.pipeline.runBtn')}
-            </Button>
-          {/if}
-        </section>
-
         <!-- MODE 1: CyberChef-Style Composable Crypto Pipeline -->
         {#if cryptoMode === 'pipeline'}
           <div class="pane-fill">

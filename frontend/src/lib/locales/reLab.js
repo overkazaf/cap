@@ -5,7 +5,7 @@ registerMessages('reLab', {
     tabs: {
       native: 'Native / r2 · iOS',
       emulate: 'Unidbg · Qiling · angr',
-      jadx: 'JADX · JNI',
+      jadx: 'JADX · Java↔JNI',
       deobf: 'Deobf · VMP · TLS',
       exectrace: 'ExecTrace · Taint',
       cryptolab: 'Crypto · Proto · DFA',
@@ -285,9 +285,9 @@ registerMessages('reLab', {
       scanning: 'Scanning…',
       views: {
         audit: 'Protection Audit',
-        scripts: 'Script Generators',
+        scripts: 'Stealth & Unpack Scripts',
         vmpTrace: 'VMP Trace Analyzer',
-        tls: 'TLS · Certs · Proxy Compat',
+        tls: 'TLS · Certs · Proxy',
       },
       riskScore: 'Risk Score',
       hardening: {
@@ -650,9 +650,9 @@ registerMessages('reLab', {
     },
     cryptolab: {
       modes: {
-        pipeline: 'Crypto Pipeline',
-        protobuf: 'Protobuf Inspector',
-        dfa: 'White-Box AES DFA',
+        pipeline: 'Codec & Cipher Pipeline',
+        protobuf: 'Protobuf Wire',
+        dfa: 'White-Box AES-128 DFA',
       },
       pipeline: {
         opsTitle: 'Operations Catalog',
@@ -814,9 +814,9 @@ registerMessages('reLab', {
     tabs: {
       native: 'Native / r2 · iOS',
       emulate: 'Unidbg · Qiling · angr',
-      jadx: 'JADX · JNI',
+      jadx: 'JADX · Java↔JNI',
       deobf: '反混淆 · VMP · TLS',
-      exectrace: '执行追踪 · 污点',
+      exectrace: 'ExecTrace · 污点',
       cryptolab: '加解密 · Proto · DFA',
     },
     toolchain: {
@@ -1093,10 +1093,10 @@ registerMessages('reLab', {
       scanBtn: '扫描加固与混淆',
       scanning: '扫描中…',
       views: {
-        audit: '防护体检报告',
-        scripts: '脚本生成器',
+        audit: '保护审计',
+        scripts: '对抗脚本',
         vmpTrace: 'VMP 追踪分析',
-        tls: 'TLS · 证书 · 代理兼容',
+        tls: 'TLS · 证书 · 代理对抗',
       },
       riskScore: '风险评分',
       hardening: {
@@ -1459,9 +1459,9 @@ registerMessages('reLab', {
     },
     cryptolab: {
       modes: {
-        pipeline: '加解密流水线',
-        protobuf: 'Protobuf 解析编辑',
-        dfa: '白盒 AES DFA',
+        pipeline: '编解码与加密管线',
+        protobuf: 'Protobuf Wire 解析',
+        dfa: '白盒 AES-128 DFA 还原',
       },
       pipeline: {
         opsTitle: '算子目录',

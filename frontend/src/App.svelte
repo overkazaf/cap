@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { applyTheme, currentTheme, getThemeMeta } from './lib/theme.js'
-  import { PAGES, PAGE_GROUPS, currentPage, navigate, getPageMeta } from './lib/navigation.js'
+  import { PAGES, PAGE_GROUPS, currentPage, navigate, getPageMeta, isRESection } from './lib/navigation.js'
   import { openPalette, togglePalette } from './lib/commandPalette.js'
   import { hasPrimaryMod, isEditableTarget, MOD_LABEL } from './lib/shortcuts.js'
   import { formatBytes, formatCount, formatRate } from './lib/format.js'
@@ -238,8 +238,8 @@
         toggleSidebar()
         return
       }
-      if (!e.shiftKey && !e.altKey && ((key >= '1' && key <= '9') || key === ',')) {
-        const target = PAGES.find((p) => p.shortcut === key)
+      if (!e.shiftKey && !e.altKey && ((key >= '0' && key <= '9') || key === ',')) {
+        const target = PAGES.find((p) => p.shortcut && p.shortcut === key)
         if (target) {
           e.preventDefault()
           navigate(target.id)
@@ -352,7 +352,7 @@
         label: $t('common.palette.commands.goTo', { label }),
         category: $t('common.palette.categories.workspaces'),
         icon: p.icon,
-        shortcut: ['Mod', p.shortcut],
+        shortcut: p.shortcut ? ['Mod', p.shortcut] : undefined,
         keywords: `${p.id} ${p.label} ${label} ${$t(p.titleKey)} ${$t(p.subtitleKey)}`,
         badge: $currentPage === p.id ? $t('common.palette.badges.active') : '',
         run: () => navigate(p.id),
@@ -484,9 +484,8 @@
           <button
             class="nav-item"
             class:active={$currentPage === page.id}
-            title={!sidebarExpanded
-              ? `${$t(page.labelKey)} (${MOD_LABEL}${page.shortcut})`
-              : `${$t(page.titleKey)} (${MOD_LABEL}${page.shortcut})`}
+            title={(!sidebarExpanded ? $t(page.labelKey) : $t(page.titleKey)) +
+              (page.shortcut ? ` (${MOD_LABEL}${page.shortcut})` : '')}
             aria-current={$currentPage === page.id ? 'page' : undefined}
             on:click={() => navigate(page.id)}
           >
@@ -501,7 +500,7 @@
               {#if page.id === 'frida' && fridaRunning && !sidebarExpanded}
                 <span class="nav-dot"></span>
               {/if}
-              {#if page.id === 'relab' && reJobRunning && !sidebarExpanded}
+              {#if page.id === 're-emulate' && reJobRunning && !sidebarExpanded}
                 <span class="nav-dot"></span>
               {/if}
               {#if page.id === 'gateway' && gatewayRunning && !sidebarExpanded}
@@ -518,7 +517,7 @@
                   </span>
                 {:else if page.id === 'frida' && fridaRunning}
                   <span class="pill-live">{$t('common.sidebar.hookBadge')}</span>
-                {:else if page.id === 'relab' && reJobRunning}
+                {:else if page.id === 're-emulate' && reJobRunning}
                   <span class="pill-live">{$t('common.sidebar.reJobBadge')}</span>
                 {:else if page.id === 'gateway' && gatewayRunning}
                   <span class="pill-live">{$t('common.sidebar.gwBadge')}</span>
@@ -671,14 +670,14 @@
         <Flows />
       {:else if $currentPage === 'rules'}
         <Rules />
+      {:else if $currentPage === 'plugins'}
+        <Plugins />
       {:else if $currentPage === 'trace'}
         <DeepTrace />
       {:else if $currentPage === 'frida'}
         <Frida />
-      {:else if $currentPage === 'relab'}
-        <RELab />
-      {:else if $currentPage === 'plugins'}
-        <Plugins />
+      {:else if isRESection($currentPage)}
+        <RELab section={$currentPage} />
       {:else if $currentPage === 'gateway'}
         <Gateway />
       {:else if $currentPage === 'terminal'}
@@ -772,7 +771,7 @@
           <span class="status-sep"></span>
           <button
             class="status-item status-live mono"
-            on:click={() => navigate('relab')}
+            on:click={() => navigate('re-emulate')}
             title={$t('common.statusbar.reJobTooltip')}
           >
             <Icon name="cpu" size={11} />

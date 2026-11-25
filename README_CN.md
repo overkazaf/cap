@@ -243,19 +243,35 @@ sequenceDiagram
 
 - **桌面工作台外壳与体验**：
   - **4 套精致主题**：**Obsidian 曜石暗黑**（默认）、**Porcelain 陶瓷浅色**、**Mocha** (Catppuccin) 与 **Nord**，配合 1px 精细描边、语义层级表面色与等宽 `tabular-nums` 指标排版。
-  - **全局命令面板（`⌘K` / `Ctrl+K`）**：一键跳转 10 大工作区、启停/暂停代理、切换主题以及实时热切换 `EN ↔ 简体中文`。
-  - **可折叠左侧导航栏（`⌘B`）**：支持 `⌘1–9` / `⌘,` 快捷键直达工作区，实时展示代理、Frida 注入、逆向任务与服务网关活跃标识，顶部集成实时代理状态胶囊与 `EN / 中文` 切换按钮，底部配备 IDE 风格状态栏。
-- **10 大核心工作区**：
-  1. **Capture 抓包中心（`⌘1`）**：4 指标 KPI 实时看板（`req/s` + 吞吐带宽、总流量/字节数、活跃主机 + 平均/P95 延迟、错误率 + TLS 告警）、4 步向导式 Android 接入卡片（`ADB 设备` → `CA 证书` → `Cap 代理守护` → `代理路由`）、域名作用域过滤、Frida 服务端快捷启停与一键跳转 Frida 工作室，以及活动日志 / 活跃主机 / TLS 告警多标签控制台。
-  2. **Flows 流量分析器（`⌘2`）**：多维过滤工具栏（`/` 聚焦、主机自动补全、方法/状态码/内容类型胶囊、平铺与 API 分组视图）、可拖拽横向/纵向 `SplitPane`、键盘导航（`↑/↓`/`j/k`、`Esc`）、多标签详情检查器（`Params`、`Req/Resp Headers`、`Req/Resp Body` 支持 JSON / XML / Protobuf / Hex 及内联搜索、`Raw`、`Timing`、`Export` 一键生成 cURL/Python/Go/Java/JS/Agent JSONL）、改参重放、并排 Flow Diff、签名分析、**一键发布到服务网关**、HAR/Charles 导入、原生回环 **MJPEG 设备投屏**（`Fast` / `scrcpy`，实时 FPS 与拖拽滑动），以及右侧内置 **插件调试（`PluginWorkbench`）** 模式实现单页无缝联调。
-  3. **Rules 拦截规则与断点（`⌘3`）**：分屏规则管理 + 实时**挂起断点队列**（支持编辑后放行 / Mock 返回 / 丢弃 403），涵盖 6 类动作、优先级排序及正则/路径校验。
-  4. **DeepTrace 深度追踪（`⌘4`）**：8 阶段实时可取消追踪流水线，支持纯 Go DEX 字节码交叉引用（XRefs）、3 视角交互式 SVG 调用图与 APK/JADX 缓存复用，并支持从综合报告、模块卡片与 Native `.so` 符号**一键跳转 Frida Hook、逆向实验室仿真或保护审计**。
-  5. **Frida 动态工作室（`⌘5`）**：全流程 Frida 逆向工作台，覆盖 `frida-server` 全生命周期（自动识别设备 ABI、GitHub Release 一键下载或本地 `.xz` 推送、防检测重命名、自定义端口与 `adb forward`、宿主与设备版本一致性校验）、零额外 CGO 的内置 Python Frida Bridge（自动降级 `frida-cli`）、可搜索进程/应用选择器、`Spawn (-f)` / `Attach` 注入、**无需重启 App 的在线脚本热重载（`⌘R`）**、结构化 `send()` JSON 事件卡片与 JSONL 导出、7 套内置实战模板 + `~/.cap/frida-scripts/` 磁盘热重载、CodeShare 与应用指纹检索，以及 **DeepTrace 一键合成 Hook**。
-  6. **RE Lab 逆向实验室（`⌘6`）**：六合一原生逆向工作台，集成 **Native / radare2 + iOS Mach-O/IPA** 静态与伪 C 分析（纯 Go ELF 兜底、FairPlay `cryptid` 审计、ObjC 类/选择器、Unidbg iOS 仿真模板、iOS Stealth 及 **IDA Pro / Ghidra / JSON 符号桥接**）、**Unidbg · Qiling · angr** 算法仿真与符号执行（内置 **Unidbg 自动补环境助手**、**Frida 环境快照**、实时日志流、JDK 优先匹配 / Maven Classpath 缓存与 Qiling/angr 独立 Python 虚拟环境）、**JADX 反编译与 Java↔JNI 交叉关联**、**反混淆 · 反调试 · VMP + 现代 TLS / APK 证书 / mTLS / Flutter & Cronet** 诊断、**ExecTrace · 污点分析**，以及 **CryptoLab 密码学工坊**（CyberChef 风格编解码与加密流水线、无 Schema Protobuf AST 编辑器、白盒 AES-128 第 9 轮 DFA 求解器）。
-  7. **Plugins 插件工坊（`⌘7`）**：可脚本化分析插件工作台与单页联调器（本地 `~/.cap/plugins/*.json` 自动热重载），支持 `python3` / `node` / `sh` / `builtin` 运行时、实时解析 `query_params` 与流变量检查器（点击即插代码片段）、实时 `stdin JSON` 预览、`命中当前请求` 实时匹配指示（支持查询字符串与通配符 `*`）、`⌘Enter` 免保存即刻运行草稿、实时流量自动触发及实时执行日志面板。
-  8. **Service Gateway 服务网关（`⌘8`）**：生产级 Open API HTTP 服务化网关（默认 `:9090`），将逆向完成的移动端接口一键封装为高可用 REST 服务 —— 支持抓包流量一键发布、实时路由测试器、API Key 鉴权、路由级限流、**路由级 TTL 缓存**、**熔断器（Circuit Breaker）**、**6 套 TLS/HTTP2 指纹 + JA3 + mTLS 校验**、OpenAPI 3.0.3 导出、**代理 IP 池**、**设备指纹池**（虚拟预设 + ADB 同步）、**多账号 / 会话池**（单飞 401/403 自动续期）、**托管签名 Worker 进程池**（`1..8` 实例健康探活与自动重启）、**可插拔签名器**、**Prometheus `/metrics/prometheus`** 指标面板、**Docker / Compose** 无头部署导出及实时调用日志。
-  9. **Terminal 内嵌终端（`⌘9`）**：多 Tab 暗色 PTY 终端（`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`），内置 `adb`、`frida`、`curl` 常用诊断快捷指令。
-  10. **Settings 系统设置（`⌘,`）**：分栏配置外观与显示语言（`English` / `简体中文`）、代理与证书、Android / Frida 运行环境、逆向工具链路径（`r2`、`java`、`mvn`、`unidbg`、`python3`、独立的 `qiling` / `angr` Python 虚拟环境与 `qiling rootfs`）与默认网关地址、导出与存储、快捷键速查及关于/诊断信息。
+  - **全局命令面板（`⌘K` / `Ctrl+K`）**：一键跳转 13 大聚焦工作区、任意逆向子视图、启停/暂停代理、切换主题以及实时热切换 `EN ↔ 简体中文`。
+  - **可折叠左侧导航栏（`⌘B`）**：按 **流量抓包 / 逆向分析 / 服务集成 / 系统工具** 4 大分组组织，支持 `⌘1–9` / `⌘0` / `⌘,` 快捷键直达工作区，实时展示代理、Frida 注入、仿真任务与服务网关活跃标识，顶部集成实时代理状态胶囊与 `EN / 中文` 切换按钮，底部配备 IDE 风格状态栏。
+- **13 大聚焦工作区（告别超级标签页与双层嵌套 Tab）**：
+  - **流量抓包**：
+    1. **Capture 抓包控制（`⌘1`）**：4 指标 KPI 实时看板（`req/s` + 吞吐带宽、总流量/字节数、活跃主机 + 平均/P95 延迟、错误率 + TLS 告警）、4 步向导式 Android 接入卡片（`ADB 设备` → `CA 证书` → `Cap 代理守护` → `代理路由`）、域名作用域过滤、Frida 服务端快捷启停与一键跳转 Frida 工作室，以及活动日志 / 活跃主机 / TLS 告警多标签控制台。
+    2. **Flows 请求流（`⌘2`）**：多维过滤工具栏（`/` 聚焦、主机自动补全、方法/状态码/内容类型胶囊、平铺与 API 分组视图）、可拖拽横向/纵向 `SplitPane`、键盘导航（`↑/↓`/`j/k`、`Esc`）、多标签详情检查器（`Params`、`Req/Resp Headers`、`Req/Resp Body` 支持 JSON / XML / Protobuf / Hex 及内联搜索、`Raw`、`Timing`、`Export` 一键生成 cURL/Python/Go/Java/JS/Agent JSONL）、改参重放、并排 Flow Diff、签名分析、**一键发布到服务网关**、HAR/Charles 导入、原生回环 **MJPEG 设备投屏**（`Fast` / `scrcpy`，实时 FPS 与拖拽滑动），以及右侧内置 **插件调试（`PluginWorkbench`）** 模式实现单页无缝联调。
+    3. **Rules 拦截规则（`⌘3`）**：分屏规则管理 + 实时**挂起断点队列**（支持编辑后放行 / Mock 返回 / 丢弃 403），涵盖 6 类动作、优先级排序及正则/路径校验。
+    4. **Plugins 分析插件（`⌘4`）**：可脚本化分析插件工作台与单页联调器（本地 `~/.cap/plugins/*.json` 自动热重载），支持 `python3` / `node` / `sh` / `builtin` 运行时、实时解析 `query_params` 与流变量检查器（点击即插代码片段）、实时 `stdin JSON` 预览、`命中当前请求` 实时匹配指示（支持查询字符串与通配符 `*`）、`⌘Enter` 免保存即刻运行草稿、实时流量自动触发及实时执行日志面板。
+  - **逆向分析**：
+    5. **DeepTrace 深度追踪（`⌘5`）**：8 阶段实时可取消追踪流水线，支持纯 Go DEX 字节码交叉引用（XRefs）、3 视角交互式 SVG 调用图与 APK/JADX 缓存复用，并支持从综合报告、模块卡片与 Native `.so` 符号**一键跳转 Frida Hook、仿真与追踪或加固保护审计**。
+    6. **Static RE 静态分析（`⌘6`）**：单层顶部栏聚焦 **Native / r2 · iOS**（radare2 + 纯 Go ELF 兜底、iOS Mach-O/IPA FairPlay `cryptid` 与 ObjC 审计、Unidbg iOS 模板、iOS Stealth 及 **IDA Pro / Ghidra / JSON 符号桥接**）与 **JADX · Java↔JNI**（缓存 APK/DEX 反编译工作区、全文检索与静态/动态 `RegisterNatives` 交叉关联）。
+    7. **Frida 动态（`⌘7`）**：全流程 Frida 逆向工作台，覆盖 `frida-server` 全生命周期（自动识别设备 ABI、GitHub Release 一键下载或本地 `.xz` 推送、防检测重命名、自定义端口与 `adb forward`、宿主与设备版本一致性校验）、零额外 CGO 的内置 Python Frida Bridge（自动降级 `frida-cli`）、可搜索进程/应用选择器、`Spawn (-f)` / `Attach` 注入、**无需重启 App 的在线脚本热重载（`⌘R`）**、结构化 `send()` JSON 事件卡片与 JSONL 导出、7 套内置实战模板 + `~/.cap/frida-scripts/` 磁盘热重载、CodeShare 与应用指纹检索，以及 **DeepTrace 一键合成 Hook**。
+    8. **Emulate & Trace 仿真与追踪（`⌘8`）**：聚焦算法仿真与动态执行追踪，整合 **Unidbg · Qiling · angr**（内置 **Unidbg 自动补环境助手**、**Frida 环境快照**、实时日志流、`~/.cap/re-projects/*.json` 持久化、JDK 优先匹配 / Maven Classpath 缓存与 Qiling/angr 独立 Python 虚拟环境）与 **ExecTrace · 污点**（多格式轨迹解析、寄存器与内存双向污点切片、加密常量识别、ASLR 归一化差分与 Tenet 导出）。
+    9. **Deobf & TLS 对抗与脱壳（侧边栏 / `⌘K`）**：单层顶部栏直达 **保护审计**（13 种商业加固、OLLVM、VMP、ARM64 内联 `SVC #0`）、**对抗脚本**（反调试/脱壳/反混淆生成器）、**VMP 追踪分析** 与 **TLS · 证书 · 代理对抗**（APK 证书与 Pin 扫描、mTLS 校验、6 套 JA3 指纹、Flutter/Cronet/mTLS 兼容诊断脚本）。
+    10. **Crypto & DFA 算法实验室（侧边栏 / `⌘K`）**：单层顶部栏直达 **编解码与加密管线**（CyberChef 风格 Base64/SM4/AES/ChaCha20/RC4/XOR 组合管线 + 自动识别）、**Protobuf Wire 解析**（无 Schema AST 解码与无损重编码）与 **白盒 AES-128 DFA 还原**（第 9 轮主密钥求解器 + Unidbg/Qiling 故障注入脚本生成）。
+  - **服务集成**：
+    11. **Gateway 服务网关（`⌘9`）**：生产级 Open API HTTP 服务化网关（默认 `:9090`），将逆向完成的移动端接口一键封装为高可用 REST 服务 —— 支持抓包流量一键发布、实时路由测试器、API Key 鉴权、路由级限流、**路由级 TTL 缓存**、**熔断器（Circuit Breaker）**、**6 套 TLS/HTTP2 指纹 + JA3 + mTLS 校验**、OpenAPI 3.0.3 导出、**代理 IP 池**、**设备指纹池**（虚拟预设 + ADB 同步）、**多账号 / 会话池**（单飞 401/403 自动续期）、**托管签名 Worker 进程池**（`1..8` 实例健康探活与自动重启）、**可插拔签名器**、**Prometheus `/metrics/prometheus`** 指标面板、**Docker / Compose** 无头部署导出及实时调用日志。
+  - **系统工具**：
+    12. **Terminal 终端（`⌘0`）**：多 Tab 暗色 PTY 终端（`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`），内置 `adb`、`frida`、`curl` 常用诊断快捷指令。
+    13. **Settings 偏好设置（`⌘,`）**：分栏配置外观与显示语言（`English` / `简体中文`）、代理与证书、Android / Frida 运行环境、逆向工具链路径（`r2`、`java`、`mvn`、`unidbg`、`python3`、独立的 `qiling` / `angr` Python 虚拟环境与 `qiling rootfs`）与默认网关地址、导出与存储、快捷键速查及关于/诊断信息。
+
+| 快捷键 | 工作区 | 分组 |
+|--------|--------|------|
+| `⌘1` / `⌘2` / `⌘3` / `⌘4` | 抓包控制 · 请求流 · 拦截规则 · 分析插件 | 流量抓包 |
+| `⌘5` / `⌘6` / `⌘7` / `⌘8` | 深度追踪 · 静态分析 · Frida 动态 · 仿真与追踪 | 逆向分析 |
+| 侧边栏 / `⌘K` | 对抗与脱壳 · 算法实验室 | 逆向分析 |
+| `⌘9` | 服务网关 | 服务集成 |
+| `⌘0` / `⌘,` | 终端 · 偏好设置 | 系统工具 |
+| `⌘K` / `⌘B` | 全局命令面板 · 折叠/展开侧边栏 | 外壳导航 |
 
 ### 全屏交互式 TUI 与命令行体验（`cap tui` / `cap start --tui`）
 
@@ -309,7 +325,7 @@ cap tui --lang zh                    # 直接以简体中文界面启动
   - **非 Root 设备**：守护 App 内置 `MainActivity` 一键调起系统 `KeyChain` 安装 `/sdcard/Download/cap-ca.crt`，配合 GUI 状态向导快速校验。
 - **桌面端自动收尾**：`cap start --auto-disconnect`、`cap tui --live --auto-disconnect` 以及桌面 GUI 的 `StopProxy()` / `App.Shutdown()` 都会在停止代理前自动断开并恢复已追踪的 Android 设备。
 
-### Frida 动态逆向工作室（`cap frida` 与桌面端 `⌘5`）
+### Frida 动态逆向工作室（`cap frida` 与桌面端 `⌘7`）
 
 零额外 CGO 依赖的端到端 Android Frida 动态插桩工作流，打通服务端部署、实时热重载与 DeepTrace 动态验证闭环：
 
@@ -327,7 +343,7 @@ cap frida run --pkg com.example.app --spawn \
 - **内置实战脚本库与 CodeShare**：预置 7 套常用模板（14+ 通用 SSL Unpin、防 Root/防 Frida 隐身绕过、OkHttp3/URLConnection 追踪、MD5/SHA/HMAC/AES 签名加解密追踪、JNI `RegisterNatives` & `dlopen` 追踪、SharedPreferences/SQLite 监控、动态类浏览器），支持 `~/.cap/frida-scripts/*.json` 磁盘热重载、CodeShare 社区检索与应用特征指纹推荐。
 - **DeepTrace → Frida 闭环联动**：在 DeepTrace 报告页、模块卡片或 Native `.so` 列表点击「一键 Frida Hook」，自动合成含安全 Overload 包装与 `dlopen` 延迟注入的 JS 脚本并直达 Frida Studio 运行验证。
 
-### RE Lab — 原生二进制逆向、宿主工具链与算法仿真（`cap re` 与桌面端 `⌘6`）
+### 静态分析与算法仿真（`cap re` 与桌面端 `⌘6` / `⌘8`）
 
 无需切换多个外部工具，在 `cap` 内一站式完成 `.so`/ELF/Mach-O 静态分析与跨平台算法仿真：
 
@@ -345,7 +361,7 @@ cap re gen -e unidbg --apk app.apk --so libsign.so \
 - **Unidbg · Qiling · angr 算法仿真与符号执行**：内置实战起步模板、参数化生成器与 `cap re run` 命令行/桌面端可取消实时任务流，支持 `~/.cap/re-projects/*.json` 持久化。
 - **DeepTrace → RE Lab 联动闭环**：在 DeepTrace 报告页或 Native `.so` 卡片点击「在逆向实验室仿真」，自动携带 APK、`.so`、JNI 符号与样本入参合成可运行脚本。
 
-### RE Pro 套件 — 自动补环境、JADX↔JNI、符号桥接与 iOS（`cap repro` 与桌面端 `⌘6`）
+### RE Pro 套件 — 自动补环境、JADX↔JNI、符号桥接与 iOS（`cap repro` 与桌面端 `⌘6` / `⌘8`）
 
 面向 Android 与 iOS 原生逆向的商业级效率扩展套件：
 
@@ -364,7 +380,7 @@ cap repro ios-stealth --bundle-id com.acme.ios -o ios_stealth.js
 - **IDA Pro / Ghidra / JSON 符号桥接**：支持导入校验 `SymbolBundle` JSON 注释/符号包，并导出确定性的 IDAPython 或 Ghidra Python 脚本。
 - **iOS Mach-O / IPA 静态分析与脚本生成**：纯 Go 解析单架构/通用 Fat Mach-O 与 `.ipa` 归档，审计 `Info.plist`/ATS 配置、FairPlay `cryptid` 加密状态、PIE/NX/ARC/Canary 缓解措施、动态库/Framework 依赖及 ObjC 类与选择器，并支持生成 Unidbg `DarwinEmulatorBuilder` iOS 仿真模板与 Frida iOS 隐身诊断脚本。
 
-### CryptoLab 密码学工坊与白盒 AES-128 DFA（`cap crypto` 与桌面端 `⌘6`）
+### CryptoLab 密码学工坊与白盒 AES-128 DFA（`cap crypto` 与桌面端 算法实验室）
 
 内置 CyberChef 风格可编排编解码/加解密流水线、无 Schema Protobuf 编辑器与白盒 AES-128 第 9 轮差分故障分析（DFA）求解器：
 
@@ -381,7 +397,7 @@ cap crypto dfa-script -e unidbg --binary ./libwb.so --hook-addr 0x12a40 -o White
 - **无 Schema Protobuf 二进制检查器**：无需 `.proto` 定义即可将 Hex/Base64 Protobuf 线缆数据解码为可编辑嵌套 AST，并支持无损重编码回 Hex/Base64。
 - **白盒 AES-128 第 9 轮 DFA 求解器**：从第 9 轮单字节故障密文中还原第 10 轮子密钥并逆推 AES-128 主密钥（可选明文校验），同时支持生成 Unidbg（Java）与 Qiling（Python）故障注入脚本。
 
-### 现代 TLS / mTLS 与本地代理兼容诊断（`cap tls` 与桌面端 `⌘6` / `⌘8`）
+### 现代 TLS / mTLS 与本地代理兼容诊断（`cap tls` 与桌面端 对抗与脱壳 / `⌘9`）
 
 纯 Go TLS 指纹档案库、APK 证书与 Pin 审计、mTLS 密钥对校验及本地代理诊断脚本生成：
 
@@ -400,7 +416,7 @@ cap tls curl-impersonate --json                            # 探测宿主机 PAT
 - **APK 证书 / Pin 扫描器与 mTLS 校验**：支持解析纯文本及二进制 AXML 格式 `network_security_config.xml`，扫描 APK 内嵌 PEM/DER 证书、BKS/JKS/PKCS12 密钥库与公钥 Pin，并校验 PEM 客户端证书与私钥对（匹配性、证书链长度、ClientAuth EKU、有效期）。
 - **本地代理兼容诊断模板**：一键生成 Flutter 本地代理调试、Cronet QUIC 回退 HTTP/2 及严格只读的 mTLS KeyStore/SSLContext 观察 Frida 脚本。
 
-### 反混淆、反调试与 VMP 逆向套件（`cap deobf` 与桌面端 `⌘6`）
+### 反混淆、反调试与 VMP 逆向套件（`cap deobf` 与桌面端 对抗与脱壳）
 
 自动化识别移动端加固与反调试保护，并按扫描结果合成可组合绕过与反混淆脚本：
 
@@ -417,7 +433,7 @@ cap deobf vmp-trace ./vmp.log --base 0x7000000000          # 分析 VMP 执行�
 - **可组合隐身与脱壳生成器**：支持按扫描报告自动定制 Frida 反调试/反 Frida 隐身脚本（`TracerPid` / `/proc/self/maps`、`ptrace` / 信号屏蔽、内联 ARM64 `SVC` 补丁及 dry-run 模式、时序 / `inotify`、Java 调试检测）、内存 DEX 脱壳、OLLVM CFF 还原（`angr`）、字符串解密（Qiling / Unidbg）与 Java 反混淆脚本，并支持一键推送至 Frida Studio 或逆向实验室执行。
 - **VMP 动态追踪与分析**：一键生成 Frida Stalker、`RegisterNatives` 与 Unidbg VMP 采集脚本，并对原始轨迹日志执行分发器（Dispatcher）、Handler 分布、热点基本块与外部 API 调用聚合分析。
 
-### 动态执行追踪与污点分析引擎（`cap exectrace` 与桌面端 `⌘6`）
+### 动态执行追踪与污点分析引擎（`cap exectrace` 与桌面端 `⌘8`）
 
 面向 Native 与 JNI 算法还原的多格式执行轨迹解析、污点切片与差分分析引擎：
 
@@ -433,7 +449,7 @@ cap exectrace export <sessionID> -f tenet -o trace.tenet.txt
 - **前向 / 后向寄存器与内存污点切片**：支持 ARM64 移位/扩展寻址、x86 比例变址、常量覆写清除及按线程隔离的热循环分析，可从最终签名值反向溯源至输入明文与密钥，或从输入前向追踪扩散路径。
 - **加密算法识别、ASLR 差分对比与导出**：内置 AES S-Box、MD5/SHA/CRC32/ChaCha/SM4/RC4 等加密常量、热循环与调用树识别；支持 ASLR 基址归一化的双轨迹差分对比（Diff）；内置 Stalker / Java / Unidbg / Qiling 采集器生成，并支持导出为 **Tenet**、**JSONL** 与 **Markdown**。
 
-### 服务化网关与集成中心（`cap gateway` 与桌面端 `⌘8`）
+### 服务化网关与集成中心（`cap gateway` 与桌面端 `⌘9`）
 
 将逆向还原后的移动端接口一键封装为生产级、可观测、带容错与鉴权的标准化 HTTP Open API 服务：
 

@@ -1,10 +1,29 @@
 import { writable } from 'svelte/store'
 import { navigate } from './navigation.js'
 
+export function pageForSubTab(subTab) {
+  switch (subTab) {
+    case 'native':
+    case 'jadx':
+      return 're-static'
+    case 'emulate':
+    case 'exectrace':
+      return 're-emulate'
+    case 'deobf':
+      return 're-defense'
+    case 'cryptolab':
+      return 're-crypto'
+    default:
+      return 're-static'
+  }
+}
+
 // Persistent UI state for RE Lab across route switches
 export const reLabState = {
-  // Active top-level sub-tab: 'native' | 'emulate' | 'jadx' | 'deobf' | 'exectrace' | 'cryptolab'
+  // Active internal sub-tab: 'native' | 'emulate' | 'jadx' | 'deobf' | 'exectrace' | 'cryptolab'
   subTab: 'native',
+  lastStaticTab: 'native', // 'native' | 'jadx'
+  lastEmulateTab: 'emulate', // 'emulate' | 'exectrace'
 
   // Sub-tab 1: Native Binary & Radare2 + iOS Mach-O/IPA + Symbol Bridge
   binaryPath: '',
@@ -215,11 +234,13 @@ export const reLabState = {
 export const reLabHandoff = writable(null)
 
 /**
- * Jump directly to the RE Lab workspace with optional sub-tab selection,
+ * Jump directly to the matching RE workspace with optional sub-tab / view selection,
  * binary/APK paths, target emulation engine, generated harness, or scan target.
  */
 export function openRELab({
   subTab = '',
+  deobfView = '',
+  cryptoMode = '',
   binaryPath = '',
   apkPath = '',
   engine = '',
@@ -227,14 +248,29 @@ export function openRELab({
   scanPath = '',
 } = {}) {
   const validTabs = ['native', 'emulate', 'jadx', 'deobf', 'exectrace', 'cryptolab']
+  const validDeobfViews = ['audit', 'scripts', 'vmp_trace', 'tls']
+  const validCryptoModes = ['pipeline', 'protobuf', 'dfa']
+
+  let targetSubTab = reLabState.subTab || 'native'
   if (validTabs.includes(subTab)) {
-    reLabState.subTab = subTab
+    targetSubTab = subTab
+  } else if (validDeobfViews.includes(deobfView)) {
+    targetSubTab = 'deobf'
+  } else if (validCryptoModes.includes(cryptoMode)) {
+    targetSubTab = 'cryptolab'
   } else if (generatedHarness) {
-    reLabState.subTab = 'emulate'
+    targetSubTab = 'emulate'
   } else if (scanPath) {
-    reLabState.subTab = 'deobf'
+    targetSubTab = 'deobf'
   } else if (binaryPath) {
-    reLabState.subTab = 'native'
+    targetSubTab = 'native'
+  }
+
+  reLabState.subTab = targetSubTab
+  if (targetSubTab === 'native' || targetSubTab === 'jadx') {
+    reLabState.lastStaticTab = targetSubTab
+  } else if (targetSubTab === 'emulate' || targetSubTab === 'exectrace') {
+    reLabState.lastEmulateTab = targetSubTab
   }
 
   if (binaryPath) {
@@ -254,7 +290,15 @@ export function openRELab({
   }
   if (scanPath) {
     reLabState.scanPath = scanPath
-    reLabState.deobfView = 'audit'
+    if (!validDeobfViews.includes(deobfView)) {
+      reLabState.deobfView = 'audit'
+    }
+  }
+  if (validDeobfViews.includes(deobfView)) {
+    reLabState.deobfView = deobfView
+  }
+  if (validCryptoModes.includes(cryptoMode)) {
+    reLabState.cryptoMode = cryptoMode
   }
   if (generatedHarness) {
     const p = generatedHarness.project || {}
@@ -279,12 +323,14 @@ export function openRELab({
 
   reLabHandoff.set({
     ts: Date.now(),
-    subTab: reLabState.subTab,
+    subTab: targetSubTab,
+    deobfView: validDeobfViews.includes(deobfView) ? deobfView : (scanPath ? 'audit' : ''),
+    cryptoMode: validCryptoModes.includes(cryptoMode) ? cryptoMode : '',
     binaryPath,
     apkPath,
     engine,
     generatedHarness,
     scanPath,
   })
-  navigate('relab')
+  navigate(pageForSubTab(targetSubTab))
 }

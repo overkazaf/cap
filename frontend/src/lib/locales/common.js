@@ -8,7 +8,7 @@ registerMessages('common', {
     nav: {
       groups: {
         traffic: 'Traffic',
-        inspect: 'Analysis',
+        inspect: 'Reverse Engineering',
         service: 'Services',
         tools: 'System',
       },
@@ -28,25 +28,40 @@ registerMessages('common', {
           title: 'Intercept Rules',
           subtitle: 'Breakpoints, mocks, request & response rewrites',
         },
+        plugins: {
+          label: 'Plugins',
+          title: 'Analyzer Plugins',
+          subtitle: 'Custom scriptable analyzers & flow hooks',
+        },
         trace: {
           label: 'DeepTrace',
           title: 'Deep Trace',
-          subtitle: 'Call-graph correlation & static/native reverse analysis',
+          subtitle: 'Flow → Code call-graph correlation & static/native provenance',
+        },
+        're-static': {
+          label: 'Static RE',
+          title: 'Static Reverse Engineering',
+          subtitle: 'Native/r2 · iOS Mach-O/IPA · JADX Java↔JNI · IDA/Ghidra Symbols',
         },
         frida: {
           label: 'Frida',
           title: 'Frida Studio',
           subtitle: 'Dynamic hooking, server lifecycle, CodeShare & live trace bridge',
         },
-        relab: {
-          label: 'RE Lab',
-          title: 'Reverse Engineering Lab',
-          subtitle: 'radare2, Unidbg/Qiling/angr emulation, Deobf/VMP & ExecTrace taint',
+        're-emulate': {
+          label: 'Emulate & Trace',
+          title: 'Emulation & Execution Trace',
+          subtitle: 'Unidbg/Qiling/angr + Auto-Stub · ExecTrace & Taint',
         },
-        plugins: {
-          label: 'Plugins',
-          title: 'Analyzer Plugins',
-          subtitle: 'Custom scriptable analyzers & flow hooks',
+        're-defense': {
+          label: 'Deobf & TLS',
+          title: 'Deobfuscation, VMP & TLS',
+          subtitle: 'Packer/OLLVM/VMP audit, Stealth/Unpack scripts, VMP trace, APK Certs & Flutter/Cronet/mTLS',
+        },
+        're-crypto': {
+          label: 'Crypto & DFA',
+          title: 'CryptoLab & White-Box DFA',
+          subtitle: 'CyberChef codec/cipher pipeline, SM4, Protobuf Wire, White-Box AES-128 DFA',
         },
         gateway: {
           label: 'Gateway',
@@ -109,8 +124,8 @@ registerMessages('common', {
       gatewayLive: 'GW · {addr}',
       gatewayStatusTooltip: 'Service Gateway status',
       reJobRunning: 'RE · {engine}',
-      reJobTooltip: 'Active RE Lab job',
-      hintSwitch: '{mod}1–9 Switch',
+      reJobTooltip: 'Active emulation job — click to open Emulate & Trace',
+      hintSwitch: '{mod}1–0 Switch',
       hintPalette: '{mod}K Palette',
       switchThemeTooltip: 'Switch theme',
       switchLangTooltip: 'Switch language',
@@ -245,25 +260,40 @@ registerMessages('common', {
           title: '拦截与改写规则',
           subtitle: '断点拦截、Mock 响应、请求与响应实时修改',
         },
-        trace: {
-          label: '深度追踪',
-          title: '深度调用追踪',
-          subtitle: '调用链关联分析与静态/Native 逆向溯源',
-        },
-        frida: {
-          label: 'Frida',
-          title: 'Frida 动态工作室',
-          subtitle: '动态 Hook 注入、服务端全生命周期、CodeShare 与追踪联动',
-        },
-        relab: {
-          label: '逆向实验室',
-          title: '原生逆向与算法实验室',
-          subtitle: 'radare2 静态分析、Unidbg/Qiling/angr 仿真、反混淆/VMP 与执行追踪污点分析',
-        },
         plugins: {
           label: '分析插件',
           title: '插件工作室',
           subtitle: '可编程流量分析脚本与自定义 Hook',
+        },
+        trace: {
+          label: '深度追踪',
+          title: '深度调用追踪',
+          subtitle: '请求流 → 代码调用链关联与静态/Native 逆向溯源',
+        },
+        're-static': {
+          label: '静态分析',
+          title: '静态逆向分析',
+          subtitle: 'Native/r2 · iOS Mach-O/IPA · JADX Java↔JNI · IDA/Ghidra 符号桥接',
+        },
+        frida: {
+          label: 'Frida 动态',
+          title: 'Frida 动态工作室',
+          subtitle: '动态 Hook 注入、服务端全生命周期、CodeShare 与追踪联动',
+        },
+        're-emulate': {
+          label: '仿真与追踪',
+          title: '算法仿真与执行追踪',
+          subtitle: 'Unidbg/Qiling/angr 自动补环境 · ExecTrace 指令追踪与污点分析',
+        },
+        're-defense': {
+          label: '对抗与脱壳',
+          title: '加固对抗、VMP 与 TLS 诊断',
+          subtitle: '加固/OLLVM/VMP 审计、反调试/脱壳脚本、VMP 追踪、APK 证书与 Flutter/Cronet/mTLS',
+        },
+        're-crypto': {
+          label: '算法实验室',
+          title: '密码学工坊与白盒 DFA',
+          subtitle: 'CyberChef 编解码与加密流水线、SM4、Protobuf Wire 解析与白盒 AES-128 DFA',
         },
         gateway: {
           label: '服务网关',
@@ -326,8 +356,8 @@ registerMessages('common', {
       gatewayLive: '网关 · {addr}',
       gatewayStatusTooltip: '服务网关运行状态',
       reJobRunning: '逆向 · {engine}',
-      reJobTooltip: '正在运行的逆向仿真任务',
-      hintSwitch: '{mod}1–9 切换页面',
+      reJobTooltip: '正在运行的逆向仿真任务 — 点击进入仿真与追踪',
+      hintSwitch: '{mod}1–0 切换页面',
       hintPalette: '{mod}K 命令面板',
       switchThemeTooltip: '切换主题',
       switchLangTooltip: '切换界面语言',

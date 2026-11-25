@@ -141,6 +141,7 @@ registerMessages('reLab', {
         addCommentAddr: 'Comment Address',
         addCommentText: 'Annotation / Comment Text',
         addCommentBtn: 'Add Comment',
+        clearCommentsBtn: 'Clear Custom',
         importPlaceholder: 'Paste a cap SymbolBundle JSON document here…',
         importBtn: 'Import & Validate JSON',
         applyBtn: 'Apply Annotations',
@@ -230,6 +231,7 @@ registerMessages('reLab', {
         },
         smartMatch: 'Smart Match',
         noIssues: 'No missing Unidbg environment items detected in this log.',
+        noSnippetForTab: 'No stub code generated for this category.',
       },
     },
     jadx: {
@@ -441,6 +443,7 @@ registerMessages('reLab', {
         keystoresCount: '{count} Keystores',
         pinningDetected: 'Pinning Detected',
         mtlsDetected: 'mTLS Store Flagged',
+        truncated: 'Scan Truncated (Safety Cap)',
         certExpired: 'EXPIRED',
         certNotYetValid: 'NOT YET VALID',
         certValid: 'VALID',
@@ -673,6 +676,7 @@ registerMessages('reLab', {
         traceTitle: 'Step-by-Step Execution Trace ({count})',
         stepDisabled: 'Disabled',
         stepFailed: 'Failed at step #{idx}',
+        inputDecodeFailed: 'Input decode failed',
       },
       protobuf: {
         title: 'Schema-less Protobuf Wire Inspector & Editor',
@@ -946,6 +950,7 @@ registerMessages('reLab', {
         addCommentAddr: '注释地址',
         addCommentText: '注释 / 标记内容',
         addCommentBtn: '添加注释',
+        clearCommentsBtn: '清空自定义',
         importPlaceholder: '在此粘贴 cap SymbolBundle JSON 文档…',
         importBtn: '导入并校验 JSON',
         applyBtn: '应用注解到视图',
@@ -1035,6 +1040,7 @@ registerMessages('reLab', {
         },
         smartMatch: '智能模板',
         noIssues: '当前日志未检测到缺失的 Unidbg 环境项。',
+        noSnippetForTab: '当前分类暂无可生成的补丁代码。',
       },
     },
     jadx: {
@@ -1246,6 +1252,7 @@ registerMessages('reLab', {
         keystoresCount: '{count} 个密钥库',
         pinningDetected: '检出证书绑定',
         mtlsDetected: '检出 mTLS 密钥库',
+        truncated: '扫描已截断（安全上限）',
         certExpired: '已过期',
         certNotYetValid: '尚未生效',
         certValid: '有效',
@@ -1478,6 +1485,7 @@ registerMessages('reLab', {
         traceTitle: '分步执行追踪 ({count})',
         stepDisabled: '已禁用',
         stepFailed: '在第 #{idx} 步失败',
+        inputDecodeFailed: '输入解码失败',
       },
       protobuf: {
         title: '无 Schema Protobuf 线缆协议检查与重编码器',

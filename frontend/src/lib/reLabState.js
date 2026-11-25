@@ -30,6 +30,7 @@ export const reLabState = {
   symExportOutput: '',
   symImportRaw: '',
   importedSymbolBundle: null,
+  symCustomComments: [],
   appliedSymbolComments: {},
 
   // Sub-tab 2: Emulation & Symbolic (Unidbg / Qiling / angr) + Auto-Stub Assistant

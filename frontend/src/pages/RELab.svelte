@@ -74,7 +74,7 @@
   let exportingSymbols = false
   let symNewCmtAddr = ''
   let symNewCmtText = ''
-  let symCustomComments = []
+  let symCustomComments = Array.isArray(S.symCustomComments) ? S.symCustomComments : []
   let symImportRaw = S.symImportRaw || ''
   let importingSymbols = false
   let importedSymbolBundle = S.importedSymbolBundle || null
@@ -363,6 +363,7 @@
     S.symExportOutput = symExportOutput
     S.symImportRaw = symImportRaw
     S.importedSymbolBundle = importedSymbolBundle
+    S.symCustomComments = symCustomComments
     S.appliedSymbolComments = appliedSymbolComments
 
     S.projectEngineFilter = projectEngineFilter
@@ -678,6 +679,13 @@
   })()
 
   $: appliedSymbolCount = Object.keys(appliedSymbolComments || {}).length
+
+  $: hasAnyAutoStubSnippet = Boolean(
+    autoStubDiagnosis?.combined_java_snippet ||
+    autoStubDiagnosis?.abstract_jni_snippet ||
+    autoStubDiagnosis?.io_resolver_snippet ||
+    autoStubDiagnosis?.sys_prop_hook_snippet
+  )
 
   $: activeAutoStubSnippet = (() => {
     if (!autoStubDiagnosis) return ''
@@ -1153,13 +1161,21 @@
     analyzingIOS = true
     try {
       const res = await app.AnalyzeIOSBinary(path)
+      const isNewBinary = !iosReport || iosReport.file_path !== (res?.file_path || path)
       iosReport = res
       nativeMode = 'ios'
-      if (res?.objc_classes?.length && !iosTargetObjCClass) {
-        iosTargetObjCClass = res.objc_classes[0]
-      }
-      if (res?.objc_selectors?.length && !iosTargetObjCSelector) {
-        iosTargetObjCSelector = res.objc_selectors[0]
+      if (isNewBinary) {
+        iosTargetObjCClass = res?.objc_classes?.[0] || ''
+        iosTargetObjCSelector = res?.objc_selectors?.[0] || ''
+        iosTargetSymbol = ''
+        iosTargetOffset = ''
+      } else {
+        if (res?.objc_classes?.length && !iosTargetObjCClass) {
+          iosTargetObjCClass = res.objc_classes[0]
+        }
+        if (res?.objc_selectors?.length && !iosTargetObjCSelector) {
+          iosTargetObjCSelector = res.objc_selectors[0]
+        }
       }
       toast.success(
         translate('reLab.toast.iosAnalyzeDone', {
@@ -1313,12 +1329,39 @@
   }
 
   function addCustomSymbolComment() {
-    const addr = symNewCmtAddr.trim() || functionDetail?.addr || ''
+    const rawAddr = (symNewCmtAddr.trim() || functionDetail?.addr || '').trim()
     const text = symNewCmtText.trim()
-    if (!addr || !text) return
-    symCustomComments = [...symCustomComments, { address: addr, text, repeatable: false }]
-    appliedSymbolComments = { ...appliedSymbolComments, [addr.toLowerCase()]: text }
+    if (!rawAddr || !text) return
+    const parsed = parseAddrNumber(rawAddr)
+    if (!parsed.ok) {
+      toast.warning(translate('reLab.toast.invalidHexAddr', { val: rawAddr }))
+      return
+    }
+    const normAddr = `0x${parsed.value.toString(16)}`
+    symCustomComments = [...symCustomComments, { address: normAddr, text, repeatable: false }]
+    appliedSymbolComments = { ...appliedSymbolComments, [normAddr.toLowerCase()]: text }
+    symNewCmtAddr = normAddr
     symNewCmtText = ''
+  }
+
+  function clearCustomSymbolComments() {
+    if (!symCustomComments.length) return
+    const customAddrs = new Set(symCustomComments.map((c) => String(c.address || '').toLowerCase()))
+    const nextApplied = { ...appliedSymbolComments }
+    for (const addr of customAddrs) {
+      delete nextApplied[addr]
+    }
+    // Re-apply any imported annotations that may have shared an address
+    for (const c of importedSymbolBundle?.comments || []) {
+      if (c.address && c.text) nextApplied[c.address.toLowerCase()] = c.text
+    }
+    for (const fn of importedSymbolBundle?.functions || []) {
+      if (fn.address && (fn.comment || fn.name) && !(fn.address.toLowerCase() in nextApplied)) {
+        nextApplied[fn.address.toLowerCase()] = fn.comment ? `${fn.name}: ${fn.comment}` : fn.name
+      }
+    }
+    symCustomComments = []
+    appliedSymbolComments = nextApplied
   }
 
   async function exportSymbolBridge() {
@@ -1796,6 +1839,15 @@
     try {
       const diag = await app.AnalyzeUnidbgLog(autoStubRawLog)
       autoStubDiagnosis = diag
+      const tabMap = {
+        combined: diag?.combined_java_snippet,
+        jni: diag?.abstract_jni_snippet,
+        io: diag?.io_resolver_snippet,
+        sysprop: diag?.sys_prop_hook_snippet,
+      }
+      if (!tabMap[autoStubSnippetTab]) {
+        autoStubSnippetTab = 'combined'
+      }
       toast.success(translate('reLab.toast.autoStubDone', { count: diag?.total_errors || 0 }))
     } catch (e) {
       toast.error(e?.message || String(e))
@@ -2253,12 +2305,21 @@
     }
   }
 
+  let tlsJa3ReqSeq = 0
+
   async function selectTlsProfile(profileId) {
     tlsSelectedProfileId = profileId
+    const reqId = ++tlsJa3ReqSeq
+    if (tlsProfileJA3?.profile_id !== profileId) {
+      tlsProfileJA3 = null
+    }
     const app = api()
     if (!app?.ComputeTLSProfileJA3 || !profileId) return
     try {
-      tlsProfileJA3 = await app.ComputeTLSProfileJA3(profileId)
+      const res = await app.ComputeTLSProfileJA3(profileId)
+      if (reqId === tlsJa3ReqSeq && tlsSelectedProfileId === profileId) {
+        tlsProfileJA3 = res
+      }
     } catch (_) {}
   }
 
@@ -2784,10 +2845,13 @@
     }
     const cleanNum = (v, isFloat = false) => {
       if (v === null || v === undefined || v === '') return undefined
-      const n = isFloat ? Number.parseFloat(String(v)) : Number.parseInt(String(v), 10)
+      const s = String(v).trim()
+      if (!s || s === '-' || s === '+' || s === '.' || s === '-.' || s === '+.') return undefined
+      const n = isFloat ? Number.parseFloat(s) : Number.parseInt(s, 10)
       return Number.isFinite(n) ? n : undefined
     }
     const fields = msg.fields.map((f) => {
+      const hasDraft = f._draft !== undefined
       const out = {
         field_number: Math.max(1, Number.parseInt(String(f.field_number || 1), 10) || 1),
         wire_type: Number(f.wire_type ?? 0),
@@ -2795,24 +2859,24 @@
         kind: f.kind || 'varint',
       }
       if (out.wire_type === 0) {
-        if (out.kind === 'sint64') out.varint_s64 = cleanNum(f.varint_s64) ?? 0
-        else if (out.kind === 'int64') out.varint_i64 = cleanNum(f.varint_i64) ?? 0
-        else out.varint_u64 = Math.max(0, cleanNum(f.varint_u64) ?? 0)
+        if (out.kind === 'sint64') out.varint_s64 = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.varint_s64) ?? 0
+        else if (out.kind === 'int64') out.varint_i64 = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.varint_i64) ?? 0
+        else out.varint_u64 = Math.max(0, (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.varint_u64) ?? 0)
       } else if (out.wire_type === 1) {
-        if (out.kind === 'double') out.double_val = cleanNum(f.double_val, true) ?? 0
-        else if (out.kind === 'sfixed64') out.fixed64_s = cleanNum(f.fixed64_s) ?? 0
-        else out.fixed64_u = Math.max(0, cleanNum(f.fixed64_u) ?? 0)
+        if (out.kind === 'double') out.double_val = (hasDraft ? cleanNum(f._draft, true) : undefined) ?? cleanNum(f.double_val, true) ?? 0
+        else if (out.kind === 'sfixed64') out.fixed64_s = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed64_s) ?? 0
+        else out.fixed64_u = Math.max(0, (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed64_u) ?? 0)
       } else if (out.wire_type === 5) {
-        if (out.kind === 'float') out.float_val = cleanNum(f.float_val, true) ?? 0
-        else if (out.kind === 'sfixed32') out.fixed32_s = cleanNum(f.fixed32_s) ?? 0
-        else out.fixed32_u = Math.max(0, cleanNum(f.fixed32_u) ?? 0)
+        if (out.kind === 'float') out.float_val = (hasDraft ? cleanNum(f._draft, true) : undefined) ?? cleanNum(f.float_val, true) ?? 0
+        else if (out.kind === 'sfixed32') out.fixed32_s = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed32_s) ?? 0
+        else out.fixed32_u = Math.max(0, (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed32_u) ?? 0)
       } else if (out.wire_type === 2) {
         if (out.kind === 'message') {
           out.nested = sanitizeProtoMessageForEncode(f.nested || { fields: [] })
         } else if (out.kind === 'bytes') {
-          out.bytes_hex = String(f.bytes_hex || '')
+          out.bytes_hex = String(hasDraft ? f._draft : (f.bytes_hex || ''))
         } else {
-          out.string_val = String(f.string_val ?? '')
+          out.string_val = String(hasDraft ? f._draft : (f.string_val ?? ''))
         }
       }
       return out
@@ -2838,6 +2902,7 @@
 
   function protoFieldDisplayValue(field) {
     if (!field) return ''
+    if (field._draft !== undefined) return String(field._draft)
     if (field.wire_type === 0) {
       if (field.kind === 'sint64') return String(field.varint_s64 ?? 0)
       if (field.kind === 'int64') return String(field.varint_i64 ?? 0)
@@ -2859,43 +2924,56 @@
 
   function updateProtoFieldValue(field, rawVal) {
     if (!field) return
+    const str = String(rawVal ?? '')
+    field._draft = str
+    const trimmed = str.trim()
+    const isInt = /^[+-]?\d+$/.test(trimmed)
+    const isFloat = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)
     if (field.wire_type === 0) {
-      const n = Number.parseInt(rawVal, 10)
-      const safe = Number.isFinite(n) ? n : 0
-      if (field.kind === 'sint64') field.varint_s64 = safe
-      else if (field.kind === 'int64') field.varint_i64 = safe
-      else field.varint_u64 = Math.max(0, safe)
+      if (isInt) {
+        const n = Number.parseInt(trimmed, 10)
+        if (Number.isFinite(n)) {
+          if (field.kind === 'sint64') field.varint_s64 = n
+          else if (field.kind === 'int64') field.varint_i64 = n
+          else field.varint_u64 = Math.max(0, n)
+        }
+      }
     } else if (field.wire_type === 1) {
       if (field.kind === 'double') {
-        const f = Number.parseFloat(rawVal)
-        field.double_val = Number.isFinite(f) ? f : 0
-      } else if (field.kind === 'sfixed64') {
-        const n = Number.parseInt(rawVal, 10)
-        field.fixed64_s = Number.isFinite(n) ? n : 0
-      } else {
-        const n = Number.parseInt(rawVal, 10)
-        field.fixed64_u = Number.isFinite(n) ? Math.max(0, n) : 0
+        if (isFloat) {
+          const f = Number.parseFloat(trimmed)
+          if (Number.isFinite(f)) field.double_val = f
+        }
+      } else if (isInt) {
+        const n = Number.parseInt(trimmed, 10)
+        if (Number.isFinite(n)) {
+          if (field.kind === 'sfixed64') field.fixed64_s = n
+          else field.fixed64_u = Math.max(0, n)
+        }
       }
     } else if (field.wire_type === 5) {
       if (field.kind === 'float') {
-        const f = Number.parseFloat(rawVal)
-        field.float_val = Number.isFinite(f) ? f : 0
-      } else if (field.kind === 'sfixed32') {
-        const n = Number.parseInt(rawVal, 10)
-        field.fixed32_s = Number.isFinite(n) ? n : 0
-      } else {
-        const n = Number.parseInt(rawVal, 10)
-        field.fixed32_u = Number.isFinite(n) ? Math.max(0, n) : 0
+        if (isFloat) {
+          const f = Number.parseFloat(trimmed)
+          if (Number.isFinite(f)) field.float_val = f
+        }
+      } else if (isInt) {
+        const n = Number.parseInt(trimmed, 10)
+        if (Number.isFinite(n)) {
+          if (field.kind === 'sfixed32') field.fixed32_s = n
+          else field.fixed32_u = Math.max(0, n)
+        }
       }
     } else if (field.wire_type === 2) {
-      if (field.kind === 'bytes') field.bytes_hex = rawVal
-      else field.string_val = rawVal
+      if (field.kind === 'bytes') field.bytes_hex = str
+      else field.string_val = str
     }
     protoTree = protoTree
   }
 
   function updateProtoFieldKind(field, nextKind) {
     if (!field) return
+    delete field._draft
     field.kind = nextKind
     if (field.wire_type === 2 && nextKind === 'message' && !field.nested) {
       field.nested = { fields: [], byte_len: 0 }
@@ -3441,6 +3519,11 @@
                 <span class="hint-muted mono">
                   funcs: {(binaryAnalysis?.functions?.length || 0) + (binaryAnalysis?.exports?.length || 0)} · comments: {symCustomComments.length + (importedSymbolBundle?.comments?.length || 0)} · jni: {jadxLinkReport?.bindings?.length || importedSymbolBundle?.jni_bindings?.length || 0}
                 </span>
+                {#if symCustomComments.length > 0}
+                  <Button variant="ghost" size="xs" icon="trash" on:click={clearCustomSymbolComments}>
+                    {$t('reLab.native.symbolBridge.clearCommentsBtn')} ({symCustomComments.length})
+                  </Button>
+                {/if}
                 <div class="strip-spacer"></div>
                 {#if symExportOutput}
                   <Button variant="secondary" size="xs" icon="copy" on:click={() => copyToClipboard(symExportOutput, translate('reLab.toast.copied'))}>
@@ -4380,32 +4463,36 @@
                 </div>
               {/if}
 
-              {#if activeAutoStubSnippet}
+              {#if hasAnyAutoStubSnippet}
                 <div class="collector-preview">
                   <div class="cp-head">
                     <div class="seg-toggle">
-                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'combined'} on:click={() => (autoStubSnippetTab = 'combined')}>
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'combined'} disabled={!autoStubDiagnosis.combined_java_snippet} on:click={() => (autoStubSnippetTab = 'combined')}>
                         {$t('reLab.emulate.autoStub.tabs.combined')}
                       </button>
-                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'jni'} on:click={() => (autoStubSnippetTab = 'jni')}>
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'jni'} disabled={!autoStubDiagnosis.abstract_jni_snippet} on:click={() => (autoStubSnippetTab = 'jni')}>
                         {$t('reLab.emulate.autoStub.tabs.jni')}
                       </button>
-                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'io'} on:click={() => (autoStubSnippetTab = 'io')}>
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'io'} disabled={!autoStubDiagnosis.io_resolver_snippet} on:click={() => (autoStubSnippetTab = 'io')}>
                         {$t('reLab.emulate.autoStub.tabs.io')}
                       </button>
-                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'sysprop'} on:click={() => (autoStubSnippetTab = 'sysprop')}>
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'sysprop'} disabled={!autoStubDiagnosis.sys_prop_hook_snippet} on:click={() => (autoStubSnippetTab = 'sysprop')}>
                         {$t('reLab.emulate.autoStub.tabs.sysprop')}
                       </button>
                     </div>
                     <div class="strip-spacer"></div>
-                    <Button variant="secondary" size="xs" icon="copy" on:click={() => copyToClipboard(activeAutoStubSnippet, translate('reLab.toast.copied'))}>
+                    <Button variant="secondary" size="xs" icon="copy" disabled={!activeAutoStubSnippet} on:click={() => copyToClipboard(activeAutoStubSnippet, translate('reLab.toast.copied'))}>
                       {$t('reLab.emulate.autoStub.copyStubBtn')}
                     </Button>
-                    <Button variant="primary" size="xs" icon="plus" on:click={appendAutoStubToEditor}>
+                    <Button variant="primary" size="xs" icon="plus" disabled={!activeAutoStubSnippet} on:click={appendAutoStubToEditor}>
                       {$t('reLab.emulate.autoStub.appendStubBtn')}
                     </Button>
                   </div>
-                  <pre class="collector-code mono">{activeAutoStubSnippet}</pre>
+                  {#if activeAutoStubSnippet}
+                    <pre class="collector-code mono">{activeAutoStubSnippet}</pre>
+                  {:else}
+                    <div class="r2-output-scroll"><div class="r2-empty">{$t('reLab.emulate.autoStub.noSnippetForTab')}</div></div>
+                  {/if}
                 </div>
               {/if}
             {/if}
@@ -6010,6 +6097,9 @@
                   {#if tlsCertReport.has_mtls_indicators}
                     <Badge variant="danger" size="xs" dot>{$t('reLab.deobf.tls.mtlsDetected')}</Badge>
                   {/if}
+                  {#if tlsCertReport.truncated}
+                    <Badge variant="warning" size="xs">{$t('reLab.deobf.tls.truncated')}</Badge>
+                  {/if}
                   <span class="meta-text mono tabular-nums">{tlsCertReport.entries_scanned} entries · {formatBytes(tlsCertReport.total_bytes_read)}</span>
                 </div>
 
@@ -6134,6 +6224,14 @@
                     {/each}
                   </div>
                 {/if}
+
+                {#if tlsCertReport.warnings?.length > 0}
+                  <div class="issues-box">
+                    {#each tlsCertReport.warnings as w, idx (idx)}
+                      <div class="issue-line"><Icon name="alert-triangle" size={12} /><span>{w}</span></div>
+                    {/each}
+                  </div>
+                {/if}
               {/if}
             </div>
 
@@ -6234,7 +6332,7 @@
                 </div>
 
                 {#if selectedTlsProfile}
-                  {@const ja3 = tlsProfileJA3 || selectedTlsProfile.ja3}
+                  {@const ja3 = tlsProfileJA3?.profile_id === selectedTlsProfile.id ? tlsProfileJA3 : selectedTlsProfile.ja3}
                   <div class="finding-item">
                     <div class="fi-top">
                       <strong>{selectedTlsProfile.name}</strong>
@@ -7754,7 +7852,11 @@
                       <Icon name="terminal" size={13} />
                       <span>{$t('reLab.cryptolab.pipeline.outputTitle')}</span>
                       <Badge variant={cryptoResult.success ? 'success' : 'danger'} size="xs" mono>
-                        {cryptoResult.success ? `${cryptoResult.byte_len} B · ${cryptoResult.total_elapsed_us} µs` : $t('reLab.cryptolab.pipeline.stepFailed', { idx: (cryptoResult.failed_step ?? 0) + 1 })}
+                        {cryptoResult.success
+                          ? `${cryptoResult.byte_len} B · ${cryptoResult.total_elapsed_us} µs`
+                          : (cryptoResult.failed_step >= 0
+                              ? $t('reLab.cryptolab.pipeline.stepFailed', { idx: cryptoResult.failed_step + 1 })
+                              : $t('reLab.cryptolab.pipeline.inputDecodeFailed'))}
                       </Badge>
                       <div class="strip-spacer"></div>
                       <div class="seg-toggle">
@@ -8773,6 +8875,11 @@
   .seg-btn.active {
     background: var(--bg-elevated);
     color: var(--text-primary);
+  }
+
+  .seg-btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
   }
 
   .code-viewer-scroll {

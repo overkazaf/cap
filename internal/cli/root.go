@@ -62,6 +62,8 @@ func NewRootCmd() *cobra.Command {
 		newDeobfCmd(),
 		newExecTraceCmd(),
 		newGatewayCmd(),
+		newReconCmd(),
+		newAICmd(),
 		newGUICmd(),
 	)
 
@@ -128,7 +130,7 @@ func renderRootHelp(w io.Writer, root *cobra.Command) {
 
 	printGroup(i18n.T("cli.root.group.capture"), []string{"start", "tui", "gui", "flows", "export"})
 	printGroup(i18n.T("cli.root.group.device"), []string{"android", "frida", "unpin"})
-	printGroup(i18n.T("cli.root.group.re"), []string{"re", "repro", "crypto", "tls", "deobf", "exectrace", "gateway"})
+	printGroup(i18n.T("cli.root.group.re"), []string{"re", "repro", "crypto", "tls", "deobf", "exectrace", "gateway", "recon", "ai"})
 
 	var extras []string
 	for _, c := range root.Commands() {

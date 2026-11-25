@@ -370,9 +370,10 @@ func GetDeviceStatus(serial, certPath string) (*DeviceStatus, error) {
 
 	// Zero-root fallback: when still not confirmed installed and Companion Guard is
 	// present, query Android's live AndroidCAStore via CertStatusReceiver so non-rooted
-	// User CA installs are detected accurately on Android 10–15.
+	// User CA installs and fingerprint mismatches are detected accurately on Android 10–15.
 	if hashName != "" && !st.CertStatus.Installed && st.CompanionStatus.Installed {
-		if compStatus, ok := CheckCertViaCompanion(serial, certPath); ok && compStatus.Installed {
+		if compStatus, ok := CheckCertViaCompanion(serial, certPath); ok &&
+			(compStatus.Installed || (st.CertStatus.Method == "" && compStatus.Method == "fingerprint_mismatch")) {
 			st.CertStatus = compStatus
 		}
 	}

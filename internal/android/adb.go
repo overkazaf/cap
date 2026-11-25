@@ -158,8 +158,14 @@ func SuShell(serial, cmd string) (string, error) {
 func SuShellMountMaster(serial, cmd string) (string, error) {
 	escaped := strings.ReplaceAll(cmd, "'", "'\\''")
 	out, err := AdbShell(serial, fmt.Sprintf("su --mount-master -c '%s'", escaped))
-	if err != nil && strings.Contains(out, "unknown option") {
-		return SuShell(serial, cmd)
+	if err != nil {
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "unknown option") ||
+			strings.Contains(lower, "invalid option") ||
+			strings.Contains(lower, "unrecognized option") ||
+			strings.Contains(lower, "usage:") {
+			return SuShell(serial, cmd)
+		}
 	}
 	return out, err
 }

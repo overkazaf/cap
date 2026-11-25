@@ -269,7 +269,7 @@ func SyncCompanionCert(serial, certPath string) error {
 		extras.WriteString(" --es cert_b64 " + shellQuote(base64.StdEncoding.EncodeToString(certBytes)))
 	}
 	cmd := fmt.Sprintf(
-		"am broadcast -n %s -a %s%s",
+		"am broadcast --include-stopped-packages -n %s -a %s%s",
 		CompanionCertReceiver,
 		companionActionSyncCert,
 		extras.String(),
@@ -299,7 +299,7 @@ func CheckCertViaCompanion(serial, certPath string) (CertStatus, bool) {
 		extras.WriteString(" --es expected_fp " + shellQuote(fp))
 	}
 	cmd := fmt.Sprintf(
-		"am broadcast -n %s -a %s%s",
+		"am broadcast --include-stopped-packages -n %s -a %s%s",
 		CompanionCertReceiver,
 		companionActionCheckCert,
 		extras.String(),
@@ -314,12 +314,19 @@ func CheckCertViaCompanion(serial, certPath string) (CertStatus, bool) {
 // ParseCompanionCertBroadcast parses `am broadcast` ordered output returned by
 // CertStatusReceiver (e.g. `Broadcast completed: result=-1, data="installed=true;store=user;..."`).
 func ParseCompanionCertBroadcast(fallbackHash, output string) (CertStatus, bool) {
-	idx := strings.Index(output, `data="`)
+	targetLine := output
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "Broadcast completed:") && strings.Contains(line, `data="`) {
+			targetLine = strings.TrimSpace(line)
+			break
+		}
+	}
+	idx := strings.Index(targetLine, `data="`)
 	if idx < 0 {
 		return CertStatus{}, false
 	}
-	rest := output[idx+len(`data="`):]
-	endIdx := strings.IndexByte(rest, '"')
+	rest := targetLine[idx+len(`data="`):]
+	endIdx := strings.LastIndexByte(rest, '"')
 	if endIdx < 0 {
 		return CertStatus{}, false
 	}

@@ -166,7 +166,8 @@ func CheckCertStatus(serial, certPath string) CertStatus {
 	// /data/misc/user/0/cacerts-added, so ask Cap Guard's CertStatusReceiver to inspect the
 	// live AndroidCAStore directly.
 	if !status.Installed {
-		if compStatus, ok := CheckCertViaCompanion(serial, certPath); ok && compStatus.Installed {
+		if compStatus, ok := CheckCertViaCompanion(serial, certPath); ok &&
+			(compStatus.Installed || (status.Method == "" && compStatus.Method == "fingerprint_mismatch")) {
 			status = compStatus
 		}
 	}

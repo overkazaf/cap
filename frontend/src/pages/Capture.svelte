@@ -171,12 +171,15 @@
       id: 'cert',
       label: $t('core.capture.device.stepCert'),
       done: certInstalled,
+      warn: certNeedsReboot || (!certInstalled && (certMethod === 'legacy_system_only' || certMethod === 'fingerprint_mismatch')),
       detail:
-        certStore === 'system'
-          ? $t('core.capture.device.stepCertSystem')
-          : certStore === 'user'
-            ? $t('core.capture.device.stepCertUser')
-            : $t('core.capture.device.stepCertNone'),
+        certNeedsReboot && !certInstalled
+          ? $t('core.capture.protection.certNeedsReboot')
+          : certInstalled && certStore === 'system'
+            ? $t('core.capture.device.stepCertSystem')
+            : certInstalled && certStore === 'user'
+              ? $t('core.capture.device.stepCertUser')
+              : $t('core.capture.device.stepCertNone'),
     },
     {
       id: 'guard',
@@ -1275,7 +1278,7 @@
                 <Icon name="alert-triangle" size={13} />
                 <span>{$t('core.capture.protection.certNeedsReboot')}</span>
               </div>
-            {:else if !certInstalled && certMethod === 'legacy_system_only' && certDetails}
+            {:else if !certInstalled && (certMethod === 'legacy_system_only' || certMethod === 'fingerprint_mismatch') && certDetails}
               <div class="prot-banner warn">
                 <Icon name="alert-triangle" size={13} />
                 <span>{certDetails}</span>

@@ -216,7 +216,7 @@ public final class ProxyCleaner {
     public static File findCertFile(Context ctx, String preferredPath) {
         if (preferredPath != null && !preferredPath.trim().isEmpty()) {
             File f = new File(preferredPath.trim());
-            if (f.isFile() && f.canRead()) {
+            if (isAllowedCertPath(ctx, f) && f.isFile() && f.canRead()) {
                 return f;
             }
         }
@@ -242,5 +242,49 @@ public final class ProxyCleaner {
             return tmp;
         }
         return null;
+    }
+
+    public static boolean isAllowedCertPath(Context ctx, File candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        String lowerName = candidate.getName().toLowerCase(java.util.Locale.US);
+        if (!lowerName.endsWith(".crt")
+                && !lowerName.endsWith(".cer")
+                && !lowerName.endsWith(".pem")
+                && !lowerName.endsWith(".der")) {
+            return false;
+        }
+        try {
+            String canonical = candidate.getCanonicalPath();
+            java.util.ArrayList<File> allowedDirs = new java.util.ArrayList<File>();
+            if (ctx != null) {
+                File filesDir = ctx.getApplicationContext().getFilesDir();
+                if (filesDir != null) {
+                    allowedDirs.add(filesDir);
+                }
+                File extDir = ctx.getExternalFilesDir(null);
+                if (extDir != null) {
+                    allowedDirs.add(extDir);
+                }
+            }
+            allowedDirs.add(new File("/sdcard/Download"));
+            allowedDirs.add(new File("/storage/emulated/0/Download"));
+            allowedDirs.add(new File("/data/local/tmp"));
+
+            for (File dir : allowedDirs) {
+                try {
+                    String dirCanon = dir.getCanonicalPath();
+                    String prefix = dirCanon.endsWith(File.separator) ? dirCanon : dirCanon + File.separator;
+                    if (canonical.startsWith(prefix)) {
+                        return true;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+        return false;
     }
 }

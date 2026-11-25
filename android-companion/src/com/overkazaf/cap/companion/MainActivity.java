@@ -46,6 +46,9 @@ public class MainActivity extends Activity {
     public static final String EXTRA_CERT_HASH = "cert_hash";
     public static final String EXTRA_CERT_FP = "cert_fp";
     private static final int REQ_INSTALL_CERT = 2001;
+    private static final int MAX_CERT_B64_CHARS = 65536;
+    private static final int MAX_CERT_BYTES = 48 * 1024;
+    private static final int MAX_READ_BYTES = 64 * 1024;
 
     private TextView statusBadgeView;
     private TextView activeProxyValue;
@@ -422,32 +425,35 @@ public class MainActivity extends Activity {
         if (intent.hasExtra(EXTRA_CERT_PATH)) {
             pendingCertPath = intent.getStringExtra(EXTRA_CERT_PATH);
         }
-        String certHash = intent.getStringExtra(EXTRA_CERT_HASH);
+        String certHash = CertInspector.normalizeHash(intent.getStringExtra(EXTRA_CERT_HASH));
         String certFp = intent.getStringExtra(EXTRA_CERT_FP);
-        if ((certHash != null && !certHash.trim().isEmpty())
-                || (certFp != null && !certFp.trim().isEmpty())) {
+        if (!certHash.isEmpty() || (certFp != null && !certFp.trim().isEmpty())) {
             GuardPrefs.saveCertMeta(this, certHash, certFp, null);
         }
 
         byte[] decodedCertBytes = null;
         String certB64 = intent.getStringExtra(EXTRA_CERT_B64);
-        if (certB64 != null && !certB64.trim().isEmpty()) {
-            try {
-                decodedCertBytes = Base64.decode(certB64.trim(), Base64.DEFAULT);
-                if (decodedCertBytes != null && decodedCertBytes.length > 0) {
-                    ProxyCleaner.savePrivateCertBytes(this, decodedCertBytes);
-                    X509Certificate parsed = CertInspector.parseCertBytes(decodedCertBytes);
-                    if (parsed != null) {
-                        GuardPrefs.saveCertMeta(
-                                this,
-                                CertInspector.computeSubjectHashOld(parsed),
-                                CertInspector.computeSha256Fingerprint(parsed),
-                                CertInspector.extractCommonName(parsed));
+        if (certB64 != null) {
+            String trimmedB64 = certB64.trim();
+            if (!trimmedB64.isEmpty() && trimmedB64.length() <= MAX_CERT_B64_CHARS) {
+                try {
+                    byte[] raw = Base64.decode(trimmedB64, Base64.DEFAULT);
+                    if (raw != null && raw.length > 0 && raw.length <= MAX_CERT_BYTES) {
+                        X509Certificate parsed = CertInspector.parseCertBytes(raw);
+                        if (parsed != null) {
+                            decodedCertBytes = raw;
+                            ProxyCleaner.savePrivateCertBytes(this, decodedCertBytes);
+                            GuardPrefs.saveCertMeta(
+                                    this,
+                                    CertInspector.computeSubjectHashOld(parsed),
+                                    CertInspector.computeSha256Fingerprint(parsed),
+                                    CertInspector.extractCommonName(parsed));
+                            refreshStatus();
+                        }
                     }
-                    refreshStatus();
+                } catch (Throwable ignored) {
+                    decodedCertBytes = null;
                 }
-            } catch (Throwable ignored) {
-                decodedCertBytes = null;
             }
         }
 
@@ -505,12 +511,20 @@ public class MainActivity extends Activity {
     }
 
     private static byte[] readAllBytes(File file) throws Exception {
+        if (file.length() > MAX_READ_BYTES) {
+            throw new java.io.IOException("certificate file exceeds 64 KB limit");
+        }
         InputStream in = new FileInputStream(file);
         try {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
+            int total = 0;
             int n;
             while ((n = in.read(buf)) >= 0) {
+                total += n;
+                if (total > MAX_READ_BYTES) {
+                    throw new java.io.IOException("certificate file exceeds 64 KB limit");
+                }
                 out.write(buf, 0, n);
             }
             return out.toByteArray();

@@ -65,7 +65,11 @@ public final class CertInspector {
             if (v == null) {
                 return "";
             }
-            return v.replace(';', ',').replace('\n', ' ').replace('\r', ' ').trim();
+            return v.replace(';', ',')
+                    .replace('"', '\'')
+                    .replace('\n', ' ')
+                    .replace('\r', ' ')
+                    .trim();
         }
     }
 
@@ -277,39 +281,54 @@ public final class CertInspector {
         if (result.hasApexDir) {
             if (apexFile.isFile() && apexFile.canRead()) {
                 X509Certificate cert = parseCertFile(apexFile);
-                if (cert == null || targetFp.isEmpty()
-                        || normalizeFingerprint(computeSha256Fingerprint(cert)).equals(targetFp)) {
-                    result.installed = true;
-                    result.store = "system";
-                    result.method = "apex_file";
-                    result.hash = targetHash;
-                    if (cert != null) {
-                        result.fingerprint = computeSha256Fingerprint(cert);
+                if (cert != null) {
+                    String certFp = computeSha256Fingerprint(cert);
+                    if (targetFp.isEmpty() || normalizeFingerprint(certFp).equals(targetFp)) {
+                        result.installed = true;
+                        result.store = "system";
+                        result.method = "apex_file";
+                        result.hash = targetHash;
+                        result.fingerprint = certFp;
                         result.subject = extractCommonName(cert);
+                        return;
                     }
+                    result.fingerprintMismatch = true;
+                    result.hash = targetHash;
+                    result.fingerprint = certFp;
+                    result.subject = extractCommonName(cert);
                     return;
                 }
             }
             if (systemFile.isFile() && systemFile.canRead()) {
-                // Present ONLY in legacy /system on Android 14+ where APEX Conscrypt is active
-                result.installed = false;
-                result.store = "none";
-                result.method = "legacy_system_only";
-                result.legacySystemOnly = true;
-                result.hash = targetHash;
+                X509Certificate sysCert = parseCertFile(systemFile);
+                if (sysCert != null) {
+                    // Present ONLY in legacy /system on Android 14+ where APEX Conscrypt is active
+                    result.installed = false;
+                    result.store = "none";
+                    result.method = "legacy_system_only";
+                    result.legacySystemOnly = true;
+                    result.hash = targetHash;
+                    result.fingerprint = computeSha256Fingerprint(sysCert);
+                    result.subject = extractCommonName(sysCert);
+                }
             }
         } else if (systemFile.isFile() && systemFile.canRead()) {
             X509Certificate cert = parseCertFile(systemFile);
-            if (cert == null || targetFp.isEmpty()
-                    || normalizeFingerprint(computeSha256Fingerprint(cert)).equals(targetFp)) {
-                result.installed = true;
-                result.store = "system";
-                result.method = "system_file";
-                result.hash = targetHash;
-                if (cert != null) {
-                    result.fingerprint = computeSha256Fingerprint(cert);
+            if (cert != null) {
+                String certFp = computeSha256Fingerprint(cert);
+                if (targetFp.isEmpty() || normalizeFingerprint(certFp).equals(targetFp)) {
+                    result.installed = true;
+                    result.store = "system";
+                    result.method = "system_file";
+                    result.hash = targetHash;
+                    result.fingerprint = certFp;
                     result.subject = extractCommonName(cert);
+                    return;
                 }
+                result.fingerprintMismatch = true;
+                result.hash = targetHash;
+                result.fingerprint = certFp;
+                result.subject = extractCommonName(cert);
             }
         }
     }
@@ -484,10 +503,13 @@ public final class CertInspector {
         if (h.isEmpty()) {
             return "";
         }
-        if (h.length() == 8 && !h.contains(".")) {
+        if (h.matches("^[0-9a-f]{8}$")) {
             return h + ".0";
         }
-        return h;
+        if (h.matches("^[0-9a-f]{8}\\.[0-9]+$")) {
+            return h;
+        }
+        return "";
     }
 
     private static boolean hashBaseEquals(String a, String b) {

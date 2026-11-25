@@ -582,6 +582,14 @@ func TestParseCompanionCertBroadcast(t *testing.T) {
 			wantMethod:  "legacy_system_only",
 		},
 		{
+			name:        "subject containing embedded quotes does not truncate trailing fields",
+			output:      `Broadcasting: Intent { ... }` + "\n" + `Broadcast completed: result=-1, data="installed=true;store=system;method=android_ca_store_system;hash=d7932d1e.0;subject=Cap "Test" CA;apex_dir=true;legacy_only=false;fp_mismatch=false"`,
+			wantOK:      true,
+			wantInstall: true,
+			wantStore:   "system",
+			wantMethod:  "apex",
+		},
+		{
 			name:   "empty or missing receiver output",
 			output: `Broadcast completed: result=0`,
 			wantOK: false,
@@ -722,5 +730,89 @@ func TestInstallCompanionReplacesOnSignatureMismatch(t *testing.T) {
 	}
 	if !uninstalled || installAttempts < 3 {
 		t.Fatalf("expected uninstall + reinstall recovery, uninstalled=%v attempts=%d", uninstalled, installAttempts)
+	}
+}
+
+func TestCompanionBroadcastUsesIncludeStoppedPackagesAndPropagatesFingerprintMismatch(t *testing.T) {
+	certPath := filepath.Join("testdata", "test-ca.crt")
+	if _, err := os.Stat(certPath); err != nil {
+		t.Skip("testdata/test-ca.crt not available")
+	}
+
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	var syncCmd, checkCmd string
+	adbExecFunc = func(args ...string) (string, error) {
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		if len(cmdArgs) > 0 && cmdArgs[0] == "shell" {
+			sh := strings.Join(cmdArgs[1:], " ")
+			switch {
+			case strings.Contains(sh, companionActionSyncCert):
+				syncCmd = sh
+				return `Broadcast completed: result=-1, data="installed=false;store=none"`, nil
+			case strings.Contains(sh, companionActionCheckCert):
+				checkCmd = sh
+				return `Broadcast completed: result=-1, data="installed=false;store=none;method=none;hash=28fca1f7.0;apex_dir=true;fp_mismatch=true"`, nil
+			case strings.Contains(sh, "echo HAS_APEX_DIR"):
+				return "HAS_APEX_DIR\n", nil
+			case sh == "su -c id":
+				return "su: not found", os.ErrNotExist
+			}
+		}
+		return "", nil
+	}
+
+	if err := SyncCompanionCert("DEV2", certPath); err != nil {
+		t.Fatalf("SyncCompanionCert failed: %v", err)
+	}
+	if !strings.Contains(syncCmd, "--include-stopped-packages") {
+		t.Errorf("SyncCompanionCert missing --include-stopped-packages: %q", syncCmd)
+	}
+
+	st := CheckCertStatus("DEV2", certPath)
+	if !strings.Contains(checkCmd, "--include-stopped-packages") {
+		t.Errorf("CheckCertViaCompanion missing --include-stopped-packages: %q", checkCmd)
+	}
+	if st.Installed || st.Method != "fingerprint_mismatch" {
+		t.Fatalf("expected fingerprint_mismatch propagated from companion, got %+v", st)
+	}
+}
+
+func TestSuShellMountMasterFallbackVariants(t *testing.T) {
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	for _, errMsg := range []string{
+		"su: unknown option -- mount-master",
+		"su: invalid option -- '-'",
+		"su: unrecognized option '--mount-master'",
+		"Usage: su [WHO [COMMAND...]]",
+	} {
+		t.Run(errMsg, func(t *testing.T) {
+			fallbackCalled := false
+			adbExecFunc = func(args ...string) (string, error) {
+				cmdArgs := args
+				if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+					cmdArgs = cmdArgs[2:]
+				}
+				sh := strings.Join(cmdArgs[1:], " ")
+				if strings.Contains(sh, "--mount-master") {
+					return errMsg, os.ErrInvalid
+				}
+				if strings.HasPrefix(sh, "su -c ") {
+					fallbackCalled = true
+					return "OK", nil
+				}
+				return "", nil
+			}
+			out, err := SuShellMountMaster("DEV3", "echo OK")
+			if err != nil || out != "OK" || !fallbackCalled {
+				t.Fatalf("expected fallback to SuShell on %q, got out=%q err=%v fallback=%v", errMsg, out, err, fallbackCalled)
+			}
+		})
 	}
 }

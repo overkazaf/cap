@@ -184,7 +184,7 @@
             : $t('recon.targetBar.placeholderDomain')
 
   // Domain DNS flattened structured rows
-  $: dnsRows = buildDnsRows(domainReport?.dns_records)
+  $: dnsRows = buildDnsRows(domainReport?.dns_records, $t)
 
   // Site Tech grouped by category
   $: groupedTechnologies = groupTechnologies(siteProfile?.technologies)
@@ -381,7 +381,7 @@
     return isDefault ? `${scheme}://${formattedHost}` : `${scheme}://${formattedHost}:${portNum}`
   }
 
-  function buildDnsRows(records) {
+  function buildDnsRows(records, _t = translate) {
     if (!records) return []
     const rows = []
     for (const v of records.a || []) rows.push({ type: 'A', value: v, extra: '' })
@@ -391,7 +391,7 @@
       rows.push({
         type: 'MX',
         value: mx.host || '',
-        extra: translate('recon.domain.dnsPref', { pref: mx.pref ?? 0 }),
+        extra: _t('recon.domain.dnsPref', { pref: mx.pref ?? 0 }),
       })
     }
     for (const v of records.ns || []) rows.push({ type: 'NS', value: v, extra: '' })
@@ -573,28 +573,28 @@
     return 'neutral'
   }
 
-  function tlsExpiryBadge(leaf) {
+  function tlsExpiryBadge(leaf, _t = translate) {
     if (!leaf) return { variant: 'neutral', text: '' }
     if (leaf.expired || leaf.days_until_expiry < 0) {
       return {
         variant: 'danger',
-        text: translate('recon.domain.tlsExpired', {
+        text: _t('recon.domain.tlsExpired', {
           days: Math.abs(Number(leaf.days_until_expiry) || 0),
         }),
       }
     }
     if (leaf.days_until_expiry === 0) {
-      return { variant: 'warning', text: translate('recon.domain.tlsExpiresToday') }
+      return { variant: 'warning', text: _t('recon.domain.tlsExpiresToday') }
     }
     if (leaf.days_until_expiry <= 30) {
       return {
         variant: 'warning',
-        text: translate('recon.domain.tlsExpiresIn', { days: leaf.days_until_expiry }),
+        text: _t('recon.domain.tlsExpiresIn', { days: leaf.days_until_expiry }),
       }
     }
     return {
       variant: 'success',
-      text: translate('recon.domain.tlsExpiresIn', { days: leaf.days_until_expiry }),
+      text: _t('recon.domain.tlsExpiresIn', { days: leaf.days_until_expiry }),
     }
   }
 
@@ -613,18 +613,18 @@
     }
   }
 
-  function jobStatusLabel(status) {
+  function jobStatusLabel(status, _t = translate) {
     switch (status) {
       case 'running':
-        return translate('recon.console.statusRunning')
+        return _t('recon.console.statusRunning')
       case 'done':
-        return translate('recon.console.statusDone')
+        return _t('recon.console.statusDone')
       case 'error':
-        return translate('recon.console.statusError')
+        return _t('recon.console.statusError')
       case 'cancelled':
-        return translate('recon.console.statusCancelled')
+        return _t('recon.console.statusCancelled')
       default:
-        return translate('recon.console.statusIdle')
+        return _t('recon.console.statusIdle')
     }
   }
 
@@ -1014,13 +1014,13 @@
     }
   }
 
-  async function runTlsInspect() {
+  async function runTlsInspect(customHost = '') {
     const app = api()
     if (!app?.InspectReconTLS) {
       toast.error(translate('recon.toast.missingApi'))
       return
     }
-    const host = extractHost(domainReport?.target || target)
+    const host = extractHost(customHost || target || domainReport?.target)
     if (!host) {
       toast.warning(translate('recon.toast.enterTarget'))
       return
@@ -1032,7 +1032,7 @@
       const tlsReport = await app.InspectReconTLS(host, port)
       if (destroyed) return
       if (tlsReport) {
-        if (domainReport) {
+        if (domainReport && (domainReport.target || '').toLowerCase() === host.toLowerCase()) {
           domainReport = { ...domainReport, tls: tlsReport }
         } else {
           domainReport = {
@@ -1382,7 +1382,7 @@
     target = clean
     tlsInspectPort = Number(port) || 443
     activeTab = 'domain'
-    runTlsInspect()
+    runTlsInspect(clean)
   }
 
   // ==================== Events, Handoff & Shortcuts ====================
@@ -2240,7 +2240,7 @@
                     size="xs"
                     icon="lock"
                     loading={tlsInspectLoading}
-                    on:click={runTlsInspect}
+                    on:click={() => runTlsInspect()}
                   >
                     {tlsInspectLoading ? $t('recon.domain.tlsInspecting') : $t('recon.domain.tlsInspectBtn')}
                   </Button>
@@ -2252,7 +2252,7 @@
               {:else}
                 {@const tls = domainReport.tls}
                 {@const leaf = tls.leaf}
-                {@const expiry = tlsExpiryBadge(leaf)}
+                {@const expiry = tlsExpiryBadge(leaf, $t)}
 
                 <div class="tls-badges">
                   {#if tls.host && tls.port}
@@ -2337,7 +2337,7 @@
                       </div>
                       <div class="hint-muted">{$t('recon.domain.tlsSansHint')}</div>
                       <div class="san-list">
-                        {#each leaf.sans as san (san)}
+                        {#each leaf.sans as san, idx (`${san}-${idx}`)}
                           <div class="san-pill">
                             <button
                               type="button"
@@ -2937,7 +2937,7 @@
                 <Icon name="terminal" size={14} />
                 <span class="card-title">{$t('recon.console.title')}</span>
                 <Badge variant={jobStatusVariant(jobState.status)} size="xs" dot pulse={isJobRunning}>
-                  {jobStatusLabel(jobState.status)}
+                  {jobStatusLabel(jobState.status, $t)}
                 </Badge>
                 <span class="hint-muted mono tabular-nums">{formatClock(liveJobElapsedMs)}</span>
                 <span class="hint-muted tabular-nums">
@@ -3135,7 +3135,7 @@
                           <div class="pill-wrap">
                             {#each entry.sources || [] as src (src)}
                               <Badge
-                                variant={src === 'subfinder' ? 'accent' : src === 'crt.sh' ? 'purple' : 'info'}
+                                variant={src === 'subfinder' ? 'accent' : src === 'ct_log' || src === 'crt.sh' ? 'purple' : 'info'}
                                 size="xs"
                                 mono
                               >
@@ -3282,7 +3282,7 @@
                 <Icon name="terminal" size={14} />
                 <span class="card-title">{$t('recon.console.title')}</span>
                 <Badge variant={jobStatusVariant(jobState.status)} size="xs" dot pulse={isJobRunning}>
-                  {jobStatusLabel(jobState.status)}
+                  {jobStatusLabel(jobState.status, $t)}
                 </Badge>
                 <span class="hint-muted mono tabular-nums">{formatClock(liveJobElapsedMs)}</span>
                 <span class="hint-muted tabular-nums">

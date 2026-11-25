@@ -75,10 +75,12 @@ type Manager struct {
 
 	directTransport *http.Transport
 
-	lifecycleCtx    context.Context
-	lifecycleCancel context.CancelFunc
-	webhookSem      chan struct{}
-	webhookWG       sync.WaitGroup
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	webhookSem       chan struct{}
+	webhookWG        sync.WaitGroup
+	webhookClient    *http.Client
+	webhookTransport *http.Transport
 
 	totalRequests   atomic.Int64
 	successRequests atomic.Int64
@@ -105,6 +107,9 @@ func NewManager(capDir string) (*Manager, error) {
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	workers := NewWorkerPool(filepath.Join(gwDir, fileWorkers))
+	accounts := NewAccountPool(filepath.Join(gwDir, fileAccounts), AccountPoolConfig{Strategy: StrategyRoundRobin})
+	accounts.SetBaseContext(lifecycleCtx)
+	webhookClient, webhookTransport := newWebhookHTTPClient()
 
 	m := &Manager{
 		dir: gwDir,
@@ -117,7 +122,7 @@ func NewManager(capDir string) (*Manager, error) {
 			FailoverRetries: DefaultFailoverRetries,
 		}),
 		devices:    NewDevicePool(),
-		accounts:   NewAccountPool(filepath.Join(gwDir, fileAccounts), AccountPoolConfig{Strategy: StrategyRoundRobin}),
+		accounts:   accounts,
 		workers:    workers,
 		signerExec: NewSignerExecutor(workers),
 		cache:      NewRouteCache(),
@@ -134,9 +139,11 @@ func NewManager(capDir string) (*Manager, error) {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
-		lifecycleCtx:    lifecycleCtx,
-		lifecycleCancel: lifecycleCancel,
-		webhookSem:      make(chan struct{}, maxConcurrentWebhooks),
+		lifecycleCtx:     lifecycleCtx,
+		lifecycleCancel:  lifecycleCancel,
+		webhookSem:       make(chan struct{}, maxConcurrentWebhooks),
+		webhookClient:    webhookClient,
+		webhookTransport: webhookTransport,
 	}
 
 	m.loadFromDisk()
@@ -277,6 +284,9 @@ func (m *Manager) Shutdown() error {
 	}
 	err := m.Stop()
 	m.webhookWG.Wait()
+	if m.webhookTransport != nil {
+		m.webhookTransport.CloseIdleConnections()
+	}
 	m.proxies.CloseIdleConnections()
 	if m.transports != nil {
 		m.transports.CloseIdleConnections()

@@ -26,12 +26,12 @@ func killProcGroup(cmd *exec.Cmd) error {
 	return nil
 }
 
-func killProcGroupPID(pid int) error {
-	if pid <= 0 {
-		return nil
+// signalProcGroupOnly sends SIGKILL strictly to process group -pgid (never
+// falling back to a bare positive PID) to reap stray grandchildren safely
+// without risking PID reuse hazards.
+func signalProcGroupOnly(pgid int) {
+	if pgid <= 0 {
+		return
 	}
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
-		return syscall.Kill(pid, syscall.SIGKILL)
-	}
-	return nil
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 }

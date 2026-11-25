@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,7 @@ func NewRouteCache() *RouteCache {
 
 // Get retrieves a non-expired cached response and refreshes its LRU position.
 func (c *RouteCache) Get(slug, key string) (*cachedRouteEntry, bool) {
+	slug = normalizeSlug(slug)
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -74,6 +76,7 @@ func (c *RouteCache) Get(slug, key string) (*cachedRouteEntry, bool) {
 	bucket.lru.MoveToFront(elem)
 	cp := *entry
 	cp.headers = cloneStringMap(entry.headers)
+	cp.data = cloneJSONValue(entry.data)
 	return &cp, true
 }
 
@@ -82,6 +85,7 @@ func (c *RouteCache) Set(slug, key string, entry cachedRouteEntry, ttl time.Dura
 	if ttl <= 0 {
 		return
 	}
+	slug = normalizeSlug(slug)
 	if maxEntries <= 0 {
 		maxEntries = DefaultCacheMaxEntries
 	}
@@ -89,6 +93,7 @@ func (c *RouteCache) Set(slug, key string, entry cachedRouteEntry, ttl time.Dura
 	entry.key = key
 	entry.slug = slug
 	entry.headers = cloneStringMap(entry.headers)
+	entry.data = cloneJSONValue(entry.data)
 	entry.expiresAt = now.Add(ttl)
 
 	c.mu.Lock()
@@ -121,6 +126,25 @@ func (c *RouteCache) Set(slug, key string, entry cachedRouteEntry, ttl time.Dura
 		evicted := back.Value.(*cachedRouteEntry)
 		delete(bucket.items, evicted.key)
 		bucket.lru.Remove(back)
+	}
+}
+
+func cloneJSONValue(v any) any {
+	switch tv := v.(type) {
+	case map[string]any:
+		cp := make(map[string]any, len(tv))
+		for k, val := range tv {
+			cp[k] = cloneJSONValue(val)
+		}
+		return cp
+	case []any:
+		cp := make([]any, len(tv))
+		for i, val := range tv {
+			cp[i] = cloneJSONValue(val)
+		}
+		return cp
+	default:
+		return v
 	}
 }
 
@@ -158,16 +182,24 @@ func BuildCacheKey(route *ServiceRoute, method string, req TestInvokeRequest) st
 				continue
 			}
 			val := ""
+			found := false
 			if v, ok := req.Input[f]; ok {
-				val = v
-			} else if v, ok := req.Query[f]; ok {
-				val = v
-			} else if bodyObj != nil {
-				if rawVal, ok := bodyObj[f]; ok {
-					val = stringifyScalar(rawVal)
+				val, found = v, true
+			}
+			if !found {
+				if v, ok := req.Query[f]; ok {
+					val, found = v, true
 				}
-			} else if hv := lookupMapFold(req.Headers, f); hv != "" {
-				val = hv
+			}
+			if !found && bodyObj != nil {
+				if rawVal, ok := bodyObj[f]; ok {
+					val, found = stringifyScalar(rawVal), true
+				}
+			}
+			if !found {
+				if hv := lookupMapFold(req.Headers, f); hv != "" {
+					val = hv
+				}
 			}
 			_, _ = h.Write([]byte(f))
 			_, _ = h.Write([]byte{'='})
@@ -301,6 +333,19 @@ func (cb *CircuitBreaker) Allow(slug string, threshold int, cooldownSec int) (al
 	}
 }
 
+// ReleaseHalfOpen releases a half_open probe slot if a probe request aborted
+// before contacting upstream, reverting to open so subsequent requests after
+// cooldown can probe cleanly without wedging the circuit breaker.
+func (cb *CircuitBreaker) ReleaseHalfOpen(slug string) {
+	slug = normalizeSlug(slug)
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if entry, ok := cb.circuits[slug]; ok && entry.state == CircuitStateHalfOpen {
+		entry.state = CircuitStateOpen
+		entry.halfOpenInFlight = false
+	}
+}
+
 // RecordSuccess transitions a closed or half_open circuit cleanly to closed.
 func (cb *CircuitBreaker) RecordSuccess(slug string) {
 	slug = normalizeSlug(slug)
@@ -343,11 +388,14 @@ func (cb *CircuitBreaker) RecordFailure(slug string, threshold int, cooldownSec 
 	entry.lastFailure = reason
 	entry.consecutiveFailures++
 
-	if entry.state == CircuitStateHalfOpen || entry.consecutiveFailures >= threshold {
+	prevState := entry.state
+	if prevState == CircuitStateHalfOpen || entry.consecutiveFailures >= threshold {
 		entry.state = CircuitStateOpen
 		entry.openedAt = now
 		entry.halfOpenInFlight = false
-		entry.tripCount++
+		if prevState != CircuitStateOpen {
+			entry.tripCount++
+		}
 	}
 }
 
@@ -557,6 +605,7 @@ type UpstreamTransportPool struct {
 	mu         sync.RWMutex
 	transports map[upstreamTransportCacheKey]*http.Transport
 	rootCAs    *x509.CertPool
+	rootGen    uint64
 }
 
 // NewUpstreamTransportPool creates an empty UpstreamTransportPool.
@@ -573,6 +622,7 @@ func (p *UpstreamTransportPool) SetRootCAs(pool *x509.CertPool) {
 	defer p.mu.Unlock()
 	p.closeLocked()
 	p.rootCAs = pool
+	p.rootGen++
 }
 
 // HasCustomRootCAs reports whether a custom RootCA pool is configured.
@@ -603,53 +653,98 @@ func (p *UpstreamTransportPool) TransportFor(proxy *ProxyNode, tlsProfile, mtlsC
 		mtlsKey:    mtlsKey,
 	}
 
-	p.mu.RLock()
-	if tr, ok := p.transports[key]; ok {
+	for attempt := 0; attempt < 2; attempt++ {
+		p.mu.RLock()
+		if tr, ok := p.transports[key]; ok {
+			p.mu.RUnlock()
+			return tr, nil
+		}
+		rootCAs := p.rootCAs
+		gen := p.rootGen
 		p.mu.RUnlock()
+
+		tlsCfg, err := BuildTLSConfig(normProfile, mtlsCert, mtlsKey, rootCAs)
+		if err != nil {
+			return nil, err
+		}
+
+		var tr *http.Transport
+		if proxy != nil {
+			tr, err = BuildProxyTransport(proxy)
+			if err != nil {
+				return nil, err
+			}
+			tr.TLSClientConfig = tlsCfg
+		} else {
+			tr = &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				MaxIdleConns:          64,
+				MaxIdleConnsPerHost:   16,
+				IdleConnTimeout:       60 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				TLSClientConfig:       tlsCfg,
+			}
+		}
+
+		if hasALPNProtocol(tlsCfg.NextProtos, "h2") {
+			tr.ForceAttemptHTTP2 = true
+		}
+
+		p.mu.Lock()
+		if p.rootGen != gen {
+			// SetRootCAs raced with our build; discard stale transport and retry once.
+			p.mu.Unlock()
+			tr.CloseIdleConnections()
+			continue
+		}
+		if existing, ok := p.transports[key]; ok {
+			p.mu.Unlock()
+			tr.CloseIdleConnections()
+			return existing, nil
+		}
+		p.transports[key] = tr
+		p.mu.Unlock()
 		return tr, nil
 	}
+
+	// If SetRootCAs kept rotating concurrently, build one uncached transport with latest CAs.
+	p.mu.RLock()
 	rootCAs := p.rootCAs
 	p.mu.RUnlock()
-
 	tlsCfg, err := BuildTLSConfig(normProfile, mtlsCert, mtlsKey, rootCAs)
 	if err != nil {
 		return nil, err
 	}
-
-	var tr *http.Transport
 	if proxy != nil {
-		tr, err = BuildProxyTransport(proxy)
+		tr, err := BuildProxyTransport(proxy)
 		if err != nil {
 			return nil, err
 		}
 		tr.TLSClientConfig = tlsCfg
-	} else {
-		tr = &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          64,
-			MaxIdleConnsPerHost:   16,
-			IdleConnTimeout:       60 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			TLSClientConfig:       tlsCfg,
+		if hasALPNProtocol(tlsCfg.NextProtos, "h2") {
+			tr.ForceAttemptHTTP2 = true
 		}
+		return tr, nil
 	}
-
+	tr := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig:       tlsCfg,
+	}
 	if hasALPNProtocol(tlsCfg.NextProtos, "h2") {
 		tr.ForceAttemptHTTP2 = true
 	}
-
-	p.mu.Lock()
-	if existing, ok := p.transports[key]; ok {
-		p.mu.Unlock()
-		tr.CloseIdleConnections()
-		return existing, nil
-	}
-	p.transports[key] = tr
-	p.mu.Unlock()
 	return tr, nil
 }
 
@@ -737,11 +832,14 @@ func extractListenPort(listenAddr string) string {
 	}
 	addr = strings.TrimPrefix(addr, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
+	candidate := ""
 	if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
-		return port
+		candidate = port
+	} else if strings.HasPrefix(addr, ":") && len(addr) > 1 {
+		candidate = addr[1:]
 	}
-	if strings.HasPrefix(addr, ":") && len(addr) > 1 {
-		return addr[1:]
+	if n, err := strconv.Atoi(strings.TrimSpace(candidate)); err == nil && n >= 1 && n <= 65535 {
+		return strconv.Itoa(n)
 	}
 	return "9090"
 }

@@ -542,8 +542,9 @@ func (m *Manager) InvokeRoute(ctx context.Context, slug string, req TestInvokeRe
 type refreshCtxKey struct{}
 
 type refreshCtxState struct {
-	depth   int
-	visited map[string]bool
+	depth              int
+	visited            map[string]bool
+	refreshingAccounts map[string]bool
 }
 
 func getRefreshCtxState(ctx context.Context) *refreshCtxState {
@@ -559,7 +560,15 @@ func isRefreshCall(ctx context.Context) bool {
 	return st != nil && st.depth > 0
 }
 
-func canTriggerRefresh(ctx context.Context, currentSlug, targetRefreshSlug string, maxAttempts int) bool {
+func isRefreshingAccountInCtx(ctx context.Context, accountID string) bool {
+	st := getRefreshCtxState(ctx)
+	if st == nil || strings.TrimSpace(accountID) == "" {
+		return false
+	}
+	return st.refreshingAccounts[strings.TrimSpace(accountID)]
+}
+
+func canTriggerRefresh(ctx context.Context, currentSlug, targetRefreshSlug, accountID string, maxAttempts int) bool {
 	target := normalizeSlug(targetRefreshSlug)
 	cur := normalizeSlug(currentSlug)
 	if target == "" || strings.EqualFold(cur, target) {
@@ -572,6 +581,9 @@ func canTriggerRefresh(ctx context.Context, currentSlug, targetRefreshSlug strin
 	if st == nil {
 		return true
 	}
+	if accountID != "" && st.refreshingAccounts[strings.TrimSpace(accountID)] {
+		return false
+	}
 	if st.depth >= maxAttempts {
 		return false
 	}
@@ -581,14 +593,18 @@ func canTriggerRefresh(ctx context.Context, currentSlug, targetRefreshSlug strin
 	return true
 }
 
-func withRefreshContext(ctx context.Context, currentSlug, targetRefreshSlug string) context.Context {
+func withRefreshContext(ctx context.Context, currentSlug, targetRefreshSlug, accountID string) context.Context {
 	prev := getRefreshCtxState(ctx)
 	visited := make(map[string]bool)
+	refreshing := make(map[string]bool)
 	depth := 1
 	if prev != nil {
 		depth = prev.depth + 1
 		for k, v := range prev.visited {
 			visited[k] = v
+		}
+		for k, v := range prev.refreshingAccounts {
+			refreshing[k] = v
 		}
 	}
 	if c := normalizeSlug(currentSlug); c != "" {
@@ -597,9 +613,13 @@ func withRefreshContext(ctx context.Context, currentSlug, targetRefreshSlug stri
 	if t := normalizeSlug(targetRefreshSlug); t != "" {
 		visited[strings.ToLower(t)] = true
 	}
+	if aid := strings.TrimSpace(accountID); aid != "" {
+		refreshing[aid] = true
+	}
 	return context.WithValue(ctx, refreshCtxKey{}, &refreshCtxState{
-		depth:   depth,
-		visited: visited,
+		depth:              depth,
+		visited:            visited,
+		refreshingAccounts: refreshing,
 	})
 }
 
@@ -727,8 +747,10 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 	}
 
 	// Step 0b: Per-Route Circuit Breaker check
+	circuitAdmittedHalfOpen := false
+	circuitResolved := false
 	if route.CircuitFailThreshold > 0 {
-		allowed, _ := m.circuits.Allow(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec)
+		allowed, state := m.circuits.Allow(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec)
 		if !allowed {
 			rec.CircuitTripped = true
 			return finishErr(
@@ -736,6 +758,14 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 				fmt.Sprintf("circuit breaker open for route %q", route.Slug),
 				map[string]string{"X-Cap-Circuit": "open"},
 			)
+		}
+		if state == CircuitStateHalfOpen {
+			circuitAdmittedHalfOpen = true
+			defer func() {
+				if circuitAdmittedHalfOpen && !circuitResolved {
+					m.circuits.ReleaseHalfOpen(route.Slug)
+				}
+			}()
 		}
 	}
 
@@ -1022,7 +1052,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		}
 
 		finalURL := parsedURL.String()
-		redactedFinalURL := parsedURL.Redacted()
+		redactedFinalURL := redactSecrets(parsedURL.Redacted(), secrets...)
 		rec.UpstreamURL = redactedFinalURL
 
 		// Forward to Upstream (with failover retries across healthy proxies & TLS/mTLS profile)
@@ -1181,6 +1211,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 
 	if outcome.errMsg != "" || outcome.resp == nil {
 		if outcome.upstreamFailure && route.CircuitFailThreshold > 0 {
+			circuitResolved = true
 			m.circuits.RecordFailure(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec, redactSecrets(outcome.errMsg, secrets...))
 		}
 		code := outcome.errCode
@@ -1197,7 +1228,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 	}
 	matchedRefresh := shouldTriggerRefresh(route, poolRefreshCfg, outcome.resp.StatusCode, outcome.body)
 	var refreshErr error
-	if route.AutoRefresh && account != nil && matchedRefresh && canTriggerRefresh(ctx, route.Slug, refreshSlug, maxRefreshAttempts) {
+	if route.AutoRefresh && account != nil && matchedRefresh && canTriggerRefresh(ctx, route.Slug, refreshSlug, account.ID, maxRefreshAttempts) {
 		seenRefreshCount := account.RefreshCount
 		seenToken := account.EffectiveToken()
 		seenCookie := account.EffectiveCookie()
@@ -1213,7 +1244,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 			seenToken,
 			seenCookie,
 			func(rCtx context.Context) (AccountCredentialUpdate, error) {
-				guardedCtx := withRefreshContext(rCtx, route.Slug, refreshSlug)
+				guardedCtx := withRefreshContext(rCtx, route.Slug, refreshSlug, account.ID)
 				refreshReq := TestInvokeRequest{
 					RouteSlug: refreshSlug,
 					AccountID: account.ID,
@@ -1243,6 +1274,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 			rec.Retries += retryOutcome.retriesUsed
 			if retryOutcome.errMsg != "" || retryOutcome.resp == nil {
 				if retryOutcome.upstreamFailure && route.CircuitFailThreshold > 0 {
+					circuitResolved = true
 					m.circuits.RecordFailure(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec, redactSecrets(retryOutcome.errMsg, secrets...))
 				}
 				code := retryOutcome.errCode
@@ -1280,6 +1312,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 
 	// Step 5d: Update Circuit Breaker from upstream response status
 	if route.CircuitFailThreshold > 0 {
+		circuitResolved = true
 		if outcome.resp.StatusCode >= 500 {
 			m.circuits.RecordFailure(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec, fmt.Sprintf("upstream HTTP %d", outcome.resp.StatusCode))
 		} else {
@@ -1433,7 +1466,7 @@ func (m *Manager) dispatchChallengeWebhookAsync(webhookURL string, payload chall
 		if baseCtx == nil {
 			baseCtx = context.Background()
 		}
-		_ = sendChallengeWebhook(baseCtx, webhookURL, payload, secCopy)
+		_ = sendChallengeWebhook(baseCtx, m.webhookClient, webhookURL, payload, secCopy)
 	}()
 }
 

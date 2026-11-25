@@ -57,9 +57,11 @@ type AccountPool struct {
 	filePath string
 
 	mu        sync.RWMutex
+	persistMu sync.Mutex
 	cfg       AccountPoolConfig
 	accounts  map[string]AccountProfile
 	rrCounter atomic.Uint64
+	baseCtx   context.Context
 
 	refreshMu sync.Mutex
 	inflight  map[string]*accountRefreshFlight
@@ -77,6 +79,24 @@ func NewAccountPool(filePath string, cfg AccountPoolConfig) *AccountPool {
 		inflight: make(map[string]*accountRefreshFlight),
 		now:      time.Now,
 	}
+}
+
+// SetBaseContext binds the pool's lifecycle context so in-flight refreshes
+// cancel promptly when Manager.Shutdown() is invoked.
+func (p *AccountPool) SetBaseContext(ctx context.Context) {
+	p.mu.Lock()
+	p.baseCtx = ctx
+	p.mu.Unlock()
+}
+
+func (p *AccountPool) getBaseContext() context.Context {
+	p.mu.RLock()
+	ctx := p.baseCtx
+	p.mu.RUnlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 func normalizeAccountPoolConfig(cfg AccountPoolConfig) AccountPoolConfig {
@@ -517,9 +537,11 @@ func (p *AccountPool) MarkChallenged(id string, reason string) error {
 	return p.persist()
 }
 
-// MarkHealthy marks an account active and clears LastError.
+// MarkHealthy marks an account active, clears LastError, and clears any
+// elapsed ExpiresAt timestamp so explicitly healed accounts become acquirable.
 func (p *AccountPool) MarkHealthy(id string) error {
 	id = strings.TrimSpace(id)
+	now := p.now().UTC()
 	p.mu.Lock()
 	acc, ok := p.accounts[id]
 	if !ok {
@@ -529,8 +551,13 @@ func (p *AccountPool) MarkHealthy(id string) error {
 	if acc.Enabled {
 		acc.Status = AccountStatusActive
 	}
+	if acc.ExpiresAt != "" {
+		if exp, err := time.Parse(time.RFC3339, acc.ExpiresAt); err == nil && !now.Before(exp) {
+			acc.ExpiresAt = ""
+		}
+	}
 	acc.LastError = ""
-	acc.UpdatedAt = p.now().UTC().Format(time.RFC3339)
+	acc.UpdatedAt = now.Format(time.RFC3339)
 	p.accounts[id] = acc
 	p.mu.Unlock()
 	return p.persist()
@@ -632,6 +659,9 @@ func (p *AccountPool) RefreshSingleflight(
 	if accountID == "" {
 		return nil, errors.New("account ID is required for refresh")
 	}
+	if isRefreshingAccountInCtx(ctx, accountID) {
+		return nil, fmt.Errorf("re-entrant refresh blocked for account %q", accountID)
+	}
 
 	p.refreshMu.Lock()
 	// 1. Join an already-running refresh flight for this account.
@@ -676,9 +706,14 @@ func (p *AccountPool) RefreshSingleflight(
 		close(flight.done)
 	}()
 
-	// Detach from leader's request cancellation with a bounded timeout so followers
-	// are not spuriously aborted if only the first client disconnects.
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	// Detach from leader's per-request cancellation while tying to Manager
+	// lifecycle context (so Shutdown cancels promptly) and preserving any
+	// refresh recursion state on the context.
+	base := p.getBaseContext()
+	if prevSt := getRefreshCtxState(ctx); prevSt != nil {
+		base = context.WithValue(base, refreshCtxKey{}, prevSt)
+	}
+	runCtx, cancel := context.WithTimeout(base, 30*time.Second)
 	defer cancel()
 
 	upd, err := refreshFn(runCtx)
@@ -702,6 +737,8 @@ func (p *AccountPool) persist() error {
 	if p.filePath == "" {
 		return nil
 	}
+	p.persistMu.Lock()
+	defer p.persistMu.Unlock()
 	payload := persistedAccountPool{
 		Config:   p.Config(),
 		Accounts: p.List(),
@@ -771,30 +808,61 @@ func parseCookieHeader(raw string) map[string]string {
 	return out
 }
 
-// accountSecrets returns all sensitive credential strings held by an account so
-// error messages and webhook alerts never leak secrets.
+// accountSecrets returns all sensitive credential strings held by an account
+// (including bare Bearer/Basic/Token values and individual cookie values) so
+// URLs, logs, errors, and webhook alerts never leak secrets.
 func accountSecrets(acc *AccountProfile) []string {
 	if acc == nil {
 		return nil
 	}
+	seen := make(map[string]struct{})
 	var out []string
 	add := func(s string) {
 		s = strings.TrimSpace(s)
-		if s != "" {
-			out = append(out, s)
+		if s == "" {
+			return
+		}
+		if _, dup := seen[s]; dup {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	addAuthValue := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		add(v)
+		for _, prefix := range []string{"Bearer ", "Token ", "Basic "} {
+			if rest, ok := cutPrefixFold(v, prefix); ok {
+				if bare := strings.TrimSpace(rest); len(bare) >= 4 {
+					add(bare)
+				}
+			}
 		}
 	}
-	add(acc.Token)
+
+	addAuthValue(acc.Token)
 	add(acc.RefreshToken)
 	add(acc.Cookie)
+	for _, v := range parseCookieHeader(acc.Cookie) {
+		if len(strings.TrimSpace(v)) >= 4 {
+			add(v)
+		}
+	}
 	for _, v := range acc.Cookies {
-		add(v)
+		if len(strings.TrimSpace(v)) >= 4 {
+			add(v)
+		}
 	}
 	for _, v := range acc.Tokens {
-		add(v)
+		addAuthValue(v)
 	}
 	for _, v := range acc.AuthHeaders {
-		add(v)
+		if len(strings.TrimSpace(v)) >= 4 {
+			addAuthValue(v)
+		}
 	}
 	return out
 }
@@ -1016,23 +1084,103 @@ func extractSetCookiePairs(raw string) map[string]string {
 	return out
 }
 
+func isBlockedWebhookIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+	return ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
+}
+
 // validateWebhookURL enforces http/https schemes and blocks link-local/cloud
-// metadata SSRF destinations while allowing operator-configured webhook URLs.
+// metadata SSRF destinations (including trailing-dot FQDNs) while allowing
+// operator-configured webhook URLs.
 func validateWebhookURL(raw string) (*url.URL, error) {
 	u, err := validateHTTPURL(raw)
 	if err != nil {
 		return nil, err
 	}
-	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
-	if host == "metadata.google.internal" || host == "metadata" || host == "instance-data" {
+	host := strings.TrimRight(strings.ToLower(strings.TrimSpace(u.Hostname())), ".")
+	if host == "" {
+		return nil, fmt.Errorf("webhook URL %q has empty host", redactURLString(raw))
+	}
+	switch host {
+	case "metadata.google.internal", "metadata.goog", "metadata", "instance-data":
 		return nil, fmt.Errorf("webhook host %q is blocked by SSRF policy", host)
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return nil, fmt.Errorf("webhook IP %q is blocked by SSRF policy", host)
-		}
+	if ip := net.ParseIP(host); ip != nil && isBlockedWebhookIP(ip) {
+		return nil, fmt.Errorf("webhook IP %q is blocked by SSRF policy", host)
 	}
 	return u, nil
+}
+
+// newWebhookHTTPClient constructs a reusable webhook HTTP client that blocks
+// HTTP redirects and validates resolved IPs at dial time against link-local,
+// multicast, unspecified, and cloud metadata addresses.
+func newWebhookHTTPClient() (*http.Client, *http.Transport) {
+	baseDialer := &net.Dialer{
+		Timeout:   challengeWebhookTimeout,
+		KeepAlive: 30 * time.Second,
+	}
+	tr := &http.Transport{
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     30 * time.Second,
+		TLSHandshakeTimeout: challengeWebhookTimeout,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			cleanHost := strings.TrimRight(strings.ToLower(strings.TrimSpace(host)), ".")
+			switch cleanHost {
+			case "metadata.google.internal", "metadata.goog", "metadata", "instance-data":
+				return nil, fmt.Errorf("webhook host %q is blocked by SSRF policy", cleanHost)
+			}
+			if ip := net.ParseIP(cleanHost); ip != nil {
+				if isBlockedWebhookIP(ip) {
+					return nil, fmt.Errorf("webhook IP %q is blocked by SSRF policy", ip.String())
+				}
+				return baseDialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}
+			addrs, err := net.DefaultResolver.LookupIPAddr(ctx, cleanHost)
+			if err != nil {
+				return nil, err
+			}
+			if len(addrs) == 0 {
+				return nil, fmt.Errorf("webhook host %q resolved to no addresses", cleanHost)
+			}
+			var safeIPs []net.IP
+			for _, a := range addrs {
+				if isBlockedWebhookIP(a.IP) {
+					return nil, fmt.Errorf("webhook host %q resolved to blocked IP %s", cleanHost, a.IP.String())
+				}
+				safeIPs = append(safeIPs, a.IP)
+			}
+			var lastErr error
+			for _, ip := range safeIPs {
+				conn, dialErr := baseDialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if dialErr == nil {
+					return conn, nil
+				}
+				lastErr = dialErr
+			}
+			return nil, lastErr
+		},
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   challengeWebhookTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return client, tr
 }
 
 // challengeWebhookPayload is the redacted JSON notification sent to an
@@ -1052,13 +1200,14 @@ type challengeWebhookPayload struct {
 	BodyPreview string `json:"body_preview,omitempty"`
 }
 
-func sendChallengeWebhook(ctx context.Context, webhookURL string, payload challengeWebhookPayload, secrets []string) error {
+func sendChallengeWebhook(ctx context.Context, client *http.Client, webhookURL string, payload challengeWebhookPayload, secrets []string) error {
 	if _, err := validateWebhookURL(webhookURL); err != nil {
 		return err
 	}
-	payload.UpstreamURL = redactURLString(payload.UpstreamURL)
+	payload.UpstreamURL = redactSecrets(redactURLString(payload.UpstreamURL), secrets...)
 	payload.Reason = redactSecrets(payload.Reason, secrets...)
-	payload.BodyPreview = redactSecrets(truncatePreview(payload.BodyPreview, maxChallengeBodyPreview), secrets...)
+	// Redact secrets BEFORE truncating so a secret straddling the preview boundary cannot leak.
+	payload.BodyPreview = truncatePreview(redactSecrets(payload.BodyPreview, secrets...), maxChallengeBodyPreview)
 
 	rawBody, err := json.Marshal(payload)
 	if err != nil {
@@ -1074,7 +1223,11 @@ func sendChallengeWebhook(ctx context.Context, webhookURL string, payload challe
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "cap-gateway-webhook/1.0")
 
-	client := &http.Client{Timeout: challengeWebhookTimeout}
+	if client == nil {
+		c, tr := newWebhookHTTPClient()
+		defer tr.CloseIdleConnections()
+		client = c
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

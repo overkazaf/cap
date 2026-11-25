@@ -3,7 +3,6 @@
 package gateway
 
 import (
-	"os"
 	"os/exec"
 	"time"
 )
@@ -19,13 +18,7 @@ func killProcGroup(cmd *exec.Cmd) error {
 	return cmd.Process.Kill()
 }
 
-func killProcGroupPID(pid int) error {
-	if pid <= 0 {
-		return nil
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return p.Kill()
+func signalProcGroupOnly(pgid int) {
+	// Non-Unix platforms do not support negative PGID signaling.
+	_ = pgid
 }

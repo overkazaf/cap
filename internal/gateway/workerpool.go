@@ -128,9 +128,10 @@ type workerRuntime struct {
 type WorkerPool struct {
 	filePath string
 
-	mu       sync.RWMutex
-	specs    map[string]ManagedWorkerSpec
-	runtimes map[string]*workerRuntime
+	mu        sync.RWMutex
+	persistMu sync.Mutex
+	specs     map[string]ManagedWorkerSpec
+	runtimes  map[string]*workerRuntime
 
 	probeInterval time.Duration
 	probeTimeout  time.Duration
@@ -154,6 +155,9 @@ func NewWorkerPool(filePath string) *WorkerPool {
 		probeClient: &http.Client{
 			Transport: tr,
 			Timeout:   defaultWorkerProbeTimeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -217,8 +221,11 @@ func ValidateWorkerSpec(spec *ManagedWorkerSpec) error {
 	if spec.BasePort <= 0 || spec.BasePort > 65535 {
 		return fmt.Errorf("invalid base_port %d (must be 1..65535)", spec.BasePort)
 	}
+	if spec.Instances < 0 {
+		return fmt.Errorf("instances must be between %d and %d (got %d)", minWorkerInstances, maxWorkerInstances, spec.Instances)
+	}
 	inst := spec.Instances
-	if inst <= 0 {
+	if inst == 0 {
 		inst = 1
 	}
 	if inst < minWorkerInstances || inst > maxWorkerInstances {
@@ -449,16 +456,9 @@ func (w *WorkerPool) stopRuntime(rt *workerRuntime) {
 	if rt == nil {
 		return
 	}
+	// Cancelling rt.ctx triggers exec.CommandContext's cmd.Cancel -> killProcGroup(cmd)
+	// strictly BEFORE cmd.Wait() reaps the child, avoiding any post-reap PID-reuse hazard.
 	rt.cancel()
-	// Proactively kill every active child process group by PID so grandchildren cannot survive.
-	for _, inst := range rt.instances {
-		inst.mu.Lock()
-		pid := inst.pid
-		inst.mu.Unlock()
-		if pid > 0 {
-			_ = killProcGroupPID(pid)
-		}
-	}
 	rt.wg.Wait()
 }
 
@@ -488,10 +488,12 @@ func (w *WorkerPool) superviseInstance(rt *workerRuntime, inst *managedInstanceS
 			inst.lastError = fmt.Sprintf("start failed: %v", err)
 			inst.mu.Unlock()
 		} else {
-			inst.mu.Lock()
+			pgid := 0
 			if cmd.Process != nil {
-				inst.pid = cmd.Process.Pid
+				pgid = cmd.Process.Pid
 			}
+			inst.mu.Lock()
+			inst.pid = pgid
 			inst.running = true
 			inst.healthy = false
 			inst.startedAt = nowRFC3339()
@@ -505,8 +507,11 @@ func (w *WorkerPool) superviseInstance(rt *workerRuntime, inst *managedInstanceS
 			}
 
 			waitErr := cmd.Wait()
-			// Ensure process group cleanup after exit as well.
-			_ = killProcGroup(cmd)
+			// On spontaneous crash (not cmd.Cancel), signal only -pgid (never bare pid)
+			// to reap any stray grandchildren left behind by the exited worker.
+			if rt.ctx.Err() == nil && pgid > 0 {
+				signalProcGroupOnly(pgid)
+			}
 
 			inst.mu.Lock()
 			inst.pid = 0
@@ -827,16 +832,16 @@ func (w *WorkerPool) AcquireHealthyEndpoint(workerID string) (string, func(), er
 		return "", nil, fmt.Errorf("worker pool %q has no healthy instances", workerID)
 	}
 
-	// Find minimum in-flight count among healthy instances.
-	minInFlight := healthy[0].inFlight.Load()
-	for _, inst := range healthy[1:] {
-		if v := inst.inFlight.Load(); v < minInFlight {
-			minInFlight = v
-		}
-	}
+	// Single-pass least-inflight selection (capturing each Load() once so best is
+	// guaranteed non-empty under concurrent mutations).
+	var minInFlight int64
 	best := make([]*managedInstanceState, 0, len(healthy))
-	for _, inst := range healthy {
-		if inst.inFlight.Load() == minInFlight {
+	for i, inst := range healthy {
+		v := inst.inFlight.Load()
+		if i == 0 || v < minInFlight {
+			minInFlight = v
+			best = append(best[:0], inst)
+		} else if v == minInFlight {
 			best = append(best, inst)
 		}
 	}
@@ -858,6 +863,8 @@ func (w *WorkerPool) persist() error {
 	if w.filePath == "" {
 		return nil
 	}
+	w.persistMu.Lock()
+	defer w.persistMu.Unlock()
 	data, err := json.MarshalIndent(w.ListSpecs(), "", "  ")
 	if err != nil {
 		return err

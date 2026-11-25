@@ -35,6 +35,9 @@ const (
 
 	// Maximum size accepted when reading PEM cert/key files from disk.
 	maxPEMFileBytes = 4 << 20
+
+	// Maximum XML element nesting depth allowed in network_security_config.xml.
+	maxXMLNestingDepth = 64
 )
 
 var (
@@ -638,6 +641,10 @@ func parseNetworkSecurityConfig(sourcePath string, data []byte) (NetworkSecurity
 		return finding, false, nil
 	}
 
+	if err := checkXMLMaxDepth(data, maxXMLNestingDepth); err != nil {
+		return finding, true, err
+	}
+
 	var doc xmlNetSecConfig
 	if err := xml.Unmarshal(data, &doc); err != nil {
 		return finding, true, err
@@ -720,8 +727,11 @@ func parseNetworkSecurityConfig(sourcePath string, data []byte) (NetworkSecurity
 		processPinSet(doc.DebugOverrides.PinSet, nil)
 	}
 
-	var walkDomainConfigs func(cfgs []xmlDomainConfig, parentDomains []string)
-	walkDomainConfigs = func(cfgs []xmlDomainConfig, parentDomains []string) {
+	var walkDomainConfigs func(cfgs []xmlDomainConfig, parentDomains []string, depth int)
+	walkDomainConfigs = func(cfgs []xmlDomainConfig, parentDomains []string, depth int) {
+		if depth > maxXMLNestingDepth {
+			return
+		}
 		for _, dc := range cfgs {
 			processCleartext(dc.Cleartext)
 			processAnchors(dc.TrustAnchors)
@@ -735,13 +745,38 @@ func parseNetworkSecurityConfig(sourcePath string, data []byte) (NetworkSecurity
 			}
 			processPinSet(dc.PinSet, localDomains)
 			if len(dc.DomainConfigs) > 0 {
-				walkDomainConfigs(dc.DomainConfigs, localDomains)
+				walkDomainConfigs(dc.DomainConfigs, localDomains, depth+1)
 			}
 		}
 	}
-	walkDomainConfigs(doc.DomainConfigs, nil)
+	walkDomainConfigs(doc.DomainConfigs, nil, 0)
 
 	return finding, true, nil
+}
+
+func checkXMLMaxDepth(data []byte, maxDepth int) error {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		switch tok.(type) {
+		case xml.StartElement:
+			depth++
+			if depth > maxDepth {
+				return fmt.Errorf("tlskit: XML nesting depth exceeds limit %d", maxDepth)
+			}
+		case xml.EndElement:
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
 }
 
 // parseBinaryNetworkSecurityConfig performs best-effort pure-Go extraction from
@@ -788,74 +823,95 @@ func parseBinaryNetworkSecurityConfig(sourcePath string, data []byte) (NetworkSe
 
 func extractAXMLStringPool(data []byte) []string {
 	// AXML header is 8 bytes; string pool chunk immediately follows at offset 8
-	// with chunk type 0x0001.
-	if len(data) < 36 {
+	// with chunk type 0x0001. All offset/length checks use uint64 to avoid
+	// signed integer overflow on 32-bit platforms or crafted headers.
+	dataLen := uint64(len(data))
+	if dataLen < 36 {
 		return nil
 	}
-	off := 8
+	const off uint64 = 8
 	chunkType := binary.LittleEndian.Uint16(data[off : off+2])
-	chunkSize := int(binary.LittleEndian.Uint32(data[off+4 : off+8]))
-	if chunkType != 0x0001 || chunkSize <= 28 || off+chunkSize > len(data) {
+	chunkSize := uint64(binary.LittleEndian.Uint32(data[off+4 : off+8]))
+	if chunkType != 0x0001 || chunkSize < 28 || chunkSize > dataLen-off {
 		return nil
 	}
-	strCount := int(binary.LittleEndian.Uint32(data[off+8 : off+12]))
+	end := off + chunkSize
+
+	strCount := uint64(binary.LittleEndian.Uint32(data[off+8 : off+12]))
 	flags := binary.LittleEndian.Uint32(data[off+16 : off+20])
-	stringsStart := int(binary.LittleEndian.Uint32(data[off+20 : off+24]))
+	stringsStart := uint64(binary.LittleEndian.Uint32(data[off+20 : off+24]))
 	isUTF8 := (flags & (1 << 8)) != 0
 
-	if strCount <= 0 || strCount > 8192 {
+	if strCount == 0 || strCount > 8192 {
+		return nil
+	}
+	if stringsStart < 28 || stringsStart >= chunkSize {
 		return nil
 	}
 	offsetsBase := off + 28
+	offsetsBytes := strCount * 4
+	if offsetsBytes > chunkSize-28 {
+		return nil
+	}
 	dataBase := off + stringsStart
-	if offsetsBase+strCount*4 > off+chunkSize || dataBase >= off+chunkSize {
+	if offsetsBase+offsetsBytes > dataBase || dataBase >= end {
 		return nil
 	}
 
-	out := make([]string, 0, strCount)
-	for i := 0; i < strCount; i++ {
-		rel := int(binary.LittleEndian.Uint32(data[offsetsBase+i*4 : offsetsBase+i*4+4]))
-		pos := dataBase + rel
-		if pos < dataBase || pos >= off+chunkSize {
+	out := make([]string, 0, int(strCount))
+	for i := uint64(0); i < strCount; i++ {
+		rel := uint64(binary.LittleEndian.Uint32(data[offsetsBase+i*4 : offsetsBase+i*4+4]))
+		if rel >= end-dataBase {
 			continue
 		}
+		pos := dataBase + rel
 		if isUTF8 {
-			// Skip UTF-16 char len (1-2 bytes), read UTF-8 byte len (1-2 bytes).
-			if pos >= off+chunkSize {
+			// Skip UTF-16 char len (1-2 bytes), then read UTF-8 byte len (1-2 bytes).
+			if pos >= end {
 				continue
 			}
 			if data[pos]&0x80 != 0 {
+				if end-pos < 2 {
+					continue
+				}
 				pos += 2
 			} else {
 				pos++
 			}
-			if pos >= off+chunkSize {
+			if pos >= end {
 				continue
 			}
-			var byteLen int
-			if data[pos]&0x80 != 0 && pos+1 < off+chunkSize {
-				byteLen = int(data[pos]&0x7f)<<8 | int(data[pos+1])
+			var byteLen uint64
+			if data[pos]&0x80 != 0 {
+				if end-pos < 2 {
+					continue
+				}
+				byteLen = (uint64(data[pos]&0x7f) << 8) | uint64(data[pos+1])
 				pos += 2
 			} else {
-				byteLen = int(data[pos])
+				byteLen = uint64(data[pos])
 				pos++
 			}
-			if byteLen > 0 && pos+byteLen <= off+chunkSize {
+			if byteLen > 0 && byteLen <= end-pos {
 				out = append(out, string(data[pos:pos+byteLen]))
 			}
 		} else {
-			if pos+2 > off+chunkSize {
+			if end-pos < 2 {
 				continue
 			}
-			charLen := int(binary.LittleEndian.Uint16(data[pos : pos+2]))
+			charLen := uint64(binary.LittleEndian.Uint16(data[pos : pos+2]))
 			pos += 2
-			if charLen&0x8000 != 0 && pos+2 <= off+chunkSize {
-				charLen = ((charLen & 0x7fff) << 16) | int(binary.LittleEndian.Uint16(data[pos:pos+2]))
+			if charLen&0x8000 != 0 {
+				if end-pos < 2 {
+					continue
+				}
+				charLen = ((charLen & 0x7fff) << 16) | uint64(binary.LittleEndian.Uint16(data[pos:pos+2]))
 				pos += 2
 			}
-			if charLen > 0 && pos+charLen*2 <= off+chunkSize {
-				u16 := make([]uint16, charLen)
-				for j := 0; j < charLen; j++ {
+			// Overflow-safe check before allocating u16 slice.
+			if charLen > 0 && charLen <= (end-pos)/2 {
+				u16 := make([]uint16, int(charLen))
+				for j := uint64(0); j < charLen; j++ {
 					u16[j] = binary.LittleEndian.Uint16(data[pos+j*2 : pos+j*2+2])
 				}
 				out = append(out, string(utf16.Decode(u16)))

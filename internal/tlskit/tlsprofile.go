@@ -497,19 +497,28 @@ func DetectCurlImpersonate() CurlImpersonateInfo {
 	dirs := filepath.SplitList(os.Getenv("PATH"))
 	info := detectCurlImpersonateInDirs(dirs)
 	// Also consult exec.LookPath for canonical names in case the platform
-	// resolves extra standard locations.
-	seen := make(map[string]bool, len(info.Binaries))
+	// resolves extra standard locations, deduplicating case-insensitively by
+	// both normalized binary stem and resolved filesystem path.
+	seenKey := make(map[string]bool, len(info.Binaries))
+	seenPath := make(map[string]bool, len(info.Binaries))
 	for _, b := range info.Binaries {
-		seen[b.Name] = true
+		seenKey[curlBinaryDedupKey(b.Name)] = true
+		seenPath[canonicalBinaryPath(b.Path)] = true
 	}
 	for _, name := range []string{"curl-impersonate-chrome", "curl-impersonate-ff", "curl-impersonate"} {
-		if seen[name] {
+		key := curlBinaryDedupKey(name)
+		if seenKey[key] {
 			continue
 		}
 		if p, err := exec.LookPath(name); err == nil && p != "" {
-			seen[name] = true
+			cp := canonicalBinaryPath(p)
+			if seenPath[cp] {
+				continue
+			}
+			seenKey[key] = true
+			seenPath[cp] = true
 			info.Binaries = append(info.Binaries, CurlImpersonateBinary{
-				Name:   name,
+				Name:   filepath.Base(p),
 				Path:   p,
 				Family: classifyCurlImpersonateFamily(name),
 			})
@@ -524,7 +533,8 @@ func detectCurlImpersonateInDirs(dirs []string) CurlImpersonateInfo {
 		Binaries:         []CurlImpersonateBinary{},
 		SearchedPatterns: slices.Clone(curlImpersonatePatterns),
 	}
-	seenName := make(map[string]bool)
+	seenKey := make(map[string]bool)
+	seenPath := make(map[string]bool)
 
 	for _, dir := range dirs {
 		dir = strings.TrimSpace(dir)
@@ -544,11 +554,13 @@ func detectCurlImpersonateInDirs(dirs []string) CurlImpersonateInfo {
 			if !isExecutableFile(fullPath) {
 				continue
 			}
-			key := strings.ToLower(name)
-			if seenName[key] {
+			key := curlBinaryDedupKey(name)
+			cp := canonicalBinaryPath(fullPath)
+			if seenKey[key] || seenPath[cp] {
 				continue
 			}
-			seenName[key] = true
+			seenKey[key] = true
+			seenPath[cp] = true
 			info.Binaries = append(info.Binaries, CurlImpersonateBinary{
 				Name:   name,
 				Path:   fullPath,
@@ -559,6 +571,25 @@ func detectCurlImpersonateInDirs(dirs []string) CurlImpersonateInfo {
 
 	finalizeCurlImpersonateInfo(&info)
 	return info
+}
+
+func curlBinaryDedupKey(name string) string {
+	low := strings.ToLower(strings.TrimSpace(name))
+	low = strings.TrimSuffix(low, ".exe")
+	low = strings.TrimSuffix(low, ".bat")
+	low = strings.TrimSuffix(low, ".cmd")
+	return low
+}
+
+func canonicalBinaryPath(p string) string {
+	resolved := filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(resolved); err == nil && r != "" {
+		resolved = r
+	}
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.ToLower(resolved)
+	}
+	return resolved
 }
 
 func finalizeCurlImpersonateInfo(info *CurlImpersonateInfo) {

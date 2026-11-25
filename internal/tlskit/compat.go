@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // DefaultCronetOptions returns recommended local-proxy compatibility options
@@ -390,6 +391,24 @@ function hookCronetBuilder(className) {
                     alt_port: altPort
                 });
                 return this;
+            };
+        }
+        if (Builder.build) {
+            Builder.build.overload().implementation = function () {
+                try {
+                    if (this.enableQuic) {
+                        this.enableQuic(false);
+                    }
+                    if (this.enableHttp2) {
+                        this.enableHttp2(true);
+                    }
+                } catch (_) {}
+                emit('cronet_build_applied', {
+                    class_name: className,
+                    quic_enabled: false,
+                    http2_enabled: true
+                });
+                return this.build();
             };
         }
         emit('hook_installed', { target: className });
@@ -846,30 +865,39 @@ Java.perform(function () {
 }
 
 // jsString encodes s as a safe double-quoted JavaScript string literal,
-// preventing quote, newline, U+2028/U+2029, and </script> breakout.
+// preventing quote, newline, U+0085/U+2028/U+2029, bidi/control, and
+// </script> breakout.
 func jsString(s string) string {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return `""`
 	}
-	out := string(b)
-	out = strings.ReplaceAll(out, "\u2028", `\u2028`)
-	out = strings.ReplaceAll(out, "\u2029", `\u2029`)
-	out = strings.ReplaceAll(out, "</", `<\/`)
-	return out
+	var out strings.Builder
+	out.Grow(len(b))
+	for _, r := range string(b) {
+		switch {
+		case r == '\u0085' || r == '\u2028' || r == '\u2029' ||
+			(r >= 0x7f && r <= 0x9f) || unicode.Is(unicode.Cf, r):
+			fmt.Fprintf(&out, `\u%04x`, r)
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return strings.ReplaceAll(out.String(), "</", `<\/`)
 }
 
 // jsComment sanitizes s for safe single-line JavaScript comments, preventing
-// newline / U+2028 / U+2029 / block-comment breakout.
+// newline, C0/C1 control (including U+0085 NEL), U+2028/U+2029, bidi-override
+// format chars, non-printable runes, HTML script-tag, and block-comment breakout.
 func jsComment(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
 		switch {
-		case r == '\r' || r == '\n' || r == '\u2028' || r == '\u2029' || r == '\t':
+		case r == '\r' || r == '\n' || r == '\t' || r == '\u0085' || r == '\u2028' || r == '\u2029':
 			b.WriteByte(' ')
-		case r < 0x20 || r == 0x7f:
-			// drop non-printable ASCII control bytes
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || !unicode.IsPrint(r):
+			// drop C0/C1 control, bidi/format, and non-printable characters
 		default:
 			b.WriteRune(r)
 		}

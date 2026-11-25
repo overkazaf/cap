@@ -1209,3 +1209,458 @@ exit 0
 		t.Errorf("expected no running job after CancelJob, got %+v", st)
 	}
 }
+
+func TestJDKFirstMatchingAndLTSRanking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub scripts require POSIX")
+	}
+
+	dir := t.TempDir()
+	mkJavaHome := func(rel, ver string, withJavac bool) (javaBin, javacBin, home string) {
+		home = filepath.Join(dir, rel, "Contents", "Home")
+		binDir := filepath.Join(home, "bin")
+		if err := os.MkdirAll(binDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		javaBin = writeFakeExec(t, binDir, "java", fmt.Sprintf(`echo 'openjdk version "%s" 2024-01-01' >&2`, ver))
+		if withJavac {
+			javacBin = writeFakeExec(t, binDir, "javac", fmt.Sprintf(`echo 'javac %s'`, ver))
+		}
+		return javaBin, javacBin, home
+	}
+
+	jre8Bin, _, jre8Home := mkJavaHome("jre-plugin", "1.8.0_331", false)
+	_, _, _ = mkJavaHome("jvms/jdk-23.jdk", "23.0.1", true)
+	_, _, _ = mkJavaHome("jvms/jdk-11.jdk", "11.0.30", true)
+	jdk17Bin, jdk17Javac, jdk17Home := mkJavaHome("jvms/temurin-17.jdk", "17.0.7", true)
+	_, _, _ = mkJavaHome("jvms/jdk-8.jdk", "1.8.0_291", true)
+
+	origGlobs := javaSearchGlobs
+	origExtraDirs := javaExtraDirs
+	javaSearchGlobs = []string{filepath.Join(dir, "jvms", "*", "Contents", "Home", "bin", "java")}
+	javaExtraDirs = nil
+	defer func() {
+		javaSearchGlobs = origGlobs
+		javaExtraDirs = origExtraDirs
+	}()
+
+	// Pollute JAVA_HOME and PATH with JRE 8 + JDK 23 javac to reproduce the real macOS failure mode.
+	t.Setenv("JAVA_HOME", jre8Home)
+	t.Setenv("PATH", filepath.Dir(jre8Bin)+string(os.PathListSeparator)+filepath.Join(dir, "jvms", "jdk-23.jdk", "Contents", "Home", "bin"))
+
+	var info ToolchainInfo
+	info.Java = ToolStatus{Name: "java"}
+	probeJavaToolchain("", &info)
+
+	if !info.Java.Ready || info.Java.Path != jdk17Bin || info.JavacPath != jdk17Javac || info.JavaHome != jdk17Home {
+		t.Fatalf("expected JDK 17 full JDK to win over JRE 8 and JDK 23; got java=%+v javac=%q home=%q",
+			info.Java, info.JavacPath, info.JavaHome)
+	}
+
+	// Verify JRE-only preferred java is NEVER silently paired with an unrelated JDK 23 javac on PATH.
+	var jreOnly ToolchainInfo
+	jreOnly.Java = ToolStatus{Name: "java"}
+	probeJavaToolchain(jre8Bin, &jreOnly)
+	if !jreOnly.Java.Ready || jreOnly.Java.Path != jre8Bin {
+		t.Fatalf("expected preferred JRE 8 java ready, got %+v", jreOnly.Java)
+	}
+	if jreOnly.JavacPath != "" {
+		t.Fatalf("JRE 8 must NOT be silently paired with mismatched JDK 23 javac; got %q", jreOnly.JavacPath)
+	}
+
+	// Verify auto-discovery when ONLY JRE 8 exists also refuses mismatched PATH javac.
+	javaSearchGlobs = nil
+	t.Setenv("PATH", filepath.Dir(jre8Bin))
+	var onlyJreAuto ToolchainInfo
+	onlyJreAuto.Java = ToolStatus{Name: "java"}
+	probeJavaToolchain("", &onlyJreAuto)
+	if !onlyJreAuto.Java.Ready || onlyJreAuto.Java.Path != jre8Bin || onlyJreAuto.JavacPath != "" {
+		t.Fatalf("expected JRE-only auto-discovery to keep JavacPath empty; got java=%+v javac=%q", onlyJreAuto.Java, onlyJreAuto.JavacPath)
+	}
+	if !(javaVersionRank(17) > javaVersionRank(11) && javaVersionRank(11) > javaVersionRank(8) &&
+		javaVersionRank(8) > javaVersionRank(21) && javaVersionRank(21) > javaVersionRank(23)) {
+		t.Fatalf("unexpected javaVersionRank ordering")
+	}
+	if parseJavaMajor("1.8.0_291") != 8 || parseJavaMajor("17.0.7") != 17 || parseJavaMajor("23.0.1") != 23 {
+		t.Fatalf("parseJavaMajor failed")
+	}
+}
+
+func TestUnidbgModeClassificationJarFilteringAndM2Cache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub scripts require POSIX")
+	}
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fakeJava := writeFakeExec(t, binDir, "java", `echo 'openjdk version "17.0.7"' >&2`)
+	_ = writeFakeExec(t, binDir, "javac", `echo 'javac 17.0.7'`)
+	fakeMvn := writeFakeExec(t, binDir, "mvn", `echo 'Apache Maven 3.9.6'`)
+	fakeR2 := writeFakeExec(t, binDir, "r2", `echo 'radare2 5.9.4'`)
+	fakePy := writeFakeExec(t, binDir, "python3", "echo PY=3.12.0\necho QILING=\necho ANGR=")
+
+	// 1. Thin-JAR Maven repo with -sources/-javadoc/-tests/original-* artifacts must classify as maven-repo!
+	thinRepo := filepath.Join(dir, "unidbg-thin")
+	androidTarget := filepath.Join(thinRepo, "unidbg-android", "target")
+	if err := os.MkdirAll(androidTarget, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(thinRepo, "pom.xml"), []byte(`<project><artifactId>unidbg</artifactId><version>0.9.9-SNAPSHOT</version></project>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(thinRepo, "unidbg-android", "pom.xml"), []byte(`<project><artifactId>unidbg-android</artifactId><version>0.9.9-SNAPSHOT</version></project>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"unidbg-android-0.9.9-SNAPSHOT.jar",
+		"unidbg-android-0.9.9-SNAPSHOT-sources.jar",
+		"unidbg-android-0.9.9-SNAPSHOT-javadoc.jar",
+		"unidbg-android-0.9.9-SNAPSHOT-tests.jar",
+		"unidbg-android-0.9.9-SNAPSHOT-test-sources.jar",
+		"original-unidbg-android-0.9.9-SNAPSHOT.jar",
+	} {
+		if err := os.WriteFile(filepath.Join(androidTarget, name), []byte("jar"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	jars := collectUnidbgJars(thinRepo)
+	if len(jars) != 1 || filepath.Base(jars[0]) != "unidbg-android-0.9.9-SNAPSHOT.jar" {
+		t.Fatalf("collectUnidbgJars failed to filter non-runtime jars: %v", jars)
+	}
+
+	thinWithMvn := DetectToolchain(ToolchainConfig{
+		R2Path: fakeR2, JavaPath: fakeJava, MvnPath: fakeMvn, UnidbgDir: thinRepo, PythonPath: fakePy,
+	})
+	if thinWithMvn.UnidbgMode != UnidbgModeMavenRepo || !thinWithMvn.UnidbgReady {
+		t.Fatalf("expected maven-repo + ready with mvn, got mode=%q ready=%v issues=%v",
+			thinWithMvn.UnidbgMode, thinWithMvn.UnidbgReady, thinWithMvn.Issues)
+	}
+
+	thinNoMvn := DetectToolchain(ToolchainConfig{
+		R2Path: fakeR2, JavaPath: fakeJava, MvnPath: filepath.Join(dir, "no-mvn"), UnidbgDir: thinRepo, PythonPath: fakePy,
+	})
+	if thinNoMvn.UnidbgMode != UnidbgModeMavenRepo || thinNoMvn.UnidbgReady {
+		t.Fatalf("thin maven-repo without mvn must NOT be ready, got mode=%q ready=%v", thinNoMvn.UnidbgMode, thinNoMvn.UnidbgReady)
+	}
+
+	// 2. Maven repo with >=5 bundled runtime jars in lib/ qualifies as jar-bundle (ready without mvn)
+	bundleRepo := filepath.Join(dir, "unidbg-bundle")
+	if err := os.MkdirAll(filepath.Join(bundleRepo, "lib"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(bundleRepo, "pom.xml"), []byte(`<project><artifactId>unidbg</artifactId><version>0.9.9</version></project>`), 0644)
+	for i := 0; i < 5; i++ {
+		_ = os.WriteFile(filepath.Join(bundleRepo, "lib", fmt.Sprintf("dep-%d.jar", i)), []byte("jar"), 0644)
+	}
+	bundleInfo := DetectToolchain(ToolchainConfig{
+		R2Path: fakeR2, JavaPath: fakeJava, MvnPath: filepath.Join(dir, "no-mvn"), UnidbgDir: bundleRepo, PythonPath: fakePy,
+	})
+	if bundleInfo.UnidbgMode != UnidbgModeJarBundle || !bundleInfo.UnidbgReady {
+		t.Fatalf("expected jar-bundle ready without mvn, got mode=%q ready=%v", bundleInfo.UnidbgMode, bundleInfo.UnidbgReady)
+	}
+
+	// 3. Single fat JAR file -> fat-jar
+	fatJar := filepath.Join(dir, "unidbg-android-0.9.9-shaded.jar")
+	_ = os.WriteFile(fatJar, []byte("jar"), 0644)
+	fatInfo := DetectToolchain(ToolchainConfig{
+		R2Path: fakeR2, JavaPath: fakeJava, MvnPath: filepath.Join(dir, "no-mvn"), UnidbgDir: fatJar, PythonPath: fakePy,
+	})
+	if fatInfo.UnidbgMode != UnidbgModeFatJar || !fatInfo.UnidbgReady {
+		t.Fatalf("expected fat-jar ready, got mode=%q ready=%v", fatInfo.UnidbgMode, fatInfo.UnidbgReady)
+	}
+
+	// 4. ~/.m2 cache auto-discovery fallback picks latest version dir with .jar + .pom
+	fakeM2 := filepath.Join(dir, "m2repo")
+	for _, ver := range []string{"0.9.8", "0.9.10-SNAPSHOT"} {
+		vDir := filepath.Join(fakeM2, "com", "github", "zhkl0228", "unidbg-android", ver)
+		if err := os.MkdirAll(vDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(vDir, "unidbg-android-"+ver+".jar"), []byte("jar"), 0644)
+		_ = os.WriteFile(filepath.Join(vDir, "unidbg-android-"+ver+".pom"), []byte("<project/>"), 0644)
+		_ = os.WriteFile(filepath.Join(vDir, "unidbg-android-"+ver+"-sources.jar"), []byte("src"), 0644)
+	}
+	origM2 := m2RepoOverride
+	m2RepoOverride = fakeM2
+	defer func() { m2RepoOverride = origM2 }()
+	t.Setenv("UNIDBG_DIR", "")
+	t.Setenv("UNIDBG_HOME", "")
+	t.Setenv("HOME", dir)
+
+	m2Info := DetectToolchain(ToolchainConfig{
+		R2Path: fakeR2, JavaPath: fakeJava, MvnPath: fakeMvn, PythonPath: fakePy,
+	})
+	if m2Info.UnidbgMode != UnidbgModeM2Cache || !m2Info.UnidbgReady || m2Info.Unidbg.Version != "0.9.10-SNAPSHOT" {
+		t.Fatalf("expected m2-cache fallback picking 0.9.10-SNAPSHOT, got mode=%q ready=%v unidbg=%+v",
+			m2Info.UnidbgMode, m2Info.UnidbgReady, m2Info.Unidbg)
+	}
+}
+
+func TestSeparateQilingAngrPythonAndExecution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub scripts require POSIX")
+	}
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pyQiling := writeFakeExec(t, binDir, "python-qiling", `
+if [ "$1" = "-c" ]; then
+  echo "PY=3.12.5"
+  echo "QILING=1.4.6"
+  echo "ANGR="
+  exit 0
+fi
+echo '[CAP_RE] {"kind":"smoke","engine":"qiling","py":"qiling-only-3.12"}'
+`)
+	pyAngr := writeFakeExec(t, binDir, "python-angr", `
+if [ "$1" = "-c" ]; then
+  echo "PY=3.10.4"
+  echo "QILING="
+  echo "ANGR=9.2.144"
+  exit 0
+fi
+echo '[CAP_RE] {"kind":"solution","solution_utf8":"ANGR_PY_310"}'
+`)
+	fakeR2 := writeFakeExec(t, binDir, "r2", `echo "radare2 5.9.4"`)
+	fakeJava := writeFakeExec(t, binDir, "java", `echo 'openjdk version "17.0.7"' >&2`)
+	_ = writeFakeExec(t, binDir, "javac", `echo 'javac 17.0.7'`)
+	fakeMvn := writeFakeExec(t, binDir, "mvn", `echo "Apache Maven 3.9.6"`)
+
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Shutdown()
+
+	mgr.SetToolchainConfig(ToolchainConfig{
+		R2Path:           fakeR2,
+		JavaPath:         fakeJava,
+		MvnPath:          fakeMvn,
+		QilingPythonPath: pyQiling,
+		AngrPythonPath:   pyAngr,
+	})
+
+	tc := mgr.GetToolchain(true)
+	if !tc.QilingReady || tc.Qiling.Path != pyQiling || tc.Qiling.Version != "1.4.6" {
+		t.Fatalf("Qiling toolchain mismatch: ready=%v qiling=%+v", tc.QilingReady, tc.Qiling)
+	}
+	if !tc.AngrReady || tc.Angr.Path != pyAngr || tc.Angr.Version != "9.2.144" {
+		t.Fatalf("angr toolchain mismatch: ready=%v angr=%+v", tc.AngrReady, tc.Angr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Run Qiling job -> must invoke pyQiling
+	if _, err := mgr.StartJob(RunJobRequest{Engine: EngineQiling, Code: "print('qiling')"}); err != nil {
+		t.Fatalf("StartJob(qiling): %v", err)
+	}
+	qState, err := mgr.WaitJob(ctx)
+	if err != nil || qState.Status != StatusDone || len(qState.Results) != 1 || qState.Results[0].Payload["py"] != "qiling-only-3.12" {
+		t.Fatalf("Qiling job did not run with dedicated Qiling Python: err=%v state=%+v", err, qState)
+	}
+
+	// Run angr job -> must invoke pyAngr
+	if _, err := mgr.StartJob(RunJobRequest{Engine: EngineAngr, Code: "print('angr')"}); err != nil {
+		t.Fatalf("StartJob(angr): %v", err)
+	}
+	aState, err := mgr.WaitJob(ctx)
+	if err != nil || aState.Status != StatusDone || len(aState.Results) != 1 || aState.Results[0].Payload["solution_utf8"] != "ANGR_PY_310" {
+		t.Fatalf("angr job did not run with dedicated angr Python: err=%v state=%+v", err, aState)
+	}
+}
+
+func TestUnidbgMavenClasspathCacheHitSkipsMvnAndM2CacheMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub scripts require POSIX")
+	}
+
+	dir := t.TempDir()
+	jdkHome := filepath.Join(dir, "jdk17")
+	binDir := filepath.Join(jdkHome, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	depJar := filepath.Join(dir, "resolved-dep.jar")
+	if err := os.WriteFile(depJar, []byte("PK\x03\x04dep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mvnCountFile := filepath.Join(dir, "mvn-invocations.txt")
+
+	fakeMvn := writeFakeExec(t, binDir, "mvn", fmt.Sprintf(`
+if [ "$1" = "-v" ]; then
+  echo "Apache Maven 3.9.6"
+  exit 0
+fi
+if [ "$JAVA_HOME" != %q ]; then
+  echo "WRONG_JAVA_HOME=$JAVA_HOME" >&2
+  exit 2
+fi
+echo "1" >> %q
+for arg in "$@"; do
+  case "$arg" in
+    -Dmdep.outputFile=*)
+      out="${arg#-Dmdep.outputFile=}"
+      printf "%%s" %q > "$out"
+      ;;
+  esac
+done
+exit 0
+`, jdkHome, mvnCountFile, depJar))
+
+	fakeJavac := writeFakeExec(t, binDir, "javac", fmt.Sprintf(`
+if [ "$JAVA_HOME" != %q ]; then
+  echo "JAVAC_WRONG_JAVA_HOME=$JAVA_HOME" >&2
+  exit 2
+fi
+for arg in "$@"; do
+  case "$arg" in
+    *-sources.jar*) echo "UNFILTERED_SOURCES_JAR" >&2; exit 3 ;;
+  esac
+done
+exit 0
+`, jdkHome))
+
+	fakeJava := writeFakeExec(t, binDir, "java", fmt.Sprintf(`
+if [ "$1" = "-version" ]; then
+  echo 'openjdk version "17.0.7"' >&2
+  exit 0
+fi
+if [ "$JAVA_HOME" != %q ]; then
+  echo "JAVA_WRONG_JAVA_HOME=$JAVA_HOME" >&2
+  exit 2
+fi
+echo '[CAP_RE] {"kind":"smoke","engine":"unidbg","ok":true}'
+exit 0
+`, jdkHome))
+
+	fakeR2 := writeFakeExec(t, binDir, "r2", `echo "radare2 5.9.4"`)
+	fakePy := writeFakeExec(t, binDir, "python3", "echo PY=3.12.0\necho QILING=\necho ANGR=")
+	_ = fakeJavac
+
+	// Multi-module Unidbg repo layout
+	repoDir := filepath.Join(dir, "unidbg-repo")
+	androidClasses := filepath.Join(repoDir, "unidbg-android", "target", "classes")
+	if err := os.MkdirAll(androidClasses, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(repoDir, "pom.xml"), []byte(`<project><artifactId>unidbg</artifactId><version>0.9.9-SNAPSHOT</version></project>`), 0644)
+	_ = os.WriteFile(filepath.Join(repoDir, "unidbg-android", "pom.xml"), []byte(`<project><artifactId>unidbg-android</artifactId><version>0.9.9-SNAPSHOT</version></project>`), 0644)
+	_ = os.WriteFile(filepath.Join(repoDir, "unidbg-android", "target", "unidbg-android-0.9.9-SNAPSHOT.jar"), []byte("thin"), 0644)
+	_ = os.WriteFile(filepath.Join(repoDir, "unidbg-android", "target", "unidbg-android-0.9.9-SNAPSHOT-sources.jar"), []byte("src"), 0644)
+
+	capDir := filepath.Join(dir, "cap-home")
+	mgr, err := NewManager(capDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Shutdown()
+
+	mgr.SetToolchainConfig(ToolchainConfig{
+		R2Path:     fakeR2,
+		JavaPath:   fakeJava,
+		MvnPath:    fakeMvn,
+		UnidbgDir:  repoDir,
+		PythonPath: fakePy,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Run 1: cache miss -> invokes mvn once and caches classpath
+	if _, err := mgr.StartJob(RunJobRequest{
+		Engine: EngineUnidbg,
+		Code:   "public class Smoke1 { public static void main(String[] a) {} }",
+	}); err != nil {
+		t.Fatalf("Run 1 StartJob failed: %v", err)
+	}
+	st1, err := mgr.WaitJob(ctx)
+	if err != nil || st1.Status != StatusDone {
+		t.Fatalf("Run 1 failed: err=%v status=%q jobErr=%q", err, st1.Status, st1.Error)
+	}
+
+	rawCnt1, err := os.ReadFile(mvnCountFile)
+	if err != nil {
+		t.Fatalf("expected mvn to be invoked on first run: %v", err)
+	}
+	if lines := len(strings.Fields(string(rawCnt1))); lines != 1 {
+		t.Fatalf("expected 1 mvn invocation after run 1, got %d", lines)
+	}
+
+	// Run 2: cache hit -> skips mvn completely!
+	if _, err := mgr.StartJob(RunJobRequest{
+		Engine: EngineUnidbg,
+		Code:   "public class Smoke2 { public static void main(String[] a) {} }",
+	}); err != nil {
+		t.Fatalf("Run 2 StartJob failed: %v", err)
+	}
+	st2, err := mgr.WaitJob(ctx)
+	if err != nil || st2.Status != StatusDone {
+		t.Fatalf("Run 2 failed: err=%v status=%q jobErr=%q", err, st2.Status, st2.Error)
+	}
+	if !strings.Contains(st2.Command, "cached cp") {
+		t.Errorf("expected cached cp indicator on 2nd run command, got %q", st2.Command)
+	}
+	rawCnt2, _ := os.ReadFile(mvnCountFile)
+	if lines := len(strings.Fields(string(rawCnt2))); lines != 1 {
+		t.Fatalf("expected mvn to be skipped on cache hit (count=1), got %d", lines)
+	}
+
+	// Also verify m2-cache mode execution + cache hit
+	m2Dir := filepath.Join(dir, "m2-artifact", "0.9.10-SNAPSHOT")
+	if err := os.MkdirAll(m2Dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(m2Dir, "unidbg-android-0.9.10-SNAPSHOT.jar"), []byte("jar"), 0644)
+	_ = os.WriteFile(filepath.Join(m2Dir, "unidbg-android-0.9.10-SNAPSHOT.pom"), []byte("<project/>"), 0644)
+
+	mgr.SetToolchainConfig(ToolchainConfig{
+		R2Path:     fakeR2,
+		JavaPath:   fakeJava,
+		MvnPath:    fakeMvn,
+		UnidbgDir:  m2Dir,
+		PythonPath: fakePy,
+	})
+	tcM2 := mgr.GetToolchain(true)
+	if tcM2.UnidbgMode != UnidbgModeM2Cache || !tcM2.UnidbgReady {
+		t.Fatalf("expected m2-cache ready, got mode=%q ready=%v", tcM2.UnidbgMode, tcM2.UnidbgReady)
+	}
+	if _, err := mgr.StartJob(RunJobRequest{
+		Engine: EngineUnidbg,
+		Code:   "public class M2Smoke { public static void main(String[] a) {} }",
+	}); err != nil {
+		t.Fatalf("M2 Run 1 failed: %v", err)
+	}
+	stM2, err := mgr.WaitJob(ctx)
+	if err != nil || stM2.Status != StatusDone {
+		t.Fatalf("M2 Run 1 wait failed: err=%v status=%q jobErr=%q", err, stM2.Status, stM2.Error)
+	}
+	rawCnt3, _ := os.ReadFile(mvnCountFile)
+	if lines := len(strings.Fields(string(rawCnt3))); lines != 2 {
+		t.Fatalf("expected 2 total mvn invocations after M2 run 1, got %d", lines)
+	}
+	// M2 Run 2 -> cache hit!
+	if _, err := mgr.StartJob(RunJobRequest{
+		Engine: EngineUnidbg,
+		Code:   "public class M2Smoke2 { public static void main(String[] a) {} }",
+	}); err != nil {
+		t.Fatalf("M2 Run 2 failed: %v", err)
+	}
+	stM2Hit, err := mgr.WaitJob(ctx)
+	if err != nil || stM2Hit.Status != StatusDone || !strings.Contains(stM2Hit.Command, "cached m2 cp") {
+		t.Fatalf("M2 Run 2 cache hit failed: err=%v cmd=%q status=%q", err, stM2Hit.Command, stM2Hit.Status)
+	}
+	rawCnt4, _ := os.ReadFile(mvnCountFile)
+	if lines := len(strings.Fields(string(rawCnt4))); lines != 2 {
+		t.Fatalf("expected mvn skipped on M2 run 2 cache hit (count=2), got %d", lines)
+	}
+}

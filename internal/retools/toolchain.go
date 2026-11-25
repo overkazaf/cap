@@ -9,17 +9,46 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-const toolchainProbeTimeout = 4 * time.Second
+const (
+	toolchainProbeTimeout = 4 * time.Second
+	pythonProbeTimeout    = 6 * time.Second
+	probeWorkerPoolSize   = 6
+)
 
 var (
-	semverRe     = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?(?:[_.-]\d+)?`)
-	javaQuotedRe = regexp.MustCompile(`version\s+"([^"]+)"`)
-	pomVersionRe = regexp.MustCompile(`<version>\s*([^<\s]+)\s*</version>`)
+	semverRe          = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?(?:[_.-]\d+)?`)
+	javaQuotedRe      = regexp.MustCompile(`version\s+"([^"]+)"`)
+	pomVersionRe      = regexp.MustCompile(`<version>\s*([^<\s]+)\s*</version>`)
+	pythonBinNameRe   = regexp.MustCompile(`^python3(\.\d+)?(\.exe)?$`)
+	defaultJavaGlobs = []string{
+		"/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java",
+		"/opt/homebrew/opt/openjdk*/bin/java",
+		"/usr/local/opt/openjdk*/bin/java",
+		"/usr/local/Cellar/openjdk*/*/libexec/openjdk.jdk/Contents/Home/bin/java",
+		"/usr/lib/jvm/*/bin/java",
+	}
+	defaultJavaExtraDirs = []string{
+		"/opt/homebrew/opt/openjdk/bin",
+		"/opt/homebrew/opt/openjdk@17/bin",
+		"/opt/homebrew/opt/openjdk@11/bin",
+		"/usr/local/opt/openjdk/bin",
+		"/usr/local/opt/openjdk@17/bin",
+		"/usr/local/opt/openjdk@11/bin",
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+	}
+	// javaSearchGlobs and javaExtraDirs are overridable in unit tests for hermetic JDK discovery checks.
+	javaSearchGlobs = defaultJavaGlobs
+	javaExtraDirs   = defaultJavaExtraDirs
+	// m2RepoOverride is overridable in unit tests for hermetic ~/.m2 fallback checks.
+	m2RepoOverride = ""
 )
 
 // DetectToolchain probes the host machine for radare2, Java/Maven/Unidbg,
@@ -80,14 +109,16 @@ func DetectToolchain(cfg ToolchainConfig) ToolchainInfo {
 	go func() { defer wg.Done(); probeJavaToolchain(cfg.JavaPath, &javaInfo) }()
 	go func() { defer wg.Done(); probeMvnToolchain(cfg.MvnPath, &mvnInfo) }()
 	go func() { defer wg.Done(); probeUnidbgToolchain(cfg.UnidbgDir, &uniInfo) }()
-	go func() { defer wg.Done(); probePythonToolchain(cfg.PythonPath, &pyInfo) }()
+	go func() { defer wg.Done(); probePythonToolchain(cfg, &pyInfo) }()
 	wg.Wait()
 
 	info.R2 = r2Info.R2
 	info.Java = javaInfo.Java
+	info.JavaHome = javaInfo.JavaHome
 	info.JavacPath = javaInfo.JavacPath
 	info.Mvn = mvnInfo.Mvn
 	info.Unidbg = uniInfo.Unidbg
+	info.UnidbgMode = uniInfo.UnidbgMode
 	info.UnidbgJars = uniInfo.UnidbgJars
 	info.Python = pyInfo.Python
 	info.Qiling = pyInfo.Qiling
@@ -112,26 +143,34 @@ func DetectToolchain(cfg ToolchainConfig) ToolchainInfo {
 	// 7. Compute aggregate engine readiness flags & collect actionable issues.
 	info.R2Ready = info.R2.Ready
 
-	unidbgHasJars := len(info.UnidbgJars) > 0
-	unidbgHasPom := false
-	if info.Unidbg.Ready && info.Unidbg.Path != "" {
-		if fi, err := os.Stat(info.Unidbg.Path); err == nil && fi.IsDir() {
-			_, unidbgHasPom = detectUnidbgPom(info.Unidbg.Path)
+	unidbgCanBuild := false
+	if info.Java.Ready && info.Unidbg.Ready && info.JavacPath != "" {
+		switch info.UnidbgMode {
+		case UnidbgModeFatJar, UnidbgModeJarBundle:
+			unidbgCanBuild = len(info.UnidbgJars) > 0
+		case UnidbgModeMavenRepo:
+			_, hasPom := detectUnidbgPom(info.Unidbg.Path)
+			unidbgCanBuild = hasPom && info.Mvn.Ready
+		case UnidbgModeM2Cache:
+			unidbgCanBuild = len(info.UnidbgJars) > 0 && info.Mvn.Ready
+		default:
+			unidbgCanBuild = len(info.UnidbgJars) > 0
 		}
 	}
-	unidbgCanBuild := info.JavacPath != "" && (unidbgHasJars || (unidbgHasPom && info.Mvn.Ready))
-	info.UnidbgReady = info.Java.Ready && info.Unidbg.Ready && unidbgCanBuild
+	info.UnidbgReady = unidbgCanBuild
 
 	if info.Java.Ready && info.Unidbg.Ready && !unidbgCanBuild {
 		if info.JavacPath == "" {
 			info.Issues = append(info.Issues, "JDK `javac` compiler not found (required to compile Unidbg harnesses) — install a full JDK (e.g. brew install openjdk@17)")
-		} else if !unidbgHasJars && (!unidbgHasPom || !info.Mvn.Ready) {
+		} else if (info.UnidbgMode == UnidbgModeMavenRepo || info.UnidbgMode == UnidbgModeM2Cache) && !info.Mvn.Ready {
+			info.Issues = append(info.Issues, fmt.Sprintf("Unidbg (%s mode) requires Maven (`mvn`) to resolve dependency classpath", info.UnidbgMode))
+		} else {
 			info.Issues = append(info.Issues, "Unidbg requires either pre-built JARs or a Maven pom.xml with `mvn` installed")
 		}
 	}
 
-	info.QilingReady = info.Python.Ready && info.Qiling.Ready
-	info.AngrReady = info.Python.Ready && info.Angr.Ready
+	info.QilingReady = info.Qiling.Ready && info.Qiling.Path != ""
+	info.AngrReady = info.Angr.Ready && info.Angr.Path != ""
 
 	for _, ts := range []ToolStatus{
 		info.R2, info.Java, info.Mvn, info.Unidbg, info.Python, info.Qiling, info.Angr,
@@ -166,45 +205,290 @@ func probeR2Toolchain(preferred string, info *ToolchainInfo) {
 	}
 }
 
+type javaCandidateProbe struct {
+	idx             int
+	path            string
+	version         string
+	major           int
+	isStub          bool
+	hasSiblingJavac bool
+	siblingJavac    string
+	ok              bool
+}
+
 func probeJavaToolchain(preferred string, info *ToolchainInfo) {
 	preferred = strings.TrimSpace(preferred)
-	var extraDirs []string
-	if jh := strings.TrimSpace(os.Getenv("JAVA_HOME")); jh != "" {
-		extraDirs = append(extraDirs, filepath.Join(jh, "bin"))
-	}
-	extraDirs = append(extraDirs,
-		"/opt/homebrew/opt/openjdk/bin",
-		"/opt/homebrew/opt/openjdk@17/bin",
-		"/opt/homebrew/opt/openjdk@11/bin",
-		"/usr/local/opt/openjdk/bin",
-		"/usr/local/opt/openjdk@17/bin",
-		"/usr/bin",
-	)
-	cands := buildBinaryCandidatesWithDirs(preferred, extraDirs, "java")
-	for _, bin := range cands {
-		if info.Java.Path == "" {
-			info.Java.Path = bin
-		}
-		if ver, ok := probeJavaVersion(bin); ok {
-			info.Java.Path = bin
-			info.Java.Version = ver
-			info.Java.Ready = true
-			// Check sibling javac in the same bin directory first, then PATH
-			sibling := filepath.Join(filepath.Dir(bin), executableName("javac"))
-			if isExecutableFile(sibling) {
-				info.JavacPath = sibling
-			} else if p, err := exec.LookPath("javac"); err == nil {
-				info.JavacPath = p
-			}
-			return
-		}
-	}
+
+	// Explicit override: strictly honor the configured Java binary.
 	if preferred != "" {
+		cands := buildBinaryCandidatesWithDirs(preferred, nil, "java")
+		for _, bin := range cands {
+			if ver, ok := probeJavaVersion(bin); ok {
+				info.Java.Path = bin
+				info.Java.Version = ver
+				info.Java.Ready = true
+				info.JavaHome = deriveJavaHome(bin)
+				sibling := filepath.Join(filepath.Dir(bin), executableName("javac"))
+				if isExecutableFile(sibling) {
+					info.JavacPath = sibling
+				} else if p, err := exec.LookPath("javac"); err == nil {
+					// Pair with PATH javac only when major versions match (or javac version is unparseable, e.g. mock script).
+					javaMajor := parseJavaMajor(ver)
+					javacMajor := probeJavacMajor(p)
+					if javacMajor == 0 || javaMajor == 0 || javacMajor == javaMajor {
+						info.JavacPath = p
+					}
+				}
+				return
+			}
+		}
 		info.Java.Path = preferred
 		info.Java.Issue = fmt.Sprintf("java not working at configured path %s — install with: %s", preferred, info.Java.Install)
-	} else {
-		info.Java.Issue = fmt.Sprintf("java runtime not found (required for Unidbg) — install with: %s", info.Java.Install)
+		return
 	}
+
+	cands := buildJavaCandidates()
+	if len(cands) == 0 {
+		info.Java.Issue = fmt.Sprintf("java runtime not found (required for Unidbg) — install with: %s", info.Java.Install)
+		return
+	}
+
+	results := make([]javaCandidateProbe, len(cands))
+	sem := make(chan struct{}, probeWorkerPoolSize)
+	var wg sync.WaitGroup
+	for i, bin := range cands {
+		wg.Add(1)
+		go func(idx int, path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			stub := isMacOSJavaStub(path)
+			sibling := filepath.Join(filepath.Dir(path), executableName("javac"))
+			hasSibling := !stub && isExecutableFile(sibling)
+			ver, ok := probeJavaVersion(path)
+			results[idx] = javaCandidateProbe{
+				idx:             idx,
+				path:            path,
+				version:         ver,
+				major:           parseJavaMajor(ver),
+				isStub:          stub,
+				hasSiblingJavac: hasSibling,
+				siblingJavac:    sibling,
+				ok:              ok,
+			}
+		}(i, bin)
+	}
+	wg.Wait()
+
+	var valid []javaCandidateProbe
+	for _, r := range results {
+		if r.ok {
+			valid = append(valid, r)
+		}
+	}
+	if len(valid) == 0 {
+		info.Java.Path = cands[0]
+		info.Java.Issue = fmt.Sprintf("java runtime not found (required for Unidbg) — install with: %s", info.Java.Install)
+		return
+	}
+
+	sort.SliceStable(valid, func(i, j int) bool {
+		a, b := valid[i], valid[j]
+		ta, tb := javaCandidateTier(a), javaCandidateTier(b)
+		if ta != tb {
+			return ta > tb
+		}
+		ra, rb := javaVersionRank(a.major), javaVersionRank(b.major)
+		if ra != rb {
+			return ra > rb
+		}
+		if a.version != b.version {
+			return compareVersionStringsDesc(a.version, b.version)
+		}
+		return a.idx < b.idx
+	})
+
+	best := valid[0]
+	info.Java.Path = best.path
+	info.Java.Version = best.version
+	info.Java.Ready = true
+
+	if best.hasSiblingJavac {
+		info.JavacPath = best.siblingJavac
+		info.JavaHome = deriveJavaHome(best.path)
+		return
+	}
+	if best.isStub {
+		// Last-resort fallback when no real JDK was found: only pair /usr/bin/javac if major version matches.
+		sibling := filepath.Join(filepath.Dir(best.path), executableName("javac"))
+		if isExecutableFile(sibling) {
+			javacMajor := probeJavacMajor(sibling)
+			if javacMajor == 0 || best.major == 0 || javacMajor == best.major {
+				info.JavacPath = sibling
+			}
+		}
+		return
+	}
+	// JRE-only installation (missing sibling javac): NEVER silently pair with an unrelated /usr/bin/javac.
+	info.JavaHome = deriveJavaHome(best.path)
+}
+
+func buildJavaCandidates() []string {
+	var out []string
+	seenAbs := make(map[string]bool)
+	seenReal := make(map[string]bool)
+
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if !isExecutableFile(p) {
+			return
+		}
+		abs := p
+		if a, err := filepath.Abs(p); err == nil {
+			abs = a
+		}
+		if seenAbs[abs] {
+			return
+		}
+		if !isMacOSJavaStub(abs) {
+			if realPath, err := filepath.EvalSymlinks(abs); err == nil && realPath != "" {
+				if seenReal[realPath] {
+					return
+				}
+				seenReal[realPath] = true
+			}
+		}
+		seenAbs[abs] = true
+		out = append(out, abs)
+	}
+
+	// 1. JAVA_HOME/bin/java (if set)
+	if jh := strings.TrimSpace(os.Getenv("JAVA_HOME")); jh != "" {
+		add(filepath.Join(jh, "bin", executableName("java")))
+	}
+
+	// 2. Dynamic JVM / Homebrew / Linux JVM globs
+	for _, pattern := range javaSearchGlobs {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		sort.Strings(matches)
+		for _, m := range matches {
+			add(m)
+		}
+	}
+
+	// 3. Explicit PATH scan (every entry) + standard bin directories
+	if resolved, err := exec.LookPath("java"); err == nil {
+		add(resolved)
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		dir = strings.TrimSpace(dir)
+		if dir != "" {
+			add(filepath.Join(dir, executableName("java")))
+		}
+	}
+	for _, dir := range javaExtraDirs {
+		add(filepath.Join(dir, executableName("java")))
+	}
+
+	return out
+}
+
+func isMacOSJavaStub(p string) bool {
+	return runtime.GOOS == "darwin" && filepath.Clean(p) == "/usr/bin/java"
+}
+
+func deriveJavaHome(javaBin string) string {
+	clean := filepath.Clean(strings.TrimSpace(javaBin))
+	if clean == "" || isMacOSJavaStub(clean) {
+		return ""
+	}
+	dir := filepath.Dir(clean)
+	if strings.EqualFold(filepath.Base(dir), "bin") {
+		parent := filepath.Dir(dir)
+		switch filepath.Clean(parent) {
+		case "/", "/usr", "/usr/local", "/opt/homebrew":
+			return ""
+		default:
+			return parent
+		}
+	}
+	return ""
+}
+
+func javaCandidateTier(c javaCandidateProbe) int {
+	if c.hasSiblingJavac && !c.isStub {
+		return 2
+	}
+	if c.isStub {
+		return 1
+	}
+	return 0
+}
+
+// javaVersionRank ranks Unidbg-compatible LTS JDKs highest: 17 > 11 > 8 > 21 > 22+/other.
+func javaVersionRank(major int) int {
+	switch major {
+	case 17:
+		return 100
+	case 11:
+		return 90
+	case 8:
+		return 80
+	case 21:
+		return 60
+	default:
+		if major > 0 {
+			return 40
+		}
+		return 20
+	}
+}
+
+func parseJavaMajor(ver string) int {
+	ver = strings.TrimSpace(ver)
+	if ver == "" {
+		return 0
+	}
+	// Legacy Java 1.8.0_291 -> major 8
+	if strings.HasPrefix(ver, "1.") {
+		rest := strings.TrimPrefix(ver, "1.")
+		parts := strings.FieldsFunc(rest, func(r rune) bool { return r < '0' || r > '9' })
+		if len(parts) > 0 {
+			if n, err := strconv.Atoi(parts[0]); err == nil {
+				return n
+			}
+		}
+	}
+	parts := strings.FieldsFunc(ver, func(r rune) bool { return r < '0' || r > '9' })
+	if len(parts) > 0 {
+		if n, err := strconv.Atoi(parts[0]); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func probeJavacMajor(javacBin string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), toolchainProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, javacBin, "-version")
+	configureProcGroup(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	text := string(out)
+	if ver := extractVersionString(text); ver != "" {
+		return parseJavaMajor(ver)
+	}
+	return 0
 }
 
 func probeMvnToolchain(preferred string, info *ToolchainInfo) {
@@ -262,11 +546,12 @@ func probeUnidbgToolchain(preferred string, info *ToolchainInfo) {
 		}
 		// Case A: direct fat jar file
 		if !fi.IsDir() {
-			if strings.HasSuffix(strings.ToLower(absPath), ".jar") {
+			if isRuntimeJarName(filepath.Base(absPath)) {
 				info.Unidbg.Ready = true
 				info.Unidbg.Path = absPath
 				info.Unidbg.Version = extractVersionFromName(filepath.Base(absPath), "jar")
 				info.UnidbgJars = []string{absPath}
+				info.UnidbgMode = UnidbgModeFatJar
 				return
 			}
 			continue
@@ -279,13 +564,29 @@ func probeUnidbgToolchain(preferred string, info *ToolchainInfo) {
 			info.Unidbg.Ready = true
 			info.Unidbg.Path = absPath
 			info.UnidbgJars = jars
+			info.UnidbgMode = classifyUnidbgDir(absPath, jars, hasPom)
 			if pomVer != "" {
 				info.Unidbg.Version = pomVer
+			} else if info.UnidbgMode == UnidbgModeM2Cache {
+				info.Unidbg.Version = filepath.Base(absPath)
 			} else if len(jars) > 0 {
 				info.Unidbg.Version = extractVersionFromName(filepath.Base(jars[0]), "jar")
 			} else {
 				info.Unidbg.Version = "maven-project"
 			}
+			return
+		}
+	}
+
+	// Case C: Auto-discovery fallback to ~/.m2/repository/com/github/zhkl0228/unidbg-android
+	if preferred == "" {
+		m2Dir := resolveUnidbgM2Dir()
+		if verDir, ver, jarPath, ok := probeUnidbgM2Cache(m2Dir); ok {
+			info.Unidbg.Ready = true
+			info.Unidbg.Path = verDir
+			info.Unidbg.Version = ver
+			info.UnidbgJars = []string{jarPath}
+			info.UnidbgMode = UnidbgModeM2Cache
 			return
 		}
 	}
@@ -298,79 +599,318 @@ func probeUnidbgToolchain(preferred string, info *ToolchainInfo) {
 	}
 }
 
-func probePythonToolchain(preferred string, info *ToolchainInfo) {
-	preferred = strings.TrimSpace(preferred)
-	cands := buildPythonCandidates(preferred)
-
-	type pyProbe struct {
-		path      string
-		pyVer     string
-		qilingVer string
-		angrVer   string
-		score     int
+func resolveUnidbgM2Dir() string {
+	if strings.TrimSpace(m2RepoOverride) != "" {
+		return filepath.Join(m2RepoOverride, "com", "github", "zhkl0228", "unidbg-android")
 	}
-	var best *pyProbe
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".m2", "repository", "com", "github", "zhkl0228", "unidbg-android")
+	}
+	return ""
+}
 
-	for _, py := range cands {
-		pyVer, qVer, aVer, ok := probePythonModules(py)
-		if !ok {
+func probeUnidbgM2Cache(m2UnidbgDir string) (verDir, ver, jarPath string, ok bool) {
+	if strings.TrimSpace(m2UnidbgDir) == "" {
+		return "", "", "", false
+	}
+	entries, err := os.ReadDir(m2UnidbgDir)
+	if err != nil {
+		return "", "", "", false
+	}
+	type m2Cand struct {
+		ver     string
+		dir     string
+		jarPath string
+	}
+	var found []m2Cand
+	for _, e := range entries {
+		if !e.IsDir() {
 			continue
 		}
-		score := 1
-		if qVer != "" {
-			score += 2
+		v := e.Name()
+		d := filepath.Join(m2UnidbgDir, v)
+		jar, hasPom := findM2ArtifactFiles(d, v)
+		if jar != "" && hasPom {
+			found = append(found, m2Cand{ver: v, dir: d, jarPath: jar})
 		}
-		if aVer != "" {
-			score += 2
+	}
+	if len(found) == 0 {
+		return "", "", "", false
+	}
+	sort.Slice(found, func(i, j int) bool {
+		return compareVersionStringsDesc(found[i].ver, found[j].ver)
+	})
+	best := found[0]
+	absDir := best.dir
+	if abs, err := filepath.Abs(best.dir); err == nil {
+		absDir = abs
+	}
+	absJar := best.jarPath
+	if abs, err := filepath.Abs(best.jarPath); err == nil {
+		absJar = abs
+	}
+	return absDir, best.ver, absJar, true
+}
+
+func findM2ArtifactFiles(dir, ver string) (jarPath string, hasPom bool) {
+	exactJar := filepath.Join(dir, fmt.Sprintf("unidbg-android-%s.jar", ver))
+	exactPom := filepath.Join(dir, fmt.Sprintf("unidbg-android-%s.pom", ver))
+	if isRegularFile(exactJar) && isRegularFile(exactPom) {
+		return exactJar, true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
 		}
-		p := &pyProbe{
+		name := e.Name()
+		low := strings.ToLower(name)
+		if strings.HasSuffix(low, ".pom") && strings.HasPrefix(low, "unidbg-android-") {
+			hasPom = true
+		}
+		if isRuntimeJarName(name) && strings.HasPrefix(low, "unidbg-android-") && jarPath == "" {
+			jarPath = filepath.Join(dir, name)
+		}
+	}
+	return jarPath, hasPom
+}
+
+type pyProbeResult struct {
+	idx       int
+	path      string
+	pyVer     string
+	qilingVer string
+	angrVer   string
+	ok        bool
+}
+
+func probePythonToolchain(cfg ToolchainConfig, info *ToolchainInfo) {
+	baseOverride := strings.TrimSpace(cfg.PythonPath)
+	qilingOverride := strings.TrimSpace(cfg.QilingPythonPath)
+	angrOverride := strings.TrimSpace(cfg.AngrPythonPath)
+
+	// Helper to probe a single explicit Python path.
+	probeSingle := func(path string) *pyProbeResult {
+		cands := buildPythonCandidates(path)
+		if len(cands) == 0 {
+			return nil
+		}
+		py := cands[0]
+		pyVer, qVer, aVer, ok := probePythonModules(py)
+		if !ok {
+			return &pyProbeResult{path: py, ok: false}
+		}
+		return &pyProbeResult{
 			path:      py,
 			pyVer:     pyVer,
 			qilingVer: qVer,
 			angrVer:   aVer,
-			score:     score,
-		}
-		if best == nil || p.score > best.score {
-			best = p
-		}
-		// Stop early when we found a Python with both qiling & angr, or when an explicit path was specified.
-		if preferred != "" || (qVer != "" && aVer != "") {
-			break
+			ok:        true,
 		}
 	}
 
-	if best == nil {
-		if preferred != "" {
-			info.Python.Path = preferred
-			info.Python.Issue = fmt.Sprintf("python3 not working at configured path %s — install with: %s", preferred, info.Python.Install)
+	var (
+		baseBest   *pyProbeResult
+		qilingBest *pyProbeResult
+		angrBest   *pyProbeResult
+	)
+
+	if baseOverride != "" {
+		// Strict mode: honor cfg.PythonPath deterministically (keeps hermetic unit tests deterministic),
+		// while still honoring explicit per-engine overrides if provided.
+		var wg sync.WaitGroup
+		var baseRes, qRes, aRes *pyProbeResult
+		wg.Add(1)
+		go func() { defer wg.Done(); baseRes = probeSingle(baseOverride) }()
+		if qilingOverride != "" {
+			wg.Add(1)
+			go func() { defer wg.Done(); qRes = probeSingle(qilingOverride) }()
+		}
+		if angrOverride != "" {
+			wg.Add(1)
+			go func() { defer wg.Done(); aRes = probeSingle(angrOverride) }()
+		}
+		wg.Wait()
+
+		if baseRes != nil && baseRes.ok {
+			baseBest = baseRes
+		}
+		if qilingOverride != "" {
+			qilingBest = qRes
 		} else {
-			info.Python.Issue = fmt.Sprintf("python3 not found (required for Qiling & angr) — install with: %s", info.Python.Install)
+			qilingBest = baseBest
 		}
+		if angrOverride != "" {
+			angrBest = aRes
+		} else {
+			angrBest = baseBest
+		}
+	} else {
+		// Auto-discovery mode: scan host interpreters concurrently (pool of 6) and
+		// select the best Qiling Python and best angr Python independently.
+		cands := buildPythonCandidates("")
+
+		// Also probe explicit per-engine overrides concurrently if present.
+		var (
+			qOverrideRes *pyProbeResult
+			aOverrideRes *pyProbeResult
+			results      = make([]pyProbeResult, len(cands))
+			sem          = make(chan struct{}, probeWorkerPoolSize)
+			wg           sync.WaitGroup
+		)
+		if qilingOverride != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				qOverrideRes = probeSingle(qilingOverride)
+			}()
+		}
+		if angrOverride != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				aOverrideRes = probeSingle(angrOverride)
+			}()
+		}
+		for i, py := range cands {
+			wg.Add(1)
+			go func(idx int, pyPath string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				pyVer, qVer, aVer, ok := probePythonModules(pyPath)
+				results[idx] = pyProbeResult{
+					idx:       idx,
+					path:      pyPath,
+					pyVer:     pyVer,
+					qilingVer: qVer,
+					angrVer:   aVer,
+					ok:        ok,
+				}
+			}(i, py)
+		}
+		wg.Wait()
+
+		bestBaseScore := -1
+		bestQScore := -1
+		bestAScore := -1
+		for i := range results {
+			r := &results[i]
+			if !r.ok {
+				continue
+			}
+			isShim := strings.Contains(r.path, string(filepath.Separator)+".pyenv"+string(filepath.Separator)+"shims"+string(filepath.Separator))
+			baseScore := 10
+			if r.qilingVer != "" {
+				baseScore += 20
+			}
+			if r.angrVer != "" {
+				baseScore += 20
+			}
+			if !isShim {
+				baseScore += 5
+			}
+			if baseScore > bestBaseScore {
+				bestBaseScore = baseScore
+				baseBest = r
+			}
+
+			if qilingOverride == "" && r.qilingVer != "" {
+				qScore := 10
+				if r.angrVer != "" {
+					qScore += 5
+				}
+				if !isShim {
+					qScore += 3
+				}
+				if qScore > bestQScore {
+					bestQScore = qScore
+					qilingBest = r
+				}
+			}
+			if angrOverride == "" && r.angrVer != "" {
+				aScore := 10
+				if r.qilingVer != "" {
+					aScore += 5
+				}
+				if !isShim {
+					aScore += 3
+				}
+				if aScore > bestAScore {
+					bestAScore = aScore
+					angrBest = r
+				}
+			}
+		}
+
+		if qilingOverride != "" {
+			qilingBest = qOverrideRes
+		} else if qilingBest == nil {
+			qilingBest = baseBest
+		}
+		if angrOverride != "" {
+			angrBest = aOverrideRes
+		} else if angrBest == nil {
+			angrBest = baseBest
+		}
+		if baseBest == nil {
+			if qilingBest != nil && qilingBest.ok {
+				baseBest = qilingBest
+			} else if angrBest != nil && angrBest.ok {
+				baseBest = angrBest
+			}
+		}
+	}
+
+	// Populate base Python status.
+	if baseBest != nil && baseBest.ok {
+		info.Python.Ready = true
+		info.Python.Path = baseBest.path
+		info.Python.Version = baseBest.pyVer
+	} else if baseOverride != "" {
+		info.Python.Path = baseOverride
+		info.Python.Issue = fmt.Sprintf("python3 not working at configured path %s — install with: %s", baseOverride, info.Python.Install)
+	} else {
+		info.Python.Issue = fmt.Sprintf("python3 not found (required for Qiling & angr) — install with: %s", info.Python.Install)
+	}
+
+	// Populate Qiling status independently.
+	if qilingBest != nil && qilingBest.ok {
+		info.Qiling.Path = qilingBest.path
+		if qilingBest.qilingVer != "" {
+			info.Qiling.Ready = true
+			info.Qiling.Version = qilingBest.qilingVer
+		} else {
+			info.Qiling.Issue = fmt.Sprintf("Python `qiling` module not installed in %s — install with: %s -m pip install qiling", qilingBest.path, qilingBest.path)
+		}
+	} else if qilingOverride != "" {
+		info.Qiling.Path = qilingOverride
+		info.Qiling.Issue = fmt.Sprintf("Qiling python3 not working at configured path %s — install with: %s", qilingOverride, info.Qiling.Install)
+	} else {
 		info.Qiling.Issue = fmt.Sprintf("qiling unavailable without Python 3 — install with: %s", info.Qiling.Install)
+	}
+
+	// Populate angr status independently.
+	if angrBest != nil && angrBest.ok {
+		info.Angr.Path = angrBest.path
+		if angrBest.angrVer != "" {
+			info.Angr.Ready = true
+			info.Angr.Version = angrBest.angrVer
+		} else {
+			info.Angr.Issue = fmt.Sprintf("Python `angr` module not installed in %s — install with: %s -m pip install angr", angrBest.path, angrBest.path)
+		}
+	} else if angrOverride != "" {
+		info.Angr.Path = angrOverride
+		info.Angr.Issue = fmt.Sprintf("angr python3 not working at configured path %s — install with: %s", angrOverride, info.Angr.Install)
+	} else {
 		info.Angr.Issue = fmt.Sprintf("angr unavailable without Python 3 — install with: %s", info.Angr.Install)
-		return
-	}
-
-	info.Python.Ready = true
-	info.Python.Path = best.path
-	info.Python.Version = best.pyVer
-
-	if best.qilingVer != "" {
-		info.Qiling.Ready = true
-		info.Qiling.Path = best.path
-		info.Qiling.Version = best.qilingVer
-	} else {
-		info.Qiling.Path = best.path
-		info.Qiling.Issue = fmt.Sprintf("Python `qiling` module not installed in %s — install with: %s -m pip install qiling", best.path, best.path)
-	}
-
-	if best.angrVer != "" {
-		info.Angr.Ready = true
-		info.Angr.Path = best.path
-		info.Angr.Version = best.angrVer
-	} else {
-		info.Angr.Path = best.path
-		info.Angr.Issue = fmt.Sprintf("Python `angr` module not installed in %s — install with: %s -m pip install angr", best.path, best.path)
 	}
 }
 
@@ -415,17 +955,46 @@ func probeJavaVersion(bin string) (string, bool) {
 }
 
 func probePythonModules(py string) (pyVer, qilingVer, angrVer string, ok bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), toolchainProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), pythonProbeTimeout)
 	defer cancel()
+	// Use fast importlib.util.find_spec + importlib.metadata.version first (avoids ~2.5s
+	// cold import of angr/z3 during discovery), falling back to __import__ when needed.
 	const snippet = `import sys
 print("PY=" + ".".join(map(str, sys.version_info[:3])))
+try:
+    import importlib.util as iu
+except Exception:
+    iu = None
+try:
+    import importlib.metadata as im
+except Exception:
+    im = None
 for mod, key in (("qiling", "QILING"), ("angr", "ANGR")):
-    try:
-        m = __import__(mod)
-        v = getattr(m, "__version__", "") or "installed"
-        print(key + "=" + str(v))
-    except Exception:
-        print(key + "=")
+    ver = ""
+    if iu is not None:
+        try:
+            spec = iu.find_spec(mod)
+        except Exception:
+            spec = None
+        if spec is not None:
+            if im is not None:
+                try:
+                    ver = im.version(mod) or ""
+                except Exception:
+                    ver = ""
+            if not ver:
+                try:
+                    m = __import__(mod)
+                    ver = getattr(m, "__version__", "") or "installed"
+                except Exception:
+                    ver = ""
+    else:
+        try:
+            m = __import__(mod)
+            ver = getattr(m, "__version__", "") or "installed"
+        except Exception:
+            ver = ""
+    print(key + "=" + str(ver))
 `
 	cmd := exec.CommandContext(ctx, py, "-c", snippet)
 	configureProcGroup(cmd)
@@ -448,12 +1017,85 @@ for mod, key in (("qiling", "QILING"), ("angr", "ANGR")):
 	return pyVer, qilingVer, angrVer, ok
 }
 
+func isRuntimeJarName(name string) bool {
+	low := strings.ToLower(strings.TrimSpace(name))
+	if !strings.HasSuffix(low, ".jar") {
+		return false
+	}
+	if strings.HasSuffix(low, "-sources.jar") ||
+		strings.HasSuffix(low, "-javadoc.jar") ||
+		strings.HasSuffix(low, "-tests.jar") ||
+		strings.HasSuffix(low, "-test-sources.jar") ||
+		strings.HasPrefix(low, "original-") {
+		return false
+	}
+	return true
+}
+
+func isShadedFatJarName(name string) bool {
+	low := strings.ToLower(strings.TrimSpace(name))
+	if !isRuntimeJarName(low) {
+		return false
+	}
+	return strings.Contains(low, "-jar-with-dependencies") ||
+		strings.Contains(low, "-shaded") ||
+		strings.HasSuffix(low, "-all.jar") ||
+		strings.Contains(low, "-all-") ||
+		strings.HasSuffix(low, "-fat.jar") ||
+		strings.Contains(low, "-fat-")
+}
+
+func countBundledDepJars(dir string) int {
+	depDirs := []string{
+		filepath.Join(dir, "lib"),
+		filepath.Join(dir, "libs"),
+		filepath.Join(dir, "target", "dependency"),
+		filepath.Join(dir, "unidbg-android", "target", "dependency"),
+	}
+	seen := make(map[string]bool)
+	for _, d := range depDirs {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !isRuntimeJarName(e.Name()) {
+				continue
+			}
+			seen[filepath.Join(d, e.Name())] = true
+		}
+	}
+	return len(seen)
+}
+
+func classifyUnidbgDir(dir string, jars []string, hasPom bool) string {
+	if hasPom {
+		for _, j := range jars {
+			if isShadedFatJarName(filepath.Base(j)) {
+				return UnidbgModeJarBundle
+			}
+		}
+		if countBundledDepJars(dir) >= 5 {
+			return UnidbgModeJarBundle
+		}
+		return UnidbgModeMavenRepo
+	}
+	if len(jars) > 0 {
+		if jar, hasM2Pom := findM2ArtifactFiles(dir, filepath.Base(dir)); jar != "" && hasM2Pom && len(jars) == 1 {
+			return UnidbgModeM2Cache
+		}
+		return UnidbgModeJarBundle
+	}
+	return ""
+}
+
 func collectUnidbgJars(dir string) []string {
 	searchDirs := []string{
 		dir,
 		filepath.Join(dir, "lib"),
 		filepath.Join(dir, "libs"),
 		filepath.Join(dir, "target"),
+		filepath.Join(dir, "target", "dependency"),
 		filepath.Join(dir, "unidbg-android", "target"),
 		filepath.Join(dir, "unidbg-android", "target", "dependency"),
 	}
@@ -469,7 +1111,7 @@ func collectUnidbgJars(dir string) []string {
 				continue
 			}
 			name := e.Name()
-			if !strings.HasSuffix(strings.ToLower(name), ".jar") {
+			if !isRuntimeJarName(name) {
 				continue
 			}
 			full := filepath.Join(d, name)
@@ -568,13 +1210,14 @@ func buildPythonCandidates(preferred string) []string {
 		if p == "" {
 			return
 		}
-		if resolved, err := exec.LookPath(p); err == nil {
-			p = resolved
-		} else {
-			fi, err := os.Stat(p)
-			if err != nil || fi.IsDir() {
+		if !strings.ContainsAny(p, `/\`) {
+			resolved, err := exec.LookPath(p)
+			if err != nil {
 				return
 			}
+			p = resolved
+		} else if !isExecutableFile(p) {
+			return
 		}
 		if abs, err := filepath.Abs(p); err == nil {
 			p = abs
@@ -582,6 +1225,19 @@ func buildPythonCandidates(preferred string) []string {
 		if !seen[p] {
 			seen[p] = true
 			out = append(out, p)
+		}
+	}
+	addGlob := func(pattern string, filterPythonName bool) {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return
+		}
+		sort.Strings(matches)
+		for _, m := range matches {
+			if filterPythonName && !pythonBinNameRe.MatchString(strings.ToLower(filepath.Base(m))) {
+				continue
+			}
+			add(m)
 		}
 	}
 
@@ -601,24 +1257,93 @@ func buildPythonCandidates(preferred string) []string {
 
 	add("python3")
 	add("python")
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		dir = strings.TrimSpace(dir)
+		if dir != "" {
+			add(filepath.Join(dir, executableName("python3")))
+		}
+	}
 
-	extra := []string{
+	for _, p := range []string{
 		"/opt/homebrew/bin/python3",
 		"/usr/local/bin/python3",
 		"/usr/bin/python3",
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		extra = append(extra,
-			filepath.Join(home, ".pyenv", "shims", "python3"),
-			filepath.Join(home, "miniconda3", "bin", "python3"),
-			filepath.Join(home, "miniforge3", "bin", "python3"),
-			filepath.Join(home, "anaconda3", "bin", "python3"),
-		)
-	}
-	for _, p := range extra {
+	} {
 		add(p)
 	}
+	addGlob("/opt/homebrew/opt/python@*/bin/python3*", true)
+	addGlob("/usr/local/opt/python@*/bin/python3*", true)
+
+	// macOS Python.org framework installs (skip "Current" symlink to avoid duplicate probe).
+	if matches, err := filepath.Glob("/Library/Frameworks/Python.framework/Versions/*/bin/python3"); err == nil {
+		sort.Strings(matches)
+		for _, m := range matches {
+			if strings.Contains(m, "/Versions/Current/") {
+				continue
+			}
+			add(m)
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		// Concrete pyenv versions first, then shims as fallback.
+		addGlob(filepath.Join(home, ".pyenv", "versions", "*", "bin", executableName("python3")), false)
+		add(filepath.Join(home, ".pyenv", "shims", executableName("python3")))
+
+		for _, condaRoot := range []string{
+			filepath.Join(home, "miniconda3"),
+			filepath.Join(home, "miniforge3"),
+			filepath.Join(home, "anaconda3"),
+			filepath.Join(home, "opt", "anaconda3"),
+		} {
+			add(filepath.Join(condaRoot, "bin", executableName("python3")))
+			addGlob(filepath.Join(condaRoot, "envs", "*", "bin", executableName("python3")), false)
+		}
+
+		addGlob(filepath.Join(home, ".virtualenvs", "*", "bin", executableName("python3")), false)
+		addGlob(filepath.Join(home, ".cap", "venv*", "bin", executableName("python3")), false)
+	}
+
 	return out
+}
+
+func compareVersionStringsDesc(a, b string) bool {
+	pa, snapA := splitVersionNumbers(a)
+	pb, snapB := splitVersionNumbers(b)
+	maxLen := len(pa)
+	if len(pb) > maxLen {
+		maxLen = len(pb)
+	}
+	for i := 0; i < maxLen; i++ {
+		va, vb := 0, 0
+		if i < len(pa) {
+			va = pa[i]
+		}
+		if i < len(pb) {
+			vb = pb[i]
+		}
+		if va != vb {
+			return va > vb
+		}
+	}
+	// Release beats SNAPSHOT when numeric tuple matches.
+	if snapA != snapB {
+		return !snapA
+	}
+	return a > b
+}
+
+func splitVersionNumbers(v string) ([]int, bool) {
+	low := strings.ToLower(strings.TrimSpace(v))
+	isSnap := strings.Contains(low, "snapshot")
+	fields := strings.FieldsFunc(low, func(r rune) bool { return r < '0' || r > '9' })
+	nums := make([]int, 0, len(fields))
+	for _, f := range fields {
+		if n, err := strconv.Atoi(f); err == nil {
+			nums = append(nums, n)
+		}
+	}
+	return nums, isSnap
 }
 
 func extractVersionString(raw string) string {
@@ -665,4 +1390,9 @@ func isExecutableFile(p string) bool {
 		return true
 	}
 	return fi.Mode()&0111 != 0
+}
+
+func isRegularFile(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
 }

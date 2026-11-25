@@ -464,7 +464,7 @@ func TestREAndDeobfCLICommands(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("cap re --help failed: %v", err)
 	}
-	for _, sub := range []string{"status", "analyze", "r2", "projects", "gen"} {
+	for _, sub := range []string{"status", "run", "analyze", "r2", "projects", "gen"} {
 		if !strings.Contains(out.String(), sub) {
 			t.Errorf("cap re --help missing subcommand %q", sub)
 		}
@@ -855,5 +855,145 @@ func TestDeobfStealthScanAutoTailoring(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(sc.Modules, ","), "PatchInlineSVC") {
 		t.Fatalf("expected explicit --patch-svc=false to disable PatchInlineSVC, got modules=%v", sc.Modules)
+	}
+}
+
+func TestREStatusReadsSettingsAndRERunExecutes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	capDir := filepath.Join(home, ".cap")
+	binDir := filepath.Join(home, "bin")
+	rootfsDir := filepath.Join(home, "rootfs")
+	for _, d := range []string{capDir, binDir, rootfsDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeStub := func(name, body string) string {
+		p := filepath.Join(binDir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	fakeR2 := writeStub("r2", `echo "radare2 5.9.4"`)
+	fakeJava := writeStub("java", `echo 'openjdk version "17.0.7"' >&2`)
+	_ = writeStub("javac", `echo 'javac 17.0.7'`)
+	fakeMvn := writeStub("mvn", `echo "Apache Maven 3.9.6"`)
+	pyQiling := writeStub("py-qiling", `
+if [ "$1" = "-c" ]; then
+  echo "PY=3.12.5"
+  echo "QILING=1.4.6"
+  echo "ANGR="
+  exit 0
+fi
+echo "rootfs=$CAP_RE_ROOTFS"
+echo '[CAP_RE] {"kind":"smoke","engine":"qiling","ok":true}'
+`)
+	pyAngr := writeStub("py-angr", `
+if [ "$1" = "-c" ]; then
+  echo "PY=3.10.4"
+  echo "QILING="
+  echo "ANGR=9.2.144"
+  exit 0
+fi
+echo '[CAP_RE] {"kind":"solution","solution_utf8":"CAP!"}'
+`)
+
+	settingsPayload, _ := json.Marshal(map[string]string{
+		"re_r2_path":            fakeR2,
+		"re_java_path":          fakeJava,
+		"re_mvn_path":           fakeMvn,
+		"re_qiling_python_path": pyQiling,
+		"re_angr_python_path":   pyAngr,
+		"re_qiling_rootfs":      rootfsDir,
+	})
+	if err := os.WriteFile(filepath.Join(capDir, "settings.json"), settingsPayload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. cap re status --json loads saved ~/.cap/settings.json
+	var out bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"re", "status", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap re status --json failed: %v", err)
+	}
+	var tc struct {
+		R2Ready      bool   `json:"r2_ready"`
+		QilingReady  bool   `json:"qiling_ready"`
+		AngrReady    bool   `json:"angr_ready"`
+		QilingRootFS string `json:"qiling_rootfs"`
+		Qiling       struct {
+			Path string `json:"path"`
+		} `json:"qiling"`
+		Angr struct {
+			Path string `json:"path"`
+		} `json:"angr"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &tc); err != nil {
+		t.Fatalf("decode cap re status JSON: %v\n%s", err, out.String())
+	}
+	if !tc.R2Ready || !tc.QilingReady || !tc.AngrReady || tc.Qiling.Path != pyQiling || tc.Angr.Path != pyAngr || tc.QilingRootFS != rootfsDir {
+		t.Fatalf("cap re status did not apply saved settings: %+v", tc)
+	}
+
+	// 2. cap re status plain text prints javac, qiling_rootfs, and separate Python paths
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"re", "status"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap re status plain failed: %v", err)
+	}
+	plain := out.String()
+	for _, want := range []string{"javac:", "qiling_rootfs:", "qiling_python:", "angr_python:", pyQiling, pyAngr} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("cap re status plain output missing %q:\n%s", want, plain)
+		}
+	}
+
+	// 3. cap re run --engine angr --file <script> --json
+	angrScript := filepath.Join(home, "solve.py")
+	if err := os.WriteFile(angrScript, []byte("print('solve')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"re", "run", "--engine", "angr", "--file", angrScript, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap re run angr --json failed: %v", err)
+	}
+	var runState struct {
+		Status  string `json:"status"`
+		Results []struct {
+			Kind    string         `json:"kind"`
+			Payload map[string]any `json:"payload"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &runState); err != nil {
+		t.Fatalf("decode cap re run JSON: %v\n%s", err, out.String())
+	}
+	if runState.Status != "done" || len(runState.Results) != 1 || runState.Results[0].Payload["solution_utf8"] != "CAP!" {
+		t.Fatalf("unexpected cap re run angr state: %+v", runState)
+	}
+
+	// 4. cap re run --engine qiling --file <script> (streaming text output)
+	qScript := filepath.Join(home, "emu.py")
+	if err := os.WriteFile(qScript, []byte("print('emu')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	cmd = NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"re", "run", "--engine", "qiling", "--file", qScript, "--timeout", "10"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cap re run qiling failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "rootfs="+rootfsDir) || !strings.Contains(out.String(), "Structured [CAP_RE] Results (1):") {
+		t.Fatalf("unexpected cap re run qiling output:\n%s", out.String())
 	}
 }

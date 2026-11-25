@@ -39,18 +39,26 @@ const (
 	// StructuredOutputPrefix marks a stdout line carrying a JSON object
 	// emitted by generated Unidbg/Qiling/angr harnesses for structured capture.
 	StructuredOutputPrefix = "[CAP_RE]"
+
+	// Unidbg packaging/resolution modes reported by DetectToolchain.
+	UnidbgModeFatJar    = "fat-jar"
+	UnidbgModeJarBundle = "jar-bundle"
+	UnidbgModeMavenRepo = "maven-repo"
+	UnidbgModeM2Cache   = "m2-cache"
 )
 
 // ToolchainConfig allows overriding auto-discovered host binaries and paths.
 // When a field is non-empty, toolchain detection probes only that configured
 // location rather than falling back to system PATH.
 type ToolchainConfig struct {
-	R2Path       string `json:"r2_path,omitempty"`
-	JavaPath     string `json:"java_path,omitempty"`
-	MvnPath      string `json:"mvn_path,omitempty"`
-	UnidbgDir    string `json:"unidbg_dir,omitempty"`
-	PythonPath   string `json:"python_path,omitempty"`
-	QilingRootFS string `json:"qiling_rootfs,omitempty"`
+	R2Path           string `json:"r2_path,omitempty"`
+	JavaPath         string `json:"java_path,omitempty"`
+	MvnPath          string `json:"mvn_path,omitempty"`
+	UnidbgDir        string `json:"unidbg_dir,omitempty"`
+	PythonPath       string `json:"python_path,omitempty"`
+	QilingPythonPath string `json:"qiling_python_path,omitempty"`
+	AngrPythonPath   string `json:"angr_python_path,omitempty"`
+	QilingRootFS     string `json:"qiling_rootfs,omitempty"`
 }
 
 // ToolStatus reports discovery status, version, path, and install guidance for
@@ -80,7 +88,9 @@ type ToolchainInfo struct {
 	UnidbgReady  bool     `json:"unidbg_ready"`
 	QilingReady  bool     `json:"qiling_ready"`
 	AngrReady    bool     `json:"angr_ready"`
+	JavaHome     string   `json:"java_home,omitempty"`
 	JavacPath    string   `json:"javac_path,omitempty"`
+	UnidbgMode   string   `json:"unidbg_mode,omitempty"`
 	UnidbgJars   []string `json:"unidbg_jars,omitempty"`
 	QilingRootFS string   `json:"qiling_rootfs,omitempty"`
 	Issues       []string `json:"issues,omitempty"`

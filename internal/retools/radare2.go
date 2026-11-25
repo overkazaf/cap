@@ -132,7 +132,10 @@ func InspectFunction(ctx context.Context, binaryPath, funcNameOrAddr, r2Path str
 	defer cancel()
 
 	// Single r2 invocation using section delimiters for fast, reliable parsing.
+	// Enable cfg.sandbox=true inside -c (after r2 opens binaryPath read-only)
+	// because passing -e cfg.sandbox=true on the CLI prevents r2 5.8+ from opening the target file.
 	r2Cmd := strings.Join([]string{
+		"e cfg.sandbox=true",
 		fmt.Sprintf("s %s", target),
 		"af",
 		"?e __CAP_PDFJ__",
@@ -151,7 +154,6 @@ func InspectFunction(ctx context.Context, binaryPath, funcNameOrAddr, r2Path str
 
 	cmd := exec.CommandContext(runCtx, resolvedR2,
 		"-q",
-		"-e", "cfg.sandbox=true",
 		"-e", "scr.color=0",
 		"-c", r2Cmd,
 		binaryPath,
@@ -319,11 +321,13 @@ func RunR2Command(ctx context.Context, binaryPath, r2Cmd, r2Path string) (*R2Com
 	defer cancel()
 
 	started := time.Now()
+	// Enable cfg.sandbox=true inside -c so r2 can open binaryPath read-only first,
+	// then lock down the session before executing the validated user command.
+	sandboxedCmd := "e cfg.sandbox=true; " + strings.TrimSpace(r2Cmd)
 	cmd := exec.CommandContext(runCtx, resolvedR2,
 		"-q",
-		"-e", "cfg.sandbox=true",
 		"-e", "scr.color=0",
-		"-c", strings.TrimSpace(r2Cmd),
+		"-c", sandboxedCmd,
 		binaryPath,
 	)
 	configureProcGroup(cmd)
@@ -365,23 +369,33 @@ func analyzeBinaryWithR2(ctx context.Context, binaryPath string, fileSize int64,
 	runCtx, cancel := withDefaultTimeout(ctx, defaultR2AnalyzeTimeout)
 	defer cancel()
 
-	r2Cmd := strings.Join([]string{
-		"aaa",
-		"?e __CAP_IJ__",
-		"ij",
-		"?e __CAP_AFLJ__",
-		"aflj",
-		"?e __CAP_IEJ__",
-		"iEj",
-		"?e __CAP_IIJ__",
-		"iij",
-		"?e __CAP_IZZJ__",
-		"izzj",
-	}, "; ")
+	// Use deep analysis (`aaa` + `aflj` + `izzj`) for typical native libraries
+	// (<= 8 MiB). For very large binaries (> 8 MiB, e.g. multi-MB Go/Flutter
+	// executables), query symbol table (`isj`) + data strings (`izj`) directly
+	// to avoid multi-minute whole-binary disassembly timeouts.
+	parts := []string{"e cfg.sandbox=true"}
+	if fileSize <= 8*1024*1024 {
+		parts = append(parts,
+			"aaa",
+			"?e __CAP_IJ__", "ij",
+			"?e __CAP_AFLJ__", "aflj",
+			"?e __CAP_IEJ__", "iEj",
+			"?e __CAP_IIJ__", "iij",
+			"?e __CAP_IZZJ__", "izzj",
+		)
+	} else {
+		parts = append(parts,
+			"?e __CAP_IJ__", "ij",
+			"?e __CAP_AFLJ__", "isj",
+			"?e __CAP_IEJ__", "iEj",
+			"?e __CAP_IIJ__", "iij",
+			"?e __CAP_IZZJ__", "izj",
+		)
+	}
+	r2Cmd := strings.Join(parts, "; ")
 
 	cmd := exec.CommandContext(runCtx, r2Bin,
 		"-q",
-		"-e", "cfg.sandbox=true",
 		"-e", "scr.color=0",
 		"-c", r2Cmd,
 		binaryPath,
@@ -574,6 +588,7 @@ func parseR2AFLJ(doc json.RawMessage, out *BinaryAnalysis) {
 	var funcs []struct {
 		Name      string `json:"name"`
 		Offset    uint64 `json:"offset"`
+		VAddr     uint64 `json:"vaddr"`
 		Size      uint64 `json:"size"`
 		RealSz    uint64 `json:"realsz"`
 		Signature string `json:"signature"`
@@ -590,6 +605,13 @@ func parseR2AFLJ(doc json.RawMessage, out *BinaryAnalysis) {
 		funcs = funcs[:maxExtractedFunctions]
 	}
 	for _, f := range funcs {
+		addr := f.Offset
+		if addr == 0 {
+			addr = f.VAddr
+		}
+		if strings.TrimSpace(f.Name) == "" && addr == 0 {
+			continue
+		}
 		sz := f.Size
 		if sz == 0 {
 			sz = f.RealSz
@@ -597,8 +619,8 @@ func parseR2AFLJ(doc json.RawMessage, out *BinaryAnalysis) {
 		clean := stripR2SymPrefix(f.Name)
 		out.Functions = append(out.Functions, BinaryFunction{
 			Name:      f.Name,
-			Addr:      fmt.Sprintf("0x%x", f.Offset),
-			Offset:    f.Offset,
+			Addr:      fmt.Sprintf("0x%x", addr),
+			Offset:    addr,
 			Size:      sz,
 			Signature: f.Signature,
 			CallCount: len(f.CallRefs),
@@ -610,7 +632,7 @@ func parseR2AFLJ(doc json.RawMessage, out *BinaryAnalysis) {
 			}
 			fromAddr := cr.At
 			if fromAddr == 0 {
-				fromAddr = f.Offset
+				fromAddr = addr
 			}
 			out.XRefs = append(out.XRefs, BinaryXRef{
 				From:     fmt.Sprintf("0x%x", fromAddr),

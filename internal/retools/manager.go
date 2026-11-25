@@ -3,6 +3,8 @@ package retools
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -276,6 +278,7 @@ func readProjectsDir(dir string) map[string]REProject {
 // Manager owns the RE project store, host toolchain configuration/cache,
 // binary analysis entrypoints, and async cancellable job lifecycle.
 type Manager struct {
+	capDir   string
 	projects *ProjectStore
 
 	tcMu   sync.RWMutex
@@ -313,6 +316,7 @@ func NewManager(capDir string) (*Manager, error) {
 		return nil, err
 	}
 	return &Manager{
+		capDir:   capDir,
 		projects: store,
 		state: &JobState{
 			Status:  StatusIdle,
@@ -486,15 +490,16 @@ func (m *Manager) StartJob(req RunJobRequest) (*JobState, error) {
 	req.Engine = eng
 
 	tc := m.GetToolchain(false)
-	if !tc.R2Ready && eng == EngineRadare2 ||
-		!tc.Python.Ready && (eng == EngineQiling || eng == EngineAngr) ||
-		!tc.UnidbgReady && eng == EngineUnidbg {
+	if (!tc.R2Ready && eng == EngineRadare2) ||
+		(!tc.QilingReady && eng == EngineQiling) ||
+		(!tc.AngrReady && eng == EngineAngr) ||
+		(!tc.UnidbgReady && eng == EngineUnidbg) {
 		// Refresh once in case config/environment changed.
 		tc = m.GetToolchain(true)
 	}
 
 	// Prepare engine-specific execution plan before mutating manager state.
-	plan, err := prepareJobPlan(req, tc)
+	plan, err := prepareJobPlan(req, tc, m.capDir)
 	if err != nil {
 		return nil, err
 	}
@@ -630,7 +635,7 @@ type jobPlan struct {
 	tempPaths  []string
 }
 
-func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
+func prepareJobPlan(req RunJobRequest, tc ToolchainInfo, capDir string) (*jobPlan, error) {
 	env := buildJobEnv(req, tc)
 
 	switch req.Engine {
@@ -638,8 +643,20 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 		if strings.TrimSpace(req.Code) == "" {
 			return nil, fmt.Errorf("%s script code is required", req.Engine)
 		}
-		if !tc.Python.Ready || tc.Python.Path == "" {
-			return nil, fmt.Errorf("Python 3 runtime not available (%s)", tc.Python.Issue)
+		var pyPath string
+		var pyReady bool
+		var pyIssue string
+		if req.Engine == EngineQiling {
+			pyPath = firstNonEmpty(tc.Qiling.Path, tc.Python.Path)
+			pyReady = (tc.Qiling.Ready && tc.Qiling.Path != "") || (tc.Python.Ready && tc.Python.Path != "")
+			pyIssue = firstNonEmpty(tc.Qiling.Issue, tc.Python.Issue)
+		} else {
+			pyPath = firstNonEmpty(tc.Angr.Path, tc.Python.Path)
+			pyReady = (tc.Angr.Ready && tc.Angr.Path != "") || (tc.Python.Ready && tc.Python.Path != "")
+			pyIssue = firstNonEmpty(tc.Angr.Issue, tc.Python.Issue)
+		}
+		if !pyReady || pyPath == "" {
+			return nil, fmt.Errorf("Python 3 runtime for %s not available (%s)", req.Engine, pyIssue)
 		}
 		tmpFile, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("cap-%s-*.py", req.Engine))
 		if err != nil {
@@ -657,13 +674,13 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 			steps: []jobStep{
 				{
 					label: req.Engine,
-					bin:   tc.Python.Path,
+					bin:   pyPath,
 					args:  args,
 					dir:   req.WorkDir,
 					env:   env,
 				},
 			},
-			displayCmd: fmt.Sprintf("%s -u %s", filepath.Base(tc.Python.Path), filepath.Base(tmpFile.Name())),
+			displayCmd: fmt.Sprintf("%s -u %s", filepath.Base(pyPath), filepath.Base(tmpFile.Name())),
 			tempPaths:  []string{tmpFile.Name()},
 		}, nil
 
@@ -685,7 +702,7 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 		if !tc.R2.Ready || tc.R2.Path == "" {
 			return nil, fmt.Errorf("radare2 (r2) not available (%s)", tc.R2.Issue)
 		}
-		args := []string{"-q", "-e", "cfg.sandbox=true", "-e", "scr.color=0", "-c", r2Cmd, binPath}
+		args := []string{"-q", "-e", "scr.color=0", "-c", "e cfg.sandbox=true; " + r2Cmd, binPath}
 		return &jobPlan{
 			steps: []jobStep{
 				{
@@ -711,6 +728,16 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 		}
 		if tc.JavacPath == "" {
 			return nil, fmt.Errorf("JDK javac compiler not found (required to compile Unidbg harnesses)")
+		}
+
+		// Pin JAVA_HOME and prepend the exact matched JDK bin dir to PATH so mvn,
+		// javac, and java all execute against the same JDK.
+		unidbgEnv := append([]string(nil), env...)
+		if strings.TrimSpace(tc.JavaHome) != "" {
+			unidbgEnv = setEnvVar(unidbgEnv, "JAVA_HOME", tc.JavaHome)
+			unidbgEnv = prependPathEnv(unidbgEnv, filepath.Join(tc.JavaHome, "bin"))
+		} else if tc.Java.Path != "" {
+			unidbgEnv = prependPathEnv(unidbgEnv, filepath.Dir(tc.Java.Path))
 		}
 
 		tmpDir, err := os.MkdirTemp(os.TempDir(), "cap-unidbg-*")
@@ -745,11 +772,23 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 			fqcn = pkgName + "." + className
 		}
 
-		// Mode 1: Direct javac + java using discovered Unidbg JARs
-		if len(tc.UnidbgJars) > 0 {
-			cpJars := strings.Join(tc.UnidbgJars, string(os.PathListSeparator))
+		mode := strings.TrimSpace(tc.UnidbgMode)
+		if mode == "" {
+			if len(tc.UnidbgJars) > 0 {
+				mode = UnidbgModeJarBundle
+			} else if resolveUnidbgPomPath(tc.Unidbg.Path) != "" {
+				mode = UnidbgModeMavenRepo
+			}
+		}
+
+		extraArgs := append([]string(nil), req.Args...)
+		javaWorkDir := firstNonEmpty(req.WorkDir, tmpDir)
+
+		// Mode 1: Direct javac + java using pre-built fat jar or full jar bundle.
+		if (mode == UnidbgModeFatJar || mode == UnidbgModeJarBundle) && len(tc.UnidbgJars) > 0 {
+			cpJars := strings.Join(dedupeClasspathEntries(tc.UnidbgJars), string(os.PathListSeparator))
 			runCP := outDir + string(os.PathListSeparator) + cpJars
-			javaArgs := append([]string{"-cp", runCP, fqcn}, req.Args...)
+			javaArgs := append([]string{"-cp", runCP, fqcn}, extraArgs...)
 			return &jobPlan{
 				steps: []jobStep{
 					{
@@ -757,14 +796,14 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 						bin:   tc.JavacPath,
 						args:  []string{"-encoding", "UTF-8", "-cp", cpJars, "-d", outDir, javaFile},
 						dir:   tmpDir,
-						env:   env,
+						env:   unidbgEnv,
 					},
 					{
 						label: "java",
 						bin:   tc.Java.Path,
 						args:  javaArgs,
-						dir:   firstNonEmpty(req.WorkDir, tmpDir),
-						env:   env,
+						dir:   javaWorkDir,
+						env:   unidbgEnv,
 					},
 				},
 				displayCmd: fmt.Sprintf("%s && %s %s", filepath.Base(tc.JavacPath), filepath.Base(tc.Java.Path), fqcn),
@@ -772,75 +811,304 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo) (*jobPlan, error) {
 			}, nil
 		}
 
-		// Mode 2: Maven project directory — resolve classpath via
-		// `mvn dependency:build-classpath`, then compile & run the staged
-		// temp Java source with javac + java.
-		pomPath := resolveUnidbgPomPath(tc.Unidbg.Path)
-		if tc.Mvn.Ready && tc.Mvn.Path != "" && pomPath != "" {
-			cpFile := filepath.Join(tmpDir, "unidbg-classpath.txt")
+		// Mode 2: Maven source repository — cache `mvn dependency:build-classpath`
+		// in <capDir>/cache/unidbg-cp-<hash>.txt and combine with compiled module targets.
+		if mode == UnidbgModeMavenRepo {
+			rootPom := filepath.Join(tc.Unidbg.Path, "pom.xml")
+			androidPom := filepath.Join(tc.Unidbg.Path, "unidbg-android", "pom.xml")
+			isMultiModule := isRegularFile(rootPom) && isRegularFile(androidPom)
+			pomPath := resolveUnidbgPomPath(tc.Unidbg.Path)
+			if pomPath == "" {
+				_ = os.RemoveAll(tmpDir)
+				return nil, fmt.Errorf("Unidbg Maven pom.xml not found under %s", tc.Unidbg.Path)
+			}
 			pomDir := filepath.Dir(pomPath)
-			readCP := func() (string, error) {
-				raw, err := os.ReadFile(cpFile)
-				if err != nil {
-					return "", fmt.Errorf("read maven classpath %s: %w", cpFile, err)
+
+			cacheKeyParts := []string{"maven-repo", pomPath, statSignature(pomPath), tc.JavaHome, tc.Java.Path}
+			if isMultiModule {
+				cacheKeyParts = append(cacheKeyParts, rootPom, statSignature(rootPom))
+			}
+			cacheFile := unidbgClasspathCachePath(capDir, cacheKeyParts...)
+
+			assembleCP := func(mavenRaw string) (string, error) {
+				var rawEntries []string
+				if s := strings.TrimSpace(mavenRaw); s != "" {
+					rawEntries = append(rawEntries, s)
 				}
-				var entries []string
-				if s := strings.TrimSpace(string(raw)); s != "" {
-					entries = append(entries, s)
-				}
-				for _, clsDir := range []string{
-					filepath.Join(pomDir, "target", "classes"),
-					filepath.Join(tc.Unidbg.Path, "unidbg-android", "target", "classes"),
-					filepath.Join(tc.Unidbg.Path, "target", "classes"),
-				} {
-					if fi, err := os.Stat(clsDir); err == nil && fi.IsDir() {
-						entries = append(entries, clsDir)
-					}
-				}
-				if len(entries) == 0 {
+				rawEntries = append(rawEntries, collectUnidbgModuleTargets(tc.Unidbg.Path, pomDir)...)
+				deduped := dedupeClasspathEntries(rawEntries)
+				if len(deduped) == 0 {
 					return "", fmt.Errorf("maven dependency:build-classpath produced empty classpath")
 				}
-				return strings.Join(entries, string(os.PathListSeparator)), nil
+				return strings.Join(deduped, string(os.PathListSeparator)), nil
 			}
-			extraArgs := append([]string(nil), req.Args...)
+
+			// Fast path: cache hit where every cached classpath entry exists on disk -> skip mvn!
+			if cachedRaw, ok := loadValidCachedClasspath(cacheFile); ok {
+				cp, err := assembleCP(cachedRaw)
+				if err == nil {
+					runCP := outDir + string(os.PathListSeparator) + cp
+					return &jobPlan{
+						steps: []jobStep{
+							{
+								label: "javac",
+								bin:   tc.JavacPath,
+								args:  []string{"-encoding", "UTF-8", "-cp", cp, "-d", outDir, javaFile},
+								dir:   tmpDir,
+								env:   unidbgEnv,
+							},
+							{
+								label: "java",
+								bin:   tc.Java.Path,
+								args:  append([]string{"-cp", runCP, fqcn}, extraArgs...),
+								dir:   javaWorkDir,
+								env:   unidbgEnv,
+							},
+						},
+						displayCmd: fmt.Sprintf("%s && %s %s (cached cp)", filepath.Base(tc.JavacPath), filepath.Base(tc.Java.Path), fqcn),
+						tempPaths:  []string{tmpDir},
+					}, nil
+				}
+			}
+
+			if !tc.Mvn.Ready || tc.Mvn.Path == "" {
+				_ = os.RemoveAll(tmpDir)
+				return nil, fmt.Errorf("Unidbg Maven project requires Maven (mvn) to resolve classpath (%s)", tc.Mvn.Issue)
+			}
+
+			tmpCPFile := filepath.Join(tmpDir, "unidbg-classpath.txt")
+			var mvnArgs []string
+			mvnDir := pomDir
+			if isMultiModule {
+				// Multi-module Unidbg reactor: run compile on unidbg-android & upstream
+				// modules so sibling SNAPSHOT modules (e.g. unidbg-api) resolve in-reactor
+				// even when never installed into ~/.m2.
+				mvnArgs = []string{
+					"-q", "-f", rootPom,
+					"-pl", "unidbg-android", "-am",
+					"compile", "dependency:build-classpath",
+					"-DincludeScope=runtime",
+					"-Dmdep.outputFile=" + tmpCPFile,
+				}
+				mvnDir = tc.Unidbg.Path
+			} else {
+				mvnArgs = []string{
+					"-q", "-f", pomPath,
+					"dependency:build-classpath",
+					"-DincludeScope=runtime",
+					"-Dmdep.outputFile=" + tmpCPFile,
+				}
+			}
+
+			var (
+				cachedOnce sync.Once
+				resolvedCP string
+				resolveErr error
+			)
+			readAndCacheCP := func() (string, error) {
+				cachedOnce.Do(func() {
+					raw, err := os.ReadFile(tmpCPFile)
+					if err != nil {
+						resolveErr = fmt.Errorf("read maven classpath %s: %w", tmpCPFile, err)
+						return
+					}
+					trimmed := strings.TrimSpace(string(raw))
+					if trimmed != "" && cacheFile != "" {
+						saveCachedClasspath(cacheFile, trimmed)
+					}
+					resolvedCP, resolveErr = assembleCP(trimmed)
+				})
+				return resolvedCP, resolveErr
+			}
+
 			return &jobPlan{
 				steps: []jobStep{
 					{
 						label: "mvn-classpath",
 						bin:   tc.Mvn.Path,
-						args:  []string{"-q", "-f", pomPath, "dependency:build-classpath", "-Dmdep.outputFile=" + cpFile},
-						dir:   pomDir,
-						env:   env,
+						args:  mvnArgs,
+						dir:   mvnDir,
+						env:   unidbgEnv,
 					},
 					{
 						label: "javac",
 						bin:   tc.JavacPath,
 						resolveArgs: func() ([]string, error) {
-							cp, err := readCP()
+							cp, err := readAndCacheCP()
 							if err != nil {
 								return nil, err
 							}
 							return []string{"-encoding", "UTF-8", "-cp", cp, "-d", outDir, javaFile}, nil
 						},
 						dir: tmpDir,
-						env: env,
+						env: unidbgEnv,
 					},
 					{
 						label: "java",
 						bin:   tc.Java.Path,
 						resolveArgs: func() ([]string, error) {
-							cp, err := readCP()
+							cp, err := readAndCacheCP()
 							if err != nil {
 								return nil, err
 							}
 							runCP := outDir + string(os.PathListSeparator) + cp
 							return append([]string{"-cp", runCP, fqcn}, extraArgs...), nil
 						},
-						dir: firstNonEmpty(req.WorkDir, tmpDir),
-						env: env,
+						dir: javaWorkDir,
+						env: unidbgEnv,
 					},
 				},
 				displayCmd: fmt.Sprintf("%s classpath && %s && %s %s",
+					filepath.Base(tc.Mvn.Path), filepath.Base(tc.JavacPath), filepath.Base(tc.Java.Path), fqcn),
+				tempPaths: []string{tmpDir},
+			}, nil
+		}
+
+		// Mode 3: ~/.m2 local repository cache — synthesize a minimal transient pom.xml
+		// referencing com.github.zhkl0228:unidbg-android:<ver>, resolve & cache offline
+		// via `mvn -q -o dependency:build-classpath`, prepend the cached jar, then javac + java.
+		if mode == UnidbgModeM2Cache {
+			mainJar := ""
+			if len(tc.UnidbgJars) > 0 {
+				mainJar = tc.UnidbgJars[0]
+			} else if j, _ := findM2ArtifactFiles(tc.Unidbg.Path, filepath.Base(tc.Unidbg.Path)); j != "" {
+				mainJar = j
+			}
+			ver := firstNonEmpty(tc.Unidbg.Version, filepath.Base(tc.Unidbg.Path))
+			cacheFile := unidbgClasspathCachePath(capDir, "m2-cache", tc.Unidbg.Path, ver, mainJar, statSignature(mainJar), tc.JavaHome, tc.Java.Path)
+
+			assembleM2CP := func(mavenRaw string) (string, error) {
+				var rawEntries []string
+				if mainJar != "" {
+					rawEntries = append(rawEntries, mainJar)
+				}
+				if s := strings.TrimSpace(mavenRaw); s != "" {
+					rawEntries = append(rawEntries, s)
+				}
+				deduped := dedupeClasspathEntries(rawEntries)
+				if len(deduped) == 0 {
+					return "", fmt.Errorf("m2-cache dependency:build-classpath produced empty classpath")
+				}
+				return strings.Join(deduped, string(os.PathListSeparator)), nil
+			}
+
+			if cachedRaw, ok := loadValidCachedClasspath(cacheFile); ok {
+				cp, err := assembleM2CP(cachedRaw)
+				if err == nil {
+					runCP := outDir + string(os.PathListSeparator) + cp
+					return &jobPlan{
+						steps: []jobStep{
+							{
+								label: "javac",
+								bin:   tc.JavacPath,
+								args:  []string{"-encoding", "UTF-8", "-cp", cp, "-d", outDir, javaFile},
+								dir:   tmpDir,
+								env:   unidbgEnv,
+							},
+							{
+								label: "java",
+								bin:   tc.Java.Path,
+								args:  append([]string{"-cp", runCP, fqcn}, extraArgs...),
+								dir:   javaWorkDir,
+								env:   unidbgEnv,
+							},
+						},
+						displayCmd: fmt.Sprintf("%s && %s %s (cached m2 cp)", filepath.Base(tc.JavacPath), filepath.Base(tc.Java.Path), fqcn),
+						tempPaths:  []string{tmpDir},
+					}, nil
+				}
+			}
+
+			if !tc.Mvn.Ready || tc.Mvn.Path == "" {
+				_ = os.RemoveAll(tmpDir)
+				return nil, fmt.Errorf("Unidbg m2-cache mode requires Maven (mvn) to resolve transitive classpath (%s)", tc.Mvn.Issue)
+			}
+
+			tmpPom := filepath.Join(tmpDir, "pom.xml")
+			pomXML := fmt.Sprintf(`<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.cap.unidbg</groupId>
+  <artifactId>cap-unidbg-m2-resolver</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.github.zhkl0228</groupId>
+      <artifactId>unidbg-android</artifactId>
+      <version>%s</version>
+    </dependency>
+  </dependencies>
+</project>
+`, xmlEscapeText(ver))
+			if err := os.WriteFile(tmpPom, []byte(pomXML), 0644); err != nil {
+				_ = os.RemoveAll(tmpDir)
+				return nil, fmt.Errorf("write transient m2 pom.xml: %w", err)
+			}
+
+			tmpCPFile := filepath.Join(tmpDir, "unidbg-m2-classpath.txt")
+			var (
+				cachedOnce sync.Once
+				resolvedCP string
+				resolveErr error
+			)
+			readAndCacheM2CP := func() (string, error) {
+				cachedOnce.Do(func() {
+					raw, err := os.ReadFile(tmpCPFile)
+					if err != nil {
+						resolveErr = fmt.Errorf("read maven m2 classpath %s: %w", tmpCPFile, err)
+						return
+					}
+					trimmed := strings.TrimSpace(string(raw))
+					if trimmed != "" && cacheFile != "" {
+						saveCachedClasspath(cacheFile, trimmed)
+					}
+					resolvedCP, resolveErr = assembleM2CP(trimmed)
+				})
+				return resolvedCP, resolveErr
+			}
+
+			return &jobPlan{
+				steps: []jobStep{
+					{
+						label: "mvn-m2-classpath",
+						bin:   tc.Mvn.Path,
+						args: []string{
+							"-q", "-o", "-f", tmpPom,
+							"dependency:build-classpath",
+							"-DincludeScope=runtime",
+							"-Dmdep.outputFile=" + tmpCPFile,
+						},
+						dir: tmpDir,
+						env: unidbgEnv,
+					},
+					{
+						label: "javac",
+						bin:   tc.JavacPath,
+						resolveArgs: func() ([]string, error) {
+							cp, err := readAndCacheM2CP()
+							if err != nil {
+								return nil, err
+							}
+							return []string{"-encoding", "UTF-8", "-cp", cp, "-d", outDir, javaFile}, nil
+						},
+						dir: tmpDir,
+						env: unidbgEnv,
+					},
+					{
+						label: "java",
+						bin:   tc.Java.Path,
+						resolveArgs: func() ([]string, error) {
+							cp, err := readAndCacheM2CP()
+							if err != nil {
+								return nil, err
+							}
+							runCP := outDir + string(os.PathListSeparator) + cp
+							return append([]string{"-cp", runCP, fqcn}, extraArgs...), nil
+						},
+						dir: javaWorkDir,
+						env: unidbgEnv,
+					},
+				},
+				displayCmd: fmt.Sprintf("%s -o classpath && %s && %s %s",
 					filepath.Base(tc.Mvn.Path), filepath.Base(tc.JavacPath), filepath.Base(tc.Java.Path), fqcn),
 				tempPaths: []string{tmpDir},
 			}, nil
@@ -864,6 +1132,176 @@ func resolveUnidbgPomPath(unidbgPath string) string {
 		}
 	}
 	return ""
+}
+
+func collectUnidbgModuleTargets(unidbgDir, pomDir string) []string {
+	var out []string
+	addDir := func(d string) {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			out = append(out, d)
+		}
+	}
+	addMatchingJars := func(dir, prefix string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		var names []string
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !isRuntimeJarName(name) {
+				continue
+			}
+			if prefix != "" && !strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
+				continue
+			}
+			names = append(names, filepath.Join(dir, name))
+		}
+		sort.Strings(names)
+		out = append(out, names...)
+	}
+
+	addDir(filepath.Join(unidbgDir, "unidbg-android", "target", "classes"))
+	addMatchingJars(filepath.Join(unidbgDir, "unidbg-android", "target"), "unidbg-android-")
+	addDir(filepath.Join(unidbgDir, "unidbg-api", "target", "classes"))
+	addMatchingJars(filepath.Join(unidbgDir, "unidbg-api", "target"), "unidbg-api-")
+
+	if backendClasses, err := filepath.Glob(filepath.Join(unidbgDir, "backend", "*", "target", "classes")); err == nil {
+		sort.Strings(backendClasses)
+		for _, d := range backendClasses {
+			addDir(d)
+		}
+	}
+	if pomDir != "" {
+		addDir(filepath.Join(pomDir, "target", "classes"))
+	}
+	addDir(filepath.Join(unidbgDir, "target", "classes"))
+	return out
+}
+
+func dedupeClasspathEntries(inputs []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, chunk := range inputs {
+		for _, item := range filepath.SplitList(chunk) {
+			item = strings.TrimSpace(item)
+			if item == "" || seen[item] {
+				continue
+			}
+			seen[item] = true
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func statSignature(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "missing"
+	}
+	return fmt.Sprintf("%d:%d", fi.ModTime().UnixNano(), fi.Size())
+}
+
+func unidbgClasspathCachePath(capDir string, keyParts ...string) string {
+	capDir = strings.TrimSpace(capDir)
+	if capDir == "" {
+		return ""
+	}
+	h := sha256.New()
+	for _, p := range keyParts {
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write([]byte{0})
+	}
+	sum := hex.EncodeToString(h.Sum(nil))[:16]
+	return filepath.Join(capDir, "cache", "unidbg-cp-"+sum+".txt")
+}
+
+func loadValidCachedClasspath(cacheFile string) (string, bool) {
+	if strings.TrimSpace(cacheFile) == "" {
+		return "", false
+	}
+	raw, err := os.ReadFile(cacheFile)
+	if err != nil {
+		return "", false
+	}
+	entries := dedupeClasspathEntries([]string{string(raw)})
+	if len(entries) == 0 {
+		return "", false
+	}
+	for _, entry := range entries {
+		if _, err := os.Stat(entry); err != nil {
+			return "", false
+		}
+	}
+	return strings.Join(entries, string(os.PathListSeparator)), true
+}
+
+func saveCachedClasspath(cacheFile, content string) {
+	if strings.TrimSpace(cacheFile) == "" || strings.TrimSpace(content) == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0755); err != nil {
+		return
+	}
+	tmp := cacheFile + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.TrimSpace(content)), 0644); err == nil {
+		_ = os.Rename(tmp, cacheFile)
+	}
+}
+
+func setEnvVar(env []string, key, val string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			if !replaced {
+				out = append(out, prefix+val)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !replaced {
+		out = append(out, prefix+val)
+	}
+	return out
+}
+
+func prependPathEnv(env []string, dir string) []string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return env
+	}
+	sep := string(os.PathListSeparator)
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			cur := strings.TrimPrefix(kv, "PATH=")
+			if cur == "" {
+				env[i] = "PATH=" + dir
+			} else {
+				env[i] = "PATH=" + dir + sep + cur
+			}
+			return env
+		}
+	}
+	return append(env, "PATH="+dir)
+}
+
+func xmlEscapeText(s string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&apos;",
+	)
+	return replacer.Replace(s)
 }
 
 func buildJobEnv(req RunJobRequest, tc ToolchainInfo) []string {

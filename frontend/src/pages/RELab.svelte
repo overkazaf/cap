@@ -31,6 +31,8 @@
     mvn_path: '',
     unidbg_dir: '',
     python_path: '',
+    qiling_python_path: '',
+    angr_python_path: '',
     qiling_rootfs: '',
   }
 
@@ -663,6 +665,8 @@
           mvn_path: settings.re_mvn_path || '',
           unidbg_dir: settings.re_unidbg_dir || '',
           python_path: settings.re_python_path || '',
+          qiling_python_path: settings.re_qiling_python_path || '',
+          angr_python_path: settings.re_angr_python_path || '',
           qiling_rootfs: settings.re_qiling_rootfs || '',
         }
       }
@@ -682,6 +686,8 @@
         mvn_path: tcForm.mvn_path.trim(),
         unidbg_dir: tcForm.unidbg_dir.trim(),
         python_path: tcForm.python_path.trim(),
+        qiling_python_path: tcForm.qiling_python_path.trim(),
+        angr_python_path: tcForm.angr_python_path.trim(),
         qiling_rootfs: tcForm.qiling_rootfs.trim(),
       }
       toolchain = await app.UpdateREToolchainConfig(cleaned)
@@ -1904,6 +1910,14 @@
           <input type="text" class="cap-input mono" bind:value={tcForm.python_path} placeholder={toolchain?.python?.path || $t('reLab.toolchain.pythonPlaceholder')} />
         </label>
         <label class="d-field">
+          <span>{$t('reLab.toolchain.qilingPythonPath')}</span>
+          <input type="text" class="cap-input mono" bind:value={tcForm.qiling_python_path} placeholder={toolchain?.qiling?.path || $t('reLab.toolchain.qilingPythonPlaceholder')} />
+        </label>
+        <label class="d-field">
+          <span>{$t('reLab.toolchain.angrPythonPath')}</span>
+          <input type="text" class="cap-input mono" bind:value={tcForm.angr_python_path} placeholder={toolchain?.angr?.path || $t('reLab.toolchain.angrPythonPlaceholder')} />
+        </label>
+        <label class="d-field">
           <span>{$t('reLab.toolchain.qilingRootfs')}</span>
           <input type="text" class="cap-input mono" bind:value={tcForm.qiling_rootfs} placeholder={toolchain?.qiling_rootfs || $t('reLab.toolchain.qilingPlaceholder')} />
         </label>
@@ -1911,11 +1925,16 @@
 
       <div class="tc-detail-row">
         {#each toolchainPills as pill (pill.key)}
-          <div class="tc-stat-chip">
+          <div class="tc-stat-chip" title={tooltipForTool(pill)}>
             <Badge variant={pill.ready ? 'success' : 'neutral'} size="xs" dot>{pill.label}</Badge>
-            <span class="mono truncate">{pill.info?.version || pill.info?.issue || '—'}</span>
+            <span class="mono truncate">
+              {pill.info?.version || pill.info?.issue || '—'}{#if (pill.key === 'qiling' || pill.key === 'angr') && pill.ready && pill.info?.path} · {pill.info.path}{/if}
+            </span>
           </div>
         {/each}
+        {#if toolchain?.unidbg_mode}
+          <Badge variant="accent" size="xs" mono>{$t('reLab.toolchain.unidbgModeLabel', { mode: toolchain.unidbg_mode })}</Badge>
+        {/if}
         {#if toolchain?.unidbg_jars?.length > 0}
           <Badge variant="info" size="xs" mono>{$t('reLab.toolchain.jarsFound', { count: toolchain.unidbg_jars.length })}</Badge>
         {/if}
@@ -1934,7 +1953,7 @@
 
       <div class="drawer-foot">
         <span class="hint-muted mono">
-          javac: {toolchain?.javac_path || '—'} · python: {toolchain?.python?.version || '—'}
+          javac: {toolchain?.javac_path || '—'} · qiling: {toolchain?.qiling?.path || toolchain?.python?.path || '—'} · angr: {toolchain?.angr?.path || toolchain?.python?.path || '—'}
         </span>
         <div class="strip-spacer"></div>
         <Button variant="secondary" size="xs" icon="refresh" loading={probingToolchain} on:click={() => loadToolchain(true)}>

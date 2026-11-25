@@ -21,18 +21,20 @@ func retoolsToolchainFromSettings(settings map[string]string) retools.ToolchainC
 		return retools.ToolchainConfig{}
 	}
 	return retools.ToolchainConfig{
-		R2Path:       strings.TrimSpace(settings["re_r2_path"]),
-		JavaPath:     strings.TrimSpace(settings["re_java_path"]),
-		MvnPath:      strings.TrimSpace(settings["re_mvn_path"]),
-		UnidbgDir:    strings.TrimSpace(settings["re_unidbg_dir"]),
-		PythonPath:   strings.TrimSpace(settings["re_python_path"]),
-		QilingRootFS: strings.TrimSpace(settings["re_qiling_rootfs"]),
+		R2Path:           strings.TrimSpace(settings["re_r2_path"]),
+		JavaPath:         strings.TrimSpace(settings["re_java_path"]),
+		MvnPath:          strings.TrimSpace(settings["re_mvn_path"]),
+		UnidbgDir:        strings.TrimSpace(settings["re_unidbg_dir"]),
+		PythonPath:       strings.TrimSpace(settings["re_python_path"]),
+		QilingPythonPath: strings.TrimSpace(settings["re_qiling_python_path"]),
+		AngrPythonPath:   strings.TrimSpace(settings["re_angr_python_path"]),
+		QilingRootFS:     strings.TrimSpace(settings["re_qiling_rootfs"]),
 	}
 }
 
 func isREToolchainSettingKey(key string) bool {
 	switch key {
-	case "re_r2_path", "re_java_path", "re_mvn_path", "re_unidbg_dir", "re_python_path", "re_qiling_rootfs":
+	case "re_r2_path", "re_java_path", "re_mvn_path", "re_unidbg_dir", "re_python_path", "re_qiling_python_path", "re_angr_python_path", "re_qiling_rootfs":
 		return true
 	default:
 		return false
@@ -129,20 +131,24 @@ func (a *App) GetREToolchain(forceRefresh bool) retools.ToolchainInfo {
 // UpdateREToolchainConfig persists custom RE toolchain paths and re-probes immediately.
 func (a *App) UpdateREToolchainConfig(cfg retools.ToolchainConfig) (retools.ToolchainInfo, error) {
 	trimmed := retools.ToolchainConfig{
-		R2Path:       strings.TrimSpace(cfg.R2Path),
-		JavaPath:     strings.TrimSpace(cfg.JavaPath),
-		MvnPath:      strings.TrimSpace(cfg.MvnPath),
-		UnidbgDir:    strings.TrimSpace(cfg.UnidbgDir),
-		PythonPath:   strings.TrimSpace(cfg.PythonPath),
-		QilingRootFS: strings.TrimSpace(cfg.QilingRootFS),
+		R2Path:           strings.TrimSpace(cfg.R2Path),
+		JavaPath:         strings.TrimSpace(cfg.JavaPath),
+		MvnPath:          strings.TrimSpace(cfg.MvnPath),
+		UnidbgDir:        strings.TrimSpace(cfg.UnidbgDir),
+		PythonPath:       strings.TrimSpace(cfg.PythonPath),
+		QilingPythonPath: strings.TrimSpace(cfg.QilingPythonPath),
+		AngrPythonPath:   strings.TrimSpace(cfg.AngrPythonPath),
+		QilingRootFS:     strings.TrimSpace(cfg.QilingRootFS),
 	}
 	updates := map[string]string{
-		"re_r2_path":       trimmed.R2Path,
-		"re_java_path":     trimmed.JavaPath,
-		"re_mvn_path":      trimmed.MvnPath,
-		"re_unidbg_dir":    trimmed.UnidbgDir,
-		"re_python_path":   trimmed.PythonPath,
-		"re_qiling_rootfs": trimmed.QilingRootFS,
+		"re_r2_path":            trimmed.R2Path,
+		"re_java_path":          trimmed.JavaPath,
+		"re_mvn_path":           trimmed.MvnPath,
+		"re_unidbg_dir":         trimmed.UnidbgDir,
+		"re_python_path":        trimmed.PythonPath,
+		"re_qiling_python_path": trimmed.QilingPythonPath,
+		"re_angr_python_path":   trimmed.AngrPythonPath,
+		"re_qiling_rootfs":      trimmed.QilingRootFS,
 	}
 	for k, v := range updates {
 		if err := a.SetSetting(k, v); err != nil {

@@ -135,7 +135,9 @@ func TestDefaultSettingsIncludeREAndGatewayKeys(t *testing.T) {
 	settings := loadSettings(filepath.Join(t.TempDir(), "missing-settings.json"))
 	for _, key := range []string{
 		"re_r2_path", "re_java_path", "re_mvn_path",
-		"re_unidbg_dir", "re_python_path", "re_qiling_rootfs",
+		"re_unidbg_dir", "re_python_path",
+		"re_qiling_python_path", "re_angr_python_path",
+		"re_qiling_rootfs",
 	} {
 		if _, ok := settings[key]; !ok {
 			t.Errorf("loadSettings missing default key %q", key)
@@ -151,8 +153,10 @@ func TestREToolsGUIBindingsAndTraceHarness(t *testing.T) {
 
 	// Toolchain probe & config persistence
 	tc, err := app.UpdateREToolchainConfig(retools.ToolchainConfig{
-		R2Path:       "/nonexistent/r2",
-		QilingRootFS: "/tmp/ql-rootfs",
+		R2Path:           "/nonexistent/r2",
+		QilingPythonPath: "/nonexistent/qiling-py",
+		AngrPythonPath:   "/nonexistent/angr-py",
+		QilingRootFS:     "/tmp/ql-rootfs",
 	})
 	if err != nil {
 		t.Fatalf("UpdateREToolchainConfig: %v", err)
@@ -162,6 +166,12 @@ func TestREToolsGUIBindingsAndTraceHarness(t *testing.T) {
 	}
 	if got := app.GetSetting("re_qiling_rootfs"); got != "/tmp/ql-rootfs" {
 		t.Fatalf("re_qiling_rootfs setting = %q, want /tmp/ql-rootfs", got)
+	}
+	if got := app.GetSetting("re_qiling_python_path"); got != "/nonexistent/qiling-py" {
+		t.Fatalf("re_qiling_python_path setting = %q, want /nonexistent/qiling-py", got)
+	}
+	if got := app.GetSetting("re_angr_python_path"); got != "/nonexistent/angr-py" {
+		t.Fatalf("re_angr_python_path setting = %q, want /nonexistent/angr-py", got)
 	}
 	_ = app.GetREToolchain(false)
 

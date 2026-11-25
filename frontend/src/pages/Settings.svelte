@@ -30,6 +30,8 @@
     re_mvn_path: '',
     re_unidbg_dir: '',
     re_python_path: '',
+    re_qiling_python_path: '',
+    re_angr_python_path: '',
     re_qiling_rootfs: '',
     gateway_addr: '127.0.0.1:9090',
   }
@@ -663,6 +665,38 @@
               bind:value={settings.re_python_path}
               placeholder="auto"
               on:change={() => setSetting('re_python_path', settings.re_python_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.qilingPythonTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.qilingPythonDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_qiling_python_path}
+              placeholder="auto"
+              on:change={() => setSetting('re_qiling_python_path', settings.re_qiling_python_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.angrPythonTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.angrPythonDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.re_angr_python_path}
+              placeholder="auto"
+              on:change={() => setSetting('re_angr_python_path', settings.re_angr_python_path)}
             />
           </div>
 

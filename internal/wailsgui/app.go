@@ -513,13 +513,15 @@ func loadSettings(path string) map[string]string {
 		"frida_python_path":  "",
 		"frida_cli_path":     "",
 		"frida_default_port": "27042",
-		"re_r2_path":         "",
-		"re_java_path":       "",
-		"re_mvn_path":        "",
-		"re_unidbg_dir":      "",
-		"re_python_path":     "",
-		"re_qiling_rootfs":   "",
-		"gateway_addr":       "127.0.0.1:9090",
+		"re_r2_path":            "",
+		"re_java_path":          "",
+		"re_mvn_path":           "",
+		"re_unidbg_dir":         "",
+		"re_python_path":        "",
+		"re_qiling_python_path": "",
+		"re_angr_python_path":   "",
+		"re_qiling_rootfs":      "",
+		"gateway_addr":          "127.0.0.1:9090",
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

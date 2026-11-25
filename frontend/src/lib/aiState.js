@@ -131,7 +131,7 @@ export function openAIHealModal(payload = {}) {
         ? payload.autoDiagnose
         : !payload.initialResult && !payload.autoHealResult && !payload.autoLoopRunning,
     profileId: payload.profileId || '',
-    undoKey: String(payload.undoKey || scope).trim() || 'general',
+    undoKey: normalizeUndoKey(payload.undoKey || scope),
     onNavigateSettings: typeof payload.onNavigateSettings === 'function' ? payload.onNavigateSettings : null,
     openedAt: Date.now(),
   }
@@ -143,7 +143,11 @@ export function updateAIHealSession(patch = {}) {
   if (!patch || typeof patch !== 'object') return
   aiHealSession.update((curr) => {
     if (!curr) return curr
-    return { ...curr, ...patch }
+    const next = { ...curr, ...patch }
+    if (patch.undoKey !== undefined) {
+      next.undoKey = normalizeUndoKey(patch.undoKey || next.scope)
+    }
+    return next
   })
 }
 
@@ -154,7 +158,7 @@ export function closeAIHealModal() {
 // Per-scope last-code backup stack so users can 1-click Undo an applied AI patch.
 const undoMapStore = writable({})
 
-function normalizeUndoKey(scope) {
+export function normalizeUndoKey(scope) {
   return String(scope || 'general').trim().toLowerCase() || 'general'
 }
 

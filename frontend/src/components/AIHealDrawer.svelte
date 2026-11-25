@@ -15,6 +15,7 @@
     updateAIHealSession,
     closeAIHealModal,
     aiUndoStack,
+    normalizeUndoKey,
     requestOpenAISettings,
   } from '../lib/aiState.js'
   import Icon from './Icon.svelte'
@@ -27,6 +28,7 @@
   let destroyed = false
   let unsubHealEvent = null
   let lastSessionId = 0
+  let lastSessionAutoLoopRunning = false
   let diagnoseSeq = 0
 
   // Single-shot diagnosis state
@@ -48,39 +50,49 @@
   let expandedRounds = {}
 
   $: session = $aiHealSession
-  $: undoKey = session?.undoKey || session?.scope || 'general'
+  $: undoKey = normalizeUndoKey(session?.undoKey || session?.scope || 'general')
   $: undoEntries = ($aiUndoStack && $aiUndoStack[undoKey]) || []
   $: hasUndoBackup = undoEntries.length > 0 && Boolean(session?.onApplyPatch)
 
   $: if (session && session.sessionId !== lastSessionId) {
     handleNewSession(session)
   } else if (session && session.sessionId === lastSessionId) {
-    // Allow external callers to update autoLoopRunning / autoHealResult in-place
+    // Allow external callers to update autoLoopRunning / autoHealResult in-place without fighting live events
     if (session.autoHealResult && session.autoHealResult !== autoHealResult) {
       autoHealResult = session.autoHealResult
       syncLatestDiagnosisFromAutoHeal(session.autoHealResult)
     }
-    if (typeof session.autoLoopRunning === 'boolean' && session.autoLoopRunning !== loopRunning && !cancellingLoop) {
+    if (typeof session.autoLoopRunning === 'boolean' && session.autoLoopRunning !== lastSessionAutoLoopRunning) {
+      lastSessionAutoLoopRunning = session.autoLoopRunning
       loopRunning = session.autoLoopRunning
+      if (!session.autoLoopRunning) {
+        cancellingLoop = false
+      }
     }
   }
 
   $: if (!session && lastSessionId !== 0) {
     lastSessionId = 0
+    lastSessionAutoLoopRunning = false
     diagnoseSeq += 1
     diagnosing = false
     diagnoseError = ''
   }
 
   $: scopeVariant = resolveScopeVariant(session?.scope)
-  $: scopeLabel = resolveScopeLabel(session?.scope)
+  $: scopeLabel = resolveScopeLabel(session?.scope, $t)
   $: confidencePct = result ? Math.round(Math.min(1, Math.max(0, Number(result.confidence) || 0)) * 100) : 0
   $: confidenceTone = confidencePct >= 75 ? 'success' : confidencePct >= 45 ? 'warning' : 'danger'
 
   $: validation = result?.validation || null
   $: validationIssues = getValidationIssues(validation)
   $: validationWarnings = Array.isArray(validation?.warnings) ? validation.warnings : []
-  $: validationBlocked = Boolean(validation && !validation.passed)
+  $: validationBlocked = Boolean(
+    validation &&
+    (validation.passed === false || validation.valid === false || Boolean(validation.has_destructive))
+  )
+  $: validationPassed = Boolean(validation && !validationBlocked)
+  $: showResultActions = Boolean(result && !diagnosing && !diagnoseError)
 
   $: parsedDiff = parseUnifiedDiff(result?.unified_diff || '')
   $: patchedCodeLines = result?.patched_code ? String(result.patched_code).replace(/\r\n/g, '\n').split('\n') : []
@@ -96,6 +108,7 @@
   )
   $: liveRoundGroups = groupLiveEventsByAttempt(liveEvents)
   $: finalHealedCodeAvailable = Boolean(
+    !loopRunning &&
     autoHealResult &&
     autoHealResult.final_code &&
     autoHealResult.final_code !== currentCode &&
@@ -122,10 +135,10 @@
     }
   }
 
-  function resolveScopeLabel(scope) {
+  function resolveScopeLabel(scope, tr = translate) {
     const norm = String(scope || 'general').toLowerCase()
     const key = `ai.scopes.${norm}`
-    const translated = translate(key)
+    const translated = tr(key)
     return translated === key ? norm.toUpperCase() : translated
   }
 
@@ -183,23 +196,23 @@
     }
   }
 
-  function labelForPhase(phase) {
+  function labelForPhase(phase, tr = translate) {
     const k = `ai.phases.${phase}`
-    const val = translate(k)
+    const val = tr(k)
     return val === k ? String(phase || '') : val
   }
 
-  function labelForStopReason(reason) {
+  function labelForStopReason(reason, tr = translate) {
     if (!reason) return ''
     const k = `ai.stopReasons.${reason}`
-    const val = translate(k)
+    const val = tr(k)
     return val === k ? String(reason) : val
   }
 
-  function labelForFixKind(kind) {
+  function labelForFixKind(kind, tr = translate) {
     if (!kind) return ''
     const k = `ai.fixKinds.${kind}`
-    const val = translate(k)
+    const val = tr(k)
     return val === k ? String(kind) : val
   }
 
@@ -320,6 +333,7 @@
     applyingPatch = false
     applyingConfig = false
     appliedConfigCount = 0
+    lastSessionAutoLoopRunning = Boolean(sess.autoLoopRunning)
     loopRunning = Boolean(sess.autoLoopRunning)
     cancellingLoop = false
     liveEvents = []
@@ -391,20 +405,21 @@
 
   async function handleApplyPatch(andRerun = false) {
     const sess = $aiHealSession
-    if (!sess || !result?.patched_code || validationBlocked) return
+    if (!sess || !result?.patched_code || validationBlocked || diagnosing || diagnoseError) return
     const callback = andRerun ? sess.onApplyAndRerun : sess.onApplyPatch
     if (!callback) return
 
     applyingPatch = true
+    const prevCode = currentCode
+    const nextCode = result.patched_code
     try {
-      if (typeof currentCode === 'string') {
-        aiUndoStack.push(undoKey, currentCode, {
+      const cbRet = await callback(nextCode, result)
+      if (typeof prevCode === 'string') {
+        aiUndoStack.push(undoKey, prevCode, {
           title: sess.title || '',
           language: sess.language || '',
         })
       }
-      const nextCode = result.patched_code
-      const cbRet = await callback(nextCode, result)
       if (destroyed) return
       currentCode = nextCode
       updateAIHealSession({ code: nextCode })
@@ -425,19 +440,21 @@
 
   async function handleApplyFinalHealedCode() {
     const sess = $aiHealSession
-    if (!sess?.onApplyPatch || !autoHealResult?.final_code) return
+    if (!sess?.onApplyPatch || !autoHealResult?.final_code || loopRunning) return
     applyingPatch = true
+    const prevCode = currentCode
+    const nextCode = autoHealResult.final_code
     try {
-      if (typeof currentCode === 'string') {
-        aiUndoStack.push(undoKey, currentCode, {
+      await sess.onApplyPatch(nextCode, autoHealResult)
+      if (typeof prevCode === 'string') {
+        aiUndoStack.push(undoKey, prevCode, {
           title: sess.title || '',
           language: sess.language || '',
         })
       }
-      await sess.onApplyPatch(autoHealResult.final_code, autoHealResult)
       if (destroyed) return
-      currentCode = autoHealResult.final_code
-      updateAIHealSession({ code: autoHealResult.final_code })
+      currentCode = nextCode
+      updateAIHealSession({ code: nextCode })
       toast.success(translate('ai.drawer.toast.patchApplied'))
     } catch (e) {
       if (!destroyed) {
@@ -475,7 +492,7 @@
   async function handleApplyConfigChanges() {
     const app = api()
     const sess = $aiHealSession
-    if (!app?.ApplyAIConfigChanges || configEntries.length === 0) return
+    if (!app?.ApplyAIConfigChanges || configEntries.length === 0 || diagnosing || diagnoseError) return
 
     applyingConfig = true
     try {
@@ -503,6 +520,7 @@
     if (!sess?.onRunAutoLoop || loopRunning) return
 
     loopRunning = true
+    lastSessionAutoLoopRunning = true
     cancellingLoop = false
     liveEvents = []
     autoHealResult = null
@@ -515,6 +533,7 @@
         locale: $locale || 'en',
       })
       if (destroyed) return
+      lastSessionAutoLoopRunning = false
       if (res && typeof res === 'object' && ('healed' in res || Array.isArray(res.attempts))) {
         autoHealResult = res
         updateAIHealSession({ autoHealResult: res, autoLoopRunning: false })
@@ -533,12 +552,14 @@
       }
     } catch (e) {
       if (!destroyed) {
+        lastSessionAutoLoopRunning = false
         updateAIHealSession({ autoLoopRunning: false })
         toast.error(translate('ai.drawer.toast.autoHealFailed', { error: e?.message || e }))
       }
     } finally {
       if (!destroyed) {
         loopRunning = false
+        lastSessionAutoLoopRunning = false
         cancellingLoop = false
       }
     }
@@ -566,9 +587,13 @@
     liveEvents = [...liveEvents, ev]
     if (ev.phase === 'running' || ev.phase === 'diagnosing' || ev.phase === 'validating' || ev.phase === 'patching') {
       loopRunning = true
+      lastSessionAutoLoopRunning = true
+      updateAIHealSession({ autoLoopRunning: true })
     } else if (ev.phase === 'healed' || ev.phase === 'stopped') {
       loopRunning = false
       cancellingLoop = false
+      lastSessionAutoLoopRunning = false
+      updateAIHealSession({ autoLoopRunning: false })
     }
     if (ev.diagnosis) {
       result = ev.diagnosis
@@ -719,7 +744,7 @@
                   </Badge>
                   {#if autoHealResult.stop_reason}
                     <Badge variant={resolveOutcomeVariant(autoHealResult.stop_reason)} size="xs">
-                      {labelForStopReason(autoHealResult.stop_reason)}
+                      {labelForStopReason(autoHealResult.stop_reason, $t)}
                     </Badge>
                   {/if}
                 {:else}
@@ -759,7 +784,7 @@
                           {/if}
                           <Badge variant={resolvePhaseVariant(ph)} size="xs">
                             <Icon name={resolvePhaseIcon(ph)} size={10} />
-                            <span>{labelForPhase(ph)}</span>
+                            <span>{labelForPhase(ph, $t)}</span>
                           </Badge>
                         {/each}
                       </div>
@@ -815,7 +840,7 @@
                             : $t('ai.drawer.timeline.roundShort', { round: att.attempt })}
                         </span>
                         <Badge variant={resolveOutcomeVariant(att.outcome)} size="xs">
-                          {labelForStopReason(att.outcome) || att.outcome}
+                          {labelForStopReason(att.outcome, $t) || att.outcome}
                         </Badge>
                         <Badge variant={att.exit_code === 0 ? 'success' : 'neutral'} size="xs" mono>
                           {$t('ai.drawer.timeline.exitCode', { code: att.exit_code })}
@@ -940,7 +965,7 @@
                   <Badge variant="warning" size="xs" mono>{result.error_category}</Badge>
                 {/if}
                 {#if result.fix_kind}
-                  <Badge variant="accent" size="xs">{labelForFixKind(result.fix_kind)}</Badge>
+                  <Badge variant="accent" size="xs">{labelForFixKind(result.fix_kind, $t)}</Badge>
                 {/if}
                 {#if result.redacted_count > 0}
                   <Badge variant="success" size="xs">
@@ -1031,13 +1056,13 @@
 
           <!-- Safety & Patch Validation Strip -->
           {#if validation}
-            <section class="validation-strip" class:passed={validation.passed} class:failed={!validation.passed}>
+            <section class="validation-strip" class:passed={validationPassed} class:failed={validationBlocked}>
               <div class="val-head">
                 <div class="val-status">
-                  <Icon name={validation.passed ? 'shield-check' : 'alert-triangle'} size={15} />
+                  <Icon name={validationPassed ? 'shield-check' : 'alert-triangle'} size={15} />
                   <span class="val-title">{$t('ai.drawer.validation.title')}</span>
-                  <Badge variant={validation.passed ? 'success' : 'danger'} size="xs" mono>
-                    {validation.passed ? $t('ai.drawer.validation.passed') : $t('ai.drawer.validation.failed')}
+                  <Badge variant={validationPassed ? 'success' : 'danger'} size="xs" mono>
+                    {validationPassed ? $t('ai.drawer.validation.passed') : $t('ai.drawer.validation.failed')}
                   </Badge>
                 </div>
                 {#if validation.validator}
@@ -1047,7 +1072,7 @@
                 {/if}
               </div>
 
-              {#if !validation.passed}
+              {#if validationBlocked}
                 <div class="val-blocked-msg">{$t('ai.drawer.validation.blockedNotice')}</div>
               {/if}
 
@@ -1268,7 +1293,7 @@
         </div>
 
         <div class="footer-right">
-          {#if result?.fix_kind === 'config_fix' && configEntries.length > 0}
+          {#if showResultActions && result?.fix_kind === 'config_fix' && configEntries.length > 0}
             <Button
               variant={appliedConfigCount > 0 ? 'success' : 'primary'}
               size="sm"
@@ -1283,7 +1308,7 @@
             </Button>
           {/if}
 
-          {#if result?.fix_kind === 'code_patch' && result?.patched_code}
+          {#if showResultActions && result?.fix_kind === 'code_patch' && result?.patched_code}
             {#if session.onApplyPatch}
               <Button
                 variant="secondary"

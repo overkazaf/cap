@@ -367,9 +367,9 @@
     }
   }
 
-  function providerLabel(providerId) {
+  function providerLabel(providerId, tr = translate) {
     const key = `ai.providers.${providerId}`
-    const val = translate(key)
+    const val = tr(key)
     return val === key ? providerId : val
   }
 
@@ -481,7 +481,7 @@
                 {#if !prof.enabled}
                   <Badge variant="warning" size="xs">{$t('ai.settings.profiles.disabled')}</Badge>
                 {/if}
-                <Badge variant="neutral" size="xs" mono>{providerLabel(prof.provider)}</Badge>
+                <Badge variant="neutral" size="xs" mono>{providerLabel(prof.provider, $t)}</Badge>
               </div>
               <div class="profile-sub-row mono">
                 <span class="profile-model">{prof.model}</span>

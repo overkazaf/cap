@@ -3,6 +3,7 @@
   import '../lib/locales/frida.js'
   import { t, translate } from '../lib/i18n.js'
   import { fridaState as S, fridaHandoff } from '../lib/fridaState.js'
+  import { openAIHealModal } from '../lib/aiState.js'
   import { navigate } from '../lib/navigation.js'
   import { toast } from '../lib/toast.js'
   import { copyToClipboard } from '../lib/format.js'
@@ -159,6 +160,13 @@
   $: isSessionRunning = Boolean(session?.running)
   $: canHotReload = Boolean(isSessionRunning && session?.can_hot_reload)
   $: events = session?.events || []
+  let lastSessionError = ''
+  $: hasFridaErrors = Boolean(
+    lastSessionError ||
+    session?.status === 'error' ||
+    session?.error ||
+    eventCounts.error > 0
+  )
   $: liveElapsedMs = isSessionRunning && session?.started_at_ms
     ? Math.max(0, elapsedTick - session.started_at_ms)
     : (session?.elapsed_ms || 0)
@@ -621,6 +629,7 @@
       return
     }
     sessionStarting = true
+    lastSessionError = ''
     try {
       const portNum = Number(deployPort) || 27042
       const remoteHost = serverStatus?.forwarded && portNum !== 27042 ? `127.0.0.1:${portNum}` : ''
@@ -637,7 +646,8 @@
       })
       toast.success(translate('frida.toast.sessionStarted', { target: tTarget }))
     } catch (e) {
-      toast.error(translate('frida.toast.sessionStartFailed', { err: e?.message || e }))
+      lastSessionError = e?.message || String(e)
+      toast.error(translate('frida.toast.sessionStartFailed', { err: lastSessionError }))
     } finally {
       sessionStarting = false
     }
@@ -658,14 +668,74 @@
     const app = api()
     if (!app?.ReloadFridaSessionScript || !canHotReload || reloadingScript) return
     reloadingScript = true
+    lastSessionError = ''
     try {
       await app.ReloadFridaSessionScript(scriptCode)
       toast.success(translate('frida.toast.hotReloaded'))
     } catch (e) {
-      toast.error(translate('frida.toast.hotReloadFailed', { err: e?.message || e }))
+      lastSessionError = e?.message || String(e)
+      toast.error(translate('frida.toast.hotReloadFailed', { err: lastSessionError }))
     } finally {
       reloadingScript = false
     }
+  }
+
+  function applyPatchedFridaCode(patchedCode) {
+    if (typeof patchedCode !== 'string') return
+    if (editorRef?.replaceValue) {
+      editorRef.replaceValue(patchedCode, { undoable: true })
+    } else {
+      scriptCode = patchedCode
+    }
+    dirty = true
+  }
+
+  function collectFridaErrorAndLogs() {
+    const errEvents = events.filter((ev) => ev && ev.level === 'error')
+    const errorText =
+      lastSessionError ||
+      session?.error ||
+      errEvents[errEvents.length - 1]?.message ||
+      ''
+    const logLines = events.slice(-150).map((ev) => {
+      const cat = ev.category ? `[${ev.category}] ` : ''
+      const base = `[${(ev.level || 'info').toUpperCase()}] ${cat}${ev.message || ''}`
+      return ev.raw && ev.raw !== ev.message ? `${base}\n${ev.raw}` : base
+    })
+    if (lastSessionError && !logLines.some((l) => l.includes(lastSessionError))) {
+      logLines.push(`[ERROR] ${lastSessionError}`)
+    }
+    return { errorText, logs: logLines.join('\n') }
+  }
+
+  function openFridaAIHeal() {
+    const { errorText, logs } = collectFridaErrorAndLogs()
+    openAIHealModal({
+      scope: 'frida',
+      title: `${scriptName.trim() || 'Frida Script'} — ${translate('frida.console.aiFixBtn')}`,
+      code: scriptCode,
+      language: 'javascript',
+      errorText,
+      logs,
+      metadata: {
+        target: target.trim(),
+        mode,
+        script_name: scriptName.trim(),
+      },
+      undoKey: `frida:${scriptId || scriptName.trim() || 'scratch'}`,
+      onApplyPatch: (patchedCode) => {
+        applyPatchedFridaCode(patchedCode)
+      },
+      onApplyAndRerun: async (patchedCode) => {
+        applyPatchedFridaCode(patchedCode)
+        await tick()
+        if (isSessionRunning && canHotReload) {
+          await hotReloadScript()
+        } else if (target.trim()) {
+          await startSession()
+        }
+      },
+    })
   }
 
   async function resumeSpawnedProcess() {
@@ -681,6 +751,7 @@
 
   function clearConsole() {
     api()?.ClearFridaSessionLogs?.()
+    lastSessionError = ''
     if (session) {
       session = { ...session, events: [], event_count: 0, hook_count: 0, error_count: 0 }
     }
@@ -1672,6 +1743,17 @@
                   <input type="checkbox" bind:checked={autoScroll} />
                   <span>{$t('frida.console.autoScroll')}</span>
                 </label>
+                {#if hasFridaErrors}
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    icon="sparkles"
+                    title={$t('frida.console.aiFixTitle')}
+                    on:click={openFridaAIHeal}
+                  >
+                    {$t('frida.console.aiFixBtn')}
+                  </Button>
+                {/if}
                 <Button variant="ghost" size="xs" icon="download" disabled={filteredEvents.length === 0} on:click={exportConsoleJsonl}>
                   {$t('frida.console.exportJsonl')}
                 </Button>
@@ -1683,6 +1765,25 @@
                 </Button>
               </div>
             </div>
+
+            {#if lastSessionError || session?.error}
+              <div class="ai-err-banner mono">
+                <Icon name="alert-circle" size={13} />
+                <span class="ai-err-text">{lastSessionError || session?.error}</span>
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  icon="sparkles"
+                  title={$t('frida.console.aiFixTitle')}
+                  on:click={openFridaAIHeal}
+                >
+                  {$t('frida.console.aiFixBtn')}
+                </Button>
+                {#if lastSessionError}
+                  <Button variant="ghost" size="xs" icon="x" iconOnly on:click={() => (lastSessionError = '')} />
+                {/if}
+              </div>
+            {/if}
 
             <div class="console-stream" bind:this={consoleEl}>
               {#if filteredEvents.length === 0}
@@ -2664,5 +2765,22 @@
 
   .mini-icon-btn:hover {
     color: var(--text-primary);
+  }
+
+  .ai-err-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--status-danger-bg);
+    border-bottom: 1px solid var(--status-danger-border);
+    color: var(--status-danger);
+    font-size: 11px;
+  }
+
+  .ai-err-text {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
   }
 </style>

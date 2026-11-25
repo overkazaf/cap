@@ -63,6 +63,17 @@ export const PAGES = [
 
   // Group 2 — Reverse Engineering
   {
+    id: 'recon',
+    label: 'Site Recon',
+    title: 'Site Reconnaissance',
+    subtitle: 'Domain intel, TLS audit, tech stack, subdomains & Nmap port scanner',
+    labelKey: 'common.nav.pages.recon.label',
+    titleKey: 'common.nav.pages.recon.title',
+    subtitleKey: 'common.nav.pages.recon.subtitle',
+    icon: 'radar',
+    group: 'inspect',
+  },
+  {
     id: 'trace',
     label: 'DeepTrace',
     title: 'Deep Trace',

@@ -204,6 +204,14 @@ registerMessages('reLab', {
         emptyTitle: 'Ready to Emulate',
         emptyDesc: 'Configure your target binary/APK paths and press Run Job to stream stdout/stderr and structured [CAP_RE] outputs.',
       },
+      ai: {
+        fixBtn: 'AI Fix',
+        fixTitle: 'Diagnose emulation error and generate a validated code patch with AI',
+        autoHealBtn: 'AI Auto-Heal (≤3)',
+        autoHealRunning: 'Auto-Healing…',
+        autoHealTitle: 'Run up to 3 automatic diagnose → validate → patch → re-run rounds with AI',
+        stopAutoHeal: 'Stop Auto-Heal',
+      },
       autoStub: {
         btn: 'Auto-Stub Assistant',
         title: 'Unidbg Smart Auto-Stub & Runtime Env Assistant',
@@ -1012,6 +1020,14 @@ registerMessages('reLab', {
         resultsHeader: '已提取的 [CAP_RE] 结构化结果 ({count})',
         emptyTitle: '等待执行模拟任务',
         emptyDesc: '配置目标二进制/APK 路径并点击「运行任务」，实时流式查看日志与 [CAP_RE] 算法签名/符号求解结果。',
+      },
+      ai: {
+        fixBtn: 'AI 诊断修复',
+        fixTitle: '使用 AI 诊断仿真报错并生成经校验的代码补丁',
+        autoHealBtn: 'AI 自动自愈 (≤3轮)',
+        autoHealRunning: '自动自愈中…',
+        autoHealTitle: '使用 AI 自动执行最多 3 轮「运行 → 诊断 → 校验 → 打补丁 → 重跑」闭环',
+        stopAutoHeal: '停止自愈',
       },
       autoStub: {
         btn: '智能补环境助手',

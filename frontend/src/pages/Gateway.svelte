@@ -3,6 +3,7 @@
   import '../lib/locales/gateway.js'
   import { t, translate } from '../lib/i18n.js'
   import { gatewayState as S, gatewayHandoff } from '../lib/gatewayState.js'
+  import { openAIHealModal } from '../lib/aiState.js'
   import { toast } from '../lib/toast.js'
   import { copyToClipboard, formatDuration, formatTime } from '../lib/format.js'
   import { hasPrimaryMod } from '../lib/shortcuts.js'
@@ -2252,6 +2253,55 @@ rpc.exports = {
     } catch (e) {
       toast.error(translate('gateway.toast.signerOpFailed', { err: e?.message || e }))
     }
+  }
+
+  function signerLanguageForAI() {
+    if (sKind === 'frida_rpc') return 'javascript'
+    if (sKind === 'script') {
+      if (sRuntime === 'python3') return 'python'
+      if (sRuntime === 'node') return 'javascript'
+      if (sRuntime === 'sh') return 'bash'
+    }
+    return 'text'
+  }
+
+  function applyPatchedSignerCode(patchedCode) {
+    if (typeof patchedCode !== 'string') return
+    if (signerEditorRef?.replaceValue) {
+      signerEditorRef.replaceValue(patchedCode, { undoable: true })
+    } else {
+      sScriptCode = patchedCode
+    }
+  }
+
+  function openSignerAIHeal() {
+    const canEditScript = sKind === 'script' || sKind === 'frida_rpc'
+    openAIHealModal({
+      scope: 'signer',
+      title: `${sName.trim() || 'Signer'} — ${translate('gateway.signers.tester.aiFixBtn')}`,
+      code: canEditScript ? (sScriptCode || '') : '',
+      language: signerLanguageForAI(),
+      errorText: signerTestError || '',
+      logs: signerTestError || '',
+      metadata: {
+        kind: sKind || '',
+        runtime: sKind === 'script' ? sRuntime : '',
+        test_method: sTestMethod || 'GET',
+        test_url: sTestUrl || '',
+      },
+      undoKey: `signer:${selectedSignerId || sName.trim() || 'draft'}`,
+      onApplyPatch: canEditScript
+        ? (patchedCode) => {
+            applyPatchedSignerCode(patchedCode)
+          }
+        : null,
+      onApplyAndRerun: canEditScript
+        ? async (patchedCode) => {
+            applyPatchedSignerCode(patchedCode)
+            await handleTestSigner()
+          }
+        : null,
+    })
   }
 
   async function handleTestSigner() {
@@ -5285,7 +5335,16 @@ rpc.exports = {
                   {#if signerTestError}
                     <div class="error-banner mono">
                       <Icon name="alert-circle" size={12} />
-                      <span>{signerTestError}</span>
+                      <span class="flex-1">{signerTestError}</span>
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        icon="sparkles"
+                        title={$t('gateway.signers.tester.aiFixTitle')}
+                        on:click={openSignerAIHeal}
+                      >
+                        {$t('gateway.signers.tester.aiFixBtn')}
+                      </Button>
                     </div>
                   {/if}
 

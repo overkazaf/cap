@@ -354,6 +354,7 @@ registerMessages('core', {
       signBtn: 'Sign',
       codeBtn: 'Code',
       publishGatewayBtn: 'Publish to Gateway',
+      reconBtn: 'Site Recon',
 
       replayDrawerTitle: 'Modify & Replay Request',
       closeEditorTitle: 'Close editor',
@@ -859,6 +860,7 @@ registerMessages('core', {
       signBtn: '签名分析',
       codeBtn: '导出代码',
       publishGatewayBtn: '发布到网关',
+      reconBtn: '站点探测',
 
       replayDrawerTitle: '编辑并重放请求',
       closeEditorTitle: '关闭编辑器',

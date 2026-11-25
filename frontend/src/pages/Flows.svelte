@@ -7,6 +7,7 @@
   import { isEditableTarget } from '../lib/shortcuts.js'
   import { navigate } from '../lib/navigation.js'
   import { openGatewayPublishFlow } from '../lib/gatewayState.js'
+  import { openRecon } from '../lib/reconState.js'
   import { toast } from '../lib/toast.js'
   import { registerCommands } from '../lib/commandPalette.js'
 
@@ -19,6 +20,29 @@
   import PluginWorkbench from '../components/PluginWorkbench.svelte'
 
   const appApi = () => window?.go?.wailsgui?.App
+
+  function extractFlowReconHost(flow) {
+    if (!flow) return ''
+    if (flow.url) {
+      try {
+        const u = new URL(flow.url)
+        if (u.hostname) return u.hostname.replace(/^\[|\]$/g, '')
+      } catch (_) {}
+    }
+    const raw = String(flow.host || '').trim()
+    if (!raw) return ''
+    if (raw.startsWith('[')) {
+      const end = raw.indexOf(']')
+      if (end > 1) return raw.slice(1, end)
+    }
+    return raw.replace(/:\d+$/, '')
+  }
+
+  function openFlowInRecon(flow) {
+    const host = extractFlowReconHost(flow)
+    if (!host) return
+    openRecon({ target: host, tab: 'domain', autoRun: true })
+  }
 
   // Flow data & filters
   let flows = []
@@ -2293,6 +2317,10 @@
                   </Button>
                   <Button variant="subtle" size="xs" icon="globe" on:click={() => openGatewayPublishFlow(selectedFlow)}>
                     {$t('core.flows.publishGatewayBtn')}
+                  </Button>
+                  <Button variant="subtle" size="xs" on:click={() => openFlowInRecon(selectedFlow)}>
+                    <Icon name="radar" size={13} />
+                    <span>{$t('core.flows.reconBtn')}</span>
                   </Button>
                   <Button variant="ghost" size="xs" icon="code" active={activeTab === 'export'} on:click={() => switchTab('export')}>
                     {$t('core.flows.codeBtn')}

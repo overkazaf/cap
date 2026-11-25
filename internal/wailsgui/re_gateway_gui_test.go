@@ -44,12 +44,12 @@ func buildMinimalELF64(t *testing.T, extraPayload []byte) []byte {
 	// ELF64 header
 	hdr := make([]byte, ehdrSize)
 	copy(hdr[0:4], []byte{0x7f, 'E', 'L', 'F'})
-	hdr[4] = 2 // ELFCLASS64
-	hdr[5] = 1 // ELFDATA2LSB
-	hdr[6] = 1 // EV_CURRENT
-	binary.LittleEndian.PutUint16(hdr[16:18], 3)    // ET_DYN
-	binary.LittleEndian.PutUint16(hdr[18:20], 183)  // EM_AARCH64
-	binary.LittleEndian.PutUint32(hdr[20:24], 1)    // EV_CURRENT
+	hdr[4] = 2                                     // ELFCLASS64
+	hdr[5] = 1                                     // ELFDATA2LSB
+	hdr[6] = 1                                     // EV_CURRENT
+	binary.LittleEndian.PutUint16(hdr[16:18], 3)   // ET_DYN
+	binary.LittleEndian.PutUint16(hdr[18:20], 183) // EM_AARCH64
+	binary.LittleEndian.PutUint32(hdr[20:24], 1)   // EV_CURRENT
 	binary.LittleEndian.PutUint64(hdr[40:48], shoff)
 	binary.LittleEndian.PutUint16(hdr[52:54], ehdrSize)
 	binary.LittleEndian.PutUint16(hdr[58:60], shdrSize)
@@ -94,10 +94,10 @@ func buildMinimalAPK(t *testing.T, elfBytes []byte) string {
 	}
 	zw := zip.NewWriter(f)
 	entries := map[string][]byte{
-		"AndroidManifest.xml":        []byte("manifest com.acme.protected"),
-		"classes.dex":                []byte("dex\n035\x00stub"),
-		"assets/libjiagu.so":         elfBytes,
-		"lib/arm64-v8a/libjiagu.so":  elfBytes,
+		"AndroidManifest.xml":       []byte("manifest com.acme.protected"),
+		"classes.dex":               []byte("dex\n035\x00stub"),
+		"assets/libjiagu.so":        elfBytes,
+		"lib/arm64-v8a/libjiagu.so": elfBytes,
 	}
 	for name, content := range entries {
 		w, err := zw.Create(name)

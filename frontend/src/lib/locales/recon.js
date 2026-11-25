@@ -327,6 +327,11 @@ registerMessages('recon', {
       noMatches: 'No history entries match your filter.',
       previewTitle: 'Entry Report Preview',
     },
+    ai: {
+      askBtn: 'Ask AI',
+      askTitle: 'Diagnose this probe or scan error with AI',
+      dismissError: 'Dismiss error',
+    },
     toast: {
       missingApi: 'Recon backend API is not available.',
       enterTarget: 'Enter a domain, URL, or IP target first.',
@@ -679,6 +684,11 @@ registerMessages('recon', {
       deleteItem: '删除',
       noMatches: '没有匹配筛选条件的历史记录。',
       previewTitle: '报告详情预览',
+    },
+    ai: {
+      askBtn: 'AI 诊断',
+      askTitle: '使用 AI 诊断此次探测或扫描错误',
+      dismissError: '关闭错误提示',
     },
     toast: {
       missingApi: '站点探测后端接口不可用。',

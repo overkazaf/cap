@@ -21,12 +21,15 @@
   import Kbd from './components/Kbd.svelte'
   import ToastHost from './components/ToastHost.svelte'
   import CommandPalette from './components/CommandPalette.svelte'
+  import AIHealDrawer from './components/AIHealDrawer.svelte'
+  import { refreshAIConfig } from './lib/aiState.js'
 
   import Capture from './pages/Capture.svelte'
   import Flows from './pages/Flows.svelte'
   import Terminal from './pages/Terminal.svelte'
   import Plugins from './pages/Plugins.svelte'
   import Rules from './pages/Rules.svelte'
+  import Recon from './pages/Recon.svelte'
   import DeepTrace from './pages/DeepTrace.svelte'
   import Frida from './pages/Frida.svelte'
   import RELab from './pages/RELab.svelte'
@@ -52,6 +55,8 @@
   let fridaRunning = false
   let reJobRunning = false
   let reJobEngine = ''
+  let reconRunning = false
+  let reconKind = ''
   let gatewayRunning = false
   let gatewayAddr = ''
 
@@ -123,12 +128,13 @@
         rate = { req_per_sec: 0, byte_per_sec: 0, total_reqs: rate.total_reqs || 0, total_bytes: rate.total_bytes || 0 }
       }
 
-      const [stats, rulesList, bps, fridaSess, reJob, gwStats] = await Promise.all([
+      const [stats, rulesList, bps, fridaSess, reJob, reconJob, gwStats] = await Promise.all([
         api.GetTrafficStats?.().catch(() => null),
         api.ListRules?.().catch(() => []),
         api.GetPendingBreakpoints?.().catch(() => []),
         api.GetFridaSessionState?.().catch(() => null),
         api.GetREJobState?.().catch(() => null),
+        api.GetReconJobState?.().catch(() => null),
         api.GetGatewayStatus?.().catch(() => null),
       ])
       if (fridaSess && typeof fridaSess.running === 'boolean') {
@@ -137,6 +143,10 @@
       if (reJob) {
         reJobRunning = Boolean(reJob.running || reJob.status === 'running')
         reJobEngine = reJob.engine || ''
+      }
+      if (reconJob) {
+        reconRunning = Boolean(reconJob.running || reconJob.status === 'running')
+        reconKind = reconJob.kind || ''
       }
       if (gwStats && typeof gwStats.running === 'boolean') {
         gatewayRunning = gwStats.running
@@ -290,6 +300,12 @@
         reJobEngine = st.engine || ''
       }
     })
+    on('recon:status', (st) => {
+      if (st) {
+        reconRunning = Boolean(st.running || st.status === 'running')
+        reconKind = st.kind || ''
+      }
+    })
     on('gateway:status', (st) => {
       if (st && typeof st.running === 'boolean') {
         gatewayRunning = st.running
@@ -328,6 +344,7 @@
     subscribeEvents()
     await syncShellState()
     refreshDeviceCount()
+    refreshAIConfig()
     pollTimer = setInterval(syncShellState, 2500)
   })
 
@@ -497,6 +514,9 @@
               {#if page.id === 'rules' && pendingBreakpoints > 0 && !sidebarExpanded}
                 <span class="nav-dot warn"></span>
               {/if}
+              {#if page.id === 'recon' && reconRunning && !sidebarExpanded}
+                <span class="nav-dot"></span>
+              {/if}
               {#if page.id === 'frida' && fridaRunning && !sidebarExpanded}
                 <span class="nav-dot"></span>
               {/if}
@@ -515,6 +535,8 @@
                   <span class="pill-live" class:paused={proxyPaused}>
                     {proxyPaused ? $t('common.sidebar.pausedBadge') : $t('common.sidebar.liveBadge')}
                   </span>
+                {:else if page.id === 'recon' && reconRunning}
+                  <span class="pill-live">{$t('common.sidebar.reconBadge')}</span>
                 {:else if page.id === 'frida' && fridaRunning}
                   <span class="pill-live">{$t('common.sidebar.hookBadge')}</span>
                 {:else if page.id === 're-emulate' && reJobRunning}
@@ -672,6 +694,8 @@
         <Rules />
       {:else if $currentPage === 'plugins'}
         <Plugins />
+      {:else if $currentPage === 'recon'}
+        <Recon />
       {:else if $currentPage === 'trace'}
         <DeepTrace />
       {:else if $currentPage === 'frida'}
@@ -778,6 +802,18 @@
             <span>{$t('common.statusbar.reJobRunning', { engine: reJobEngine || 'job' })}</span>
           </button>
         {/if}
+
+        {#if reconRunning}
+          <span class="status-sep"></span>
+          <button
+            class="status-item status-live mono"
+            on:click={() => navigate('recon')}
+            title={$t('common.statusbar.reconTooltip')}
+          >
+            <Icon name="radar" size={11} />
+            <span>{$t('common.statusbar.reconRunning', { kind: reconKind || 'scan' })}</span>
+          </button>
+        {/if}
       </div>
 
       <div class="status-right">
@@ -819,6 +855,7 @@
 
 <ToastHost />
 <CommandPalette commands={paletteCommands} />
+<AIHealDrawer />
 
 <style>
   .workbench {

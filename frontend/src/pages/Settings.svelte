@@ -5,10 +5,12 @@
   import { applyTheme, getThemeMeta, currentTheme } from '../lib/theme.js'
   import { toast } from '../lib/toast.js'
   import { copyToClipboard } from '../lib/format.js'
+  import { aiSettingsFocusRequest } from '../lib/aiState.js'
   import Icon from '../components/Icon.svelte'
   import Badge from '../components/Badge.svelte'
   import Button from '../components/Button.svelte'
   import Kbd from '../components/Kbd.svelte'
+  import AISettingsPanel from '../components/AISettingsPanel.svelte'
 
   const api = () => window?.go?.wailsgui?.App
 
@@ -33,6 +35,10 @@
     re_qiling_python_path: '',
     re_angr_python_path: '',
     re_qiling_rootfs: '',
+    recon_nmap_path: '',
+    recon_subfinder_path: '',
+    recon_whois_path: '',
+    recon_dig_path: '',
     gateway_addr: '127.0.0.1:9090',
   }
 
@@ -52,6 +58,7 @@
     { id: 'proxy', icon: 'shield' },
     { id: 'android', icon: 'smartphone' },
     { id: 'relab_gateway', icon: 'cpu' },
+    { id: 'ai', icon: 'sparkles' },
     { id: 'storage', icon: 'database' },
     { id: 'shortcuts', icon: 'command' },
     { id: 'about', icon: 'info' },
@@ -232,6 +239,10 @@
 
   $: activeThemeId = $currentTheme || settings.theme || 'dark'
   $: activeLocaleMeta = getLocaleMeta($locale)
+  $: if ($aiSettingsFocusRequest > 0) {
+    activeSection = 'ai'
+    aiSettingsFocusRequest.set(0)
+  }
 
   onMount(loadAll)
 </script>
@@ -741,6 +752,81 @@
             />
           </div>
         </div>
+
+        <div class="pref-card cap-card">
+          <div class="pref-card-head">
+            <div>
+              <div class="pref-title">{$t('tools.settings.relabGateway.reconTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.reconDesc')}</div>
+            </div>
+            <Badge variant="accent" size="xs" mono>Site Recon</Badge>
+          </div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.nmapTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.nmapDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.recon_nmap_path}
+              placeholder="auto"
+              on:change={() => setSetting('recon_nmap_path', settings.recon_nmap_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.subfinderTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.subfinderDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.recon_subfinder_path}
+              placeholder="auto"
+              on:change={() => setSetting('recon_subfinder_path', settings.recon_subfinder_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.whoisTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.whoisDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.recon_whois_path}
+              placeholder="auto"
+              on:change={() => setSetting('recon_whois_path', settings.recon_whois_path)}
+            />
+          </div>
+
+          <div class="pref-divider"></div>
+
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-title">{$t('tools.settings.relabGateway.digTitle')}</div>
+              <div class="pref-desc">{$t('tools.settings.relabGateway.digDesc')}</div>
+            </div>
+            <input
+              type="text"
+              class="cap-input mono addr-input"
+              bind:value={settings.recon_dig_path}
+              placeholder="auto"
+              on:change={() => setSetting('recon_dig_path', settings.recon_dig_path)}
+            />
+          </div>
+        </div>
+
+      {:else if activeSection === 'ai'}
+        <AISettingsPanel />
 
       {:else if activeSection === 'storage'}
         <header class="panel-head">

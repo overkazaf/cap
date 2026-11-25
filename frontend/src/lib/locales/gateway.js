@@ -461,6 +461,8 @@ registerMessages('gateway', {
         headers: 'Headers',
         bodyFields: 'Body Fields',
         rawOutput: 'Raw JSON',
+        aiFixBtn: 'AI Fix',
+        aiFixTitle: 'Diagnose signer failure and generate a validated patch with AI',
       },
     },
     logs: {
@@ -1167,6 +1169,8 @@ registerMessages('gateway', {
         headers: '注入 Headers',
         bodyFields: '注入 Body 字段',
         rawOutput: '原始输出 JSON',
+        aiFixBtn: 'AI 修复',
+        aiFixTitle: '使用 AI 诊断签名器测试报错并生成修复补丁',
       },
     },
     logs: {

@@ -208,9 +208,9 @@ func TestReconGUIBindingsHermetic(t *testing.T) {
 	openPort := ln.Addr().(*net.TCPAddr).Port
 
 	var (
-		evMu          sync.Mutex
-		logEvents     int
-		statusEvents  int
+		evMu         sync.Mutex
+		logEvents    int
+		statusEvents int
 	)
 	app.events.SetEmitter(func(event string, data ...interface{}) {
 		evMu.Lock()
@@ -341,9 +341,9 @@ func TestAIGUIBindingsAndConfigAllowlist(t *testing.T) {
 	}
 
 	var (
-		mu             sync.Mutex
-		lastSystemMsg  string
-		sawAuthHeader  string
+		mu            sync.Mutex
+		lastSystemMsg string
+		sawAuthHeader string
 	)
 	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -489,9 +489,9 @@ func TestAIGUIBindingsAndConfigAllowlist(t *testing.T) {
 		"re_python_path":     "/opt/venv/bin/python3",
 		"gateway_addr":       "127.0.0.1:9191",
 		"frida_default_port": "27043",
-		"theme":              "light",               // disallowed
-		"evil_setting":       "rm -rf /",            // disallowed
-		"re_r2_path":         "bad\ninjection",      // control char rejected
+		"theme":              "light",          // disallowed
+		"evil_setting":       "rm -rf /",       // disallowed
+		"re_r2_path":         "bad\ninjection", // control char rejected
 	})
 	if err != nil {
 		t.Fatalf("ApplyAIConfigChanges: %v", err)

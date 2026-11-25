@@ -1,10 +1,11 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
   import '../lib/locales/reLab.js'
-  import { t, translate } from '../lib/i18n.js'
+  import { t, translate, locale } from '../lib/i18n.js'
   import { reLabState as S, reLabHandoff, pageForSubTab } from '../lib/reLabState.js'
   import { navigate } from '../lib/navigation.js'
   import { openFridaStudio } from '../lib/fridaState.js'
+  import { openAIHealModal, updateAIHealSession } from '../lib/aiState.js'
   import { toast } from '../lib/toast.js'
   import { copyToClipboard, formatBytes, formatDuration } from '../lib/format.js'
   import { hasPrimaryMod, MOD_LABEL } from '../lib/shortcuts.js'
@@ -126,6 +127,7 @@
   // Live RE Job state & console
   let jobState = null
   let startingJob = false
+  let runningAutoHeal = false
   let jobConsoleFilter = S.jobConsoleFilter || 'all'
   let jobConsoleSearch = S.jobConsoleSearch || ''
   let jobAutoScroll = S.jobAutoScroll ?? true
@@ -660,6 +662,13 @@
   $: isJobRunning = Boolean(jobState?.running)
   $: jobEvents = jobState?.events || []
   $: jobResults = jobState?.results || []
+  $: hasREError = Boolean(
+    jobState &&
+    (jobState.status === 'error' ||
+      (typeof jobState.exit_code === 'number' && jobState.exit_code !== 0) ||
+      jobEventCounts.stderr > 0)
+  )
+  $: canAutoHealEngine = projEngine === 'unidbg' || projEngine === 'qiling' || projEngine === 'angr'
   $: jobLiveElapsedMs = isJobRunning && jobState?.started_at_ms
     ? Math.max(0, elapsedTick - jobState.started_at_ms)
     : (jobState?.elapsed_ms || 0)
@@ -1865,27 +1874,172 @@
     scrollJobConsole()
   }
 
+  function buildREJobRequest(codeOverride = null) {
+    const code = codeOverride !== null ? codeOverride : projCode
+    return {
+      project_id: projId,
+      project_name: projName.trim() || `${projEngine.toUpperCase()} Job`,
+      engine: projEngine,
+      code,
+      binary_path: projBinaryPath.trim(),
+      apk_path: projAPKPath.trim(),
+      rootfs: projRootFS.trim(),
+      target_symbol: projTargetSymbol.trim(),
+      target_addr: projTargetAddr.trim(),
+      find_addr: projFindAddr.trim(),
+      avoid_addr: projAvoidAddr.trim(),
+      args: splitCSV(projArgsText),
+      timeout_sec: Number(projTimeoutSec) || 60,
+      r2_command: projEngine === 'radare2' ? code.trim() : '',
+    }
+  }
+
+  function mapREEngineToAIScope(eng) {
+    const e = String(eng || '').toLowerCase()
+    if (e === 'unidbg' || e === 'qiling' || e === 'angr') return e
+    return 'general'
+  }
+
+  function mapREEngineToAILanguage(eng) {
+    const e = String(eng || '').toLowerCase()
+    if (e === 'unidbg') return 'java'
+    if (e === 'qiling' || e === 'angr') return 'python'
+    return 'text'
+  }
+
+  function collectREConsoleLogs() {
+    const lines = (jobEvents || [])
+      .slice(-200)
+      .filter((ev) => ev && (ev.raw || ev.message))
+      .map((ev) => `[${(ev.stream || ev.level || 'log').toUpperCase()}] ${ev.raw || ev.message}`)
+    if (jobState?.error && !lines.some((l) => l.includes(jobState.error))) {
+      lines.push(`[ERROR] ${jobState.error}`)
+    }
+    return lines.join('\n')
+  }
+
+  function applyPatchedRECode(patchedCode) {
+    if (typeof patchedCode !== 'string') return
+    if (emuEditorRef?.replaceValue) {
+      emuEditorRef.replaceValue(patchedCode, { undoable: true })
+    } else {
+      projCode = patchedCode
+    }
+    projDirty = true
+  }
+
+  function buildREAIModalPayload(overrides = {}) {
+    const errText =
+      jobState?.error ||
+      (typeof jobState?.exit_code === 'number' && jobState.exit_code !== 0
+        ? `Process exited with code ${jobState.exit_code}`
+        : '')
+    return {
+      scope: mapREEngineToAIScope(projEngine),
+      title: `${projName.trim() || projEngine.toUpperCase()} — ${translate('reLab.emulate.ai.fixBtn')}`,
+      code: projCode,
+      language: mapREEngineToAILanguage(projEngine),
+      errorText: errText,
+      logs: collectREConsoleLogs(),
+      metadata: {
+        engine: projEngine,
+        binary_path: projBinaryPath.trim(),
+        apk_path: projAPKPath.trim(),
+        rootfs: projRootFS.trim(),
+        target_symbol: projTargetSymbol.trim(),
+        exit_code: jobState && typeof jobState.exit_code === 'number' ? String(jobState.exit_code) : '',
+      },
+      undoKey: `relab:${projId || projEngine}`,
+      canAutoLoop: canAutoHealEngine,
+      onRunAutoLoop: ({ maxRetries, locale: loc } = {}) =>
+        executeREAutoHealLoop(maxRetries || 3, loc || $locale || 'en', false),
+      onApplyPatch: (patchedCode) => {
+        applyPatchedRECode(patchedCode)
+      },
+      onApplyAndRerun: async (patchedCode) => {
+        applyPatchedRECode(patchedCode)
+        await tick()
+        await startREJob()
+      },
+      ...overrides,
+    }
+  }
+
+  function openREAIHeal() {
+    openAIHealModal(buildREAIModalPayload({ autoDiagnose: true }))
+  }
+
+  async function executeREAutoHealLoop(maxRetries = 3, loc = $locale || 'en', openDrawer = true) {
+    const app = api()
+    if (!app?.RunREJobWithAutoHeal || runningAutoHeal) return null
+    const runReq = buildREJobRequest()
+    runningAutoHeal = true
+
+    if (openDrawer) {
+      openAIHealModal(
+        buildREAIModalPayload({
+          autoLoopRunning: true,
+          autoDiagnose: false,
+          autoHealResult: null,
+        })
+      )
+    } else {
+      updateAIHealSession({ autoLoopRunning: true, autoHealResult: null })
+    }
+
+    try {
+      const res = await app.RunREJobWithAutoHeal(runReq, maxRetries, loc)
+      if (res?.final_code && res.final_code !== projCode) {
+        applyPatchedRECode(res.final_code)
+      }
+      updateAIHealSession({
+        autoHealResult: res || null,
+        autoLoopRunning: false,
+        code: res?.final_code || projCode,
+      })
+      const latest = await app.GetREJobState?.().catch(() => null)
+      if (latest) applyJobStatus(latest)
+      if (openDrawer && res) {
+        if (res.healed) {
+          toast.success(translate('ai.drawer.toast.autoHealHealed'))
+        } else {
+          toast.info(
+            translate('ai.drawer.toast.autoHealStopped', {
+              reason: translate(`ai.stopReasons.${res.stop_reason}`) || res.stop_reason || '',
+            })
+          )
+        }
+      }
+      return res
+    } catch (e) {
+      updateAIHealSession({ autoLoopRunning: false })
+      if (openDrawer) {
+        toast.error(translate('ai.drawer.toast.autoHealFailed', { error: e?.message || e }))
+        return null
+      }
+      throw e
+    } finally {
+      runningAutoHeal = false
+    }
+  }
+
+  async function cancelREAutoHeal() {
+    const app = api()
+    if (!app?.CancelAIAutoHeal) return
+    try {
+      await app.CancelAIAutoHeal()
+      toast.info(translate('ai.drawer.toast.autoHealCancelled'))
+    } catch (e) {
+      toast.error(translate('ai.drawer.toast.autoHealCancelFailed', { error: e?.message || e }))
+    }
+  }
+
   async function startREJob() {
     const app = api()
     if (!app?.StartREJob || startingJob) return
     startingJob = true
     try {
-      const snap = await app.StartREJob({
-        project_id: projId,
-        project_name: projName.trim() || `${projEngine.toUpperCase()} Job`,
-        engine: projEngine,
-        code: projCode,
-        binary_path: projBinaryPath.trim(),
-        apk_path: projAPKPath.trim(),
-        rootfs: projRootFS.trim(),
-        target_symbol: projTargetSymbol.trim(),
-        target_addr: projTargetAddr.trim(),
-        find_addr: projFindAddr.trim(),
-        avoid_addr: projAvoidAddr.trim(),
-        args: splitCSV(projArgsText),
-        timeout_sec: Number(projTimeoutSec) || 60,
-        r2_command: projEngine === 'radare2' ? projCode.trim() : '',
-      })
+      const snap = await app.StartREJob(buildREJobRequest())
       applyJobStatus(snap, { fromStartReturn: true })
       toast.success(translate('reLab.toast.jobStarted', { engine: projEngine }))
     } catch (e) {
@@ -4904,10 +5058,25 @@
                     <Button variant="secondary" size="xs" icon="save" loading={savingProject} on:click={saveCurrentProject}>
                       {projBuiltin ? $t('reLab.emulate.forkSaveBtn') : $t('reLab.emulate.saveBtn')}
                     </Button>
-                    {#if !isJobRunning}
+                    {#if runningAutoHeal}
+                      <Button variant="danger" size="xs" icon="square" on:click={cancelREAutoHeal}>
+                        {$t('reLab.emulate.ai.stopAutoHeal')}
+                      </Button>
+                    {:else if !isJobRunning}
                       <Button variant="primary" size="xs" icon="play" loading={startingJob} on:click={startREJob}>
                         {startingJob ? $t('reLab.emulate.starting') : $t('reLab.emulate.runJob')}
                       </Button>
+                      {#if canAutoHealEngine}
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          icon="sparkles"
+                          title={$t('reLab.emulate.ai.autoHealTitle')}
+                          on:click={() => executeREAutoHealLoop(3, $locale || 'en', true)}
+                        >
+                          {$t('reLab.emulate.ai.autoHealBtn')}
+                        </Button>
+                      {/if}
                     {:else}
                       <Button variant="danger" size="xs" icon="square" on:click={cancelREJob}>
                         {$t('reLab.emulate.cancelJob')}
@@ -5028,6 +5197,28 @@
                         <input type="checkbox" bind:checked={jobAutoScroll} />
                         <span>{$t('reLab.emulate.console.autoScroll')}</span>
                       </label>
+                      {#if hasREError}
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          icon="sparkles"
+                          title={$t('reLab.emulate.ai.fixTitle')}
+                          on:click={openREAIHeal}
+                        >
+                          {$t('reLab.emulate.ai.fixBtn')}
+                        </Button>
+                        {#if canAutoHealEngine && !isJobRunning && !runningAutoHeal}
+                          <Button
+                            variant="subtle"
+                            size="xs"
+                            icon="zap"
+                            title={$t('reLab.emulate.ai.autoHealTitle')}
+                            on:click={() => executeREAutoHealLoop(3, $locale || 'en', true)}
+                          >
+                            {$t('reLab.emulate.ai.autoHealBtn')}
+                          </Button>
+                        {/if}
+                      {/if}
                       <Button
                         variant="secondary"
                         size="xs"
@@ -5042,6 +5233,35 @@
                       </Button>
                     </div>
                   </div>
+
+                  {#if jobState && (jobState.status === 'error' || (typeof jobState.exit_code === 'number' && jobState.exit_code !== 0))}
+                    <div class="ai-err-banner mono">
+                      <Icon name="alert-circle" size={13} />
+                      <span class="ai-err-text">
+                        {jobState.error || `Exit code ${jobState.exit_code}`}
+                      </span>
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        icon="sparkles"
+                        title={$t('reLab.emulate.ai.fixTitle')}
+                        on:click={openREAIHeal}
+                      >
+                        {$t('reLab.emulate.ai.fixBtn')}
+                      </Button>
+                      {#if canAutoHealEngine && !isJobRunning && !runningAutoHeal}
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          icon="zap"
+                          title={$t('reLab.emulate.ai.autoHealTitle')}
+                          on:click={() => executeREAutoHealLoop(3, $locale || 'en', true)}
+                        >
+                          {$t('reLab.emulate.ai.autoHealBtn')}
+                        </Button>
+                      {/if}
+                    </div>
+                  {/if}
 
                   <!-- Extracted [CAP_RE] Concrete Results Strip -->
                   {#if jobResults.length > 0}
@@ -10600,5 +10820,22 @@
   .dfa-col-solved {
     border-color: var(--status-success-border);
     background: var(--status-success-bg);
+  }
+
+  .ai-err-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--status-danger-bg);
+    border-bottom: 1px solid var(--status-danger-border);
+    color: var(--status-danger);
+    font-size: 11px;
+  }
+
+  .ai-err-text {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
   }
 </style>

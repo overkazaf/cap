@@ -3,6 +3,7 @@
   import '../lib/locales/recon.js'
   import { t, translate } from '../lib/i18n.js'
   import { reconState as S, reconHandoff } from '../lib/reconState.js'
+  import { openAIHealModal } from '../lib/aiState.js'
   import { toast } from '../lib/toast.js'
   import {
     copyToClipboard,
@@ -982,6 +983,47 @@
     } catch (_) {}
   }
 
+  let lastActionError = ''
+  let dismissedJobErrorId = ''
+
+  $: activeBannerError =
+    lastActionError ||
+    (jobState?.status === 'error' &&
+    jobState?.error &&
+    dismissedJobErrorId !== (jobState.id || jobState.error)
+      ? jobState.error
+      : '')
+
+  function dismissReconError() {
+    lastActionError = ''
+    if (jobState?.status === 'error' && jobState?.error) {
+      dismissedJobErrorId = jobState.id || jobState.error
+    }
+  }
+
+  function openReconAIHeal(errOverride = '') {
+    const errText = errOverride || activeBannerError || jobState?.error || ''
+    const evLogs = (jobState?.events || [])
+      .slice(-120)
+      .map((ev) => `[${(ev.level || 'info').toUpperCase()}] ${ev.message || ''}`)
+      .filter(Boolean)
+    if (errText && !evLogs.some((l) => l.includes(errText))) {
+      evLogs.push(`[ERROR] ${errText}`)
+    }
+    openAIHealModal({
+      scope: 'recon',
+      title: `${target.trim() || 'Site Recon'} — ${translate('recon.ai.askBtn')}`,
+      errorText: errText,
+      logs: evLogs.join('\n'),
+      metadata: {
+        tab: activeTab,
+        target: target.trim(),
+        job_kind: jobState?.kind || '',
+      },
+      autoDiagnose: true,
+    })
+  }
+
   async function runDomainAnalysis(customTarget = '') {
     const app = api()
     if (!app?.AnalyzeReconDomain) {
@@ -993,6 +1035,7 @@
       toast.warning(translate('recon.toast.enterTarget'))
       return
     }
+    lastActionError = ''
     domainLoading = true
     try {
       const report = await app.AnalyzeReconDomain(raw)
@@ -1007,7 +1050,8 @@
       }
     } catch (e) {
       if (!destroyed) {
-        toast.error(translate('recon.toast.domainError', { err: e?.message || e }))
+        lastActionError = e?.message || String(e)
+        toast.error(translate('recon.toast.domainError', { err: lastActionError }))
       }
     } finally {
       if (!destroyed) domainLoading = false
@@ -1027,6 +1071,7 @@
     }
     const port = Math.max(1, Math.min(65535, Number(tlsInspectPort) || 443))
     tlsInspectPort = port
+    lastActionError = ''
     tlsInspectLoading = true
     try {
       const tlsReport = await app.InspectReconTLS(host, port)
@@ -1052,7 +1097,8 @@
       }
     } catch (e) {
       if (!destroyed) {
-        toast.error(translate('recon.toast.tlsError', { err: e?.message || e }))
+        lastActionError = e?.message || String(e)
+        toast.error(translate('recon.toast.tlsError', { err: lastActionError }))
       }
     } finally {
       if (!destroyed) tlsInspectLoading = false
@@ -1076,6 +1122,7 @@
       insecure_skip_verify: Boolean(siteOpts.insecureSkipVerify),
       skip_discovery: !siteDiscoveryEnabled,
     }
+    lastActionError = ''
     siteLoading = true
     try {
       const profile = await app.ProbeReconSite(raw, opts)
@@ -1092,7 +1139,8 @@
       }
     } catch (e) {
       if (!destroyed) {
-        toast.error(translate('recon.toast.siteError', { err: e?.message || e }))
+        lastActionError = e?.message || String(e)
+        toast.error(translate('recon.toast.siteError', { err: lastActionError }))
       }
     } finally {
       if (!destroyed) siteLoading = false
@@ -1110,6 +1158,7 @@
       toast.warning(translate('recon.toast.enterTarget'))
       return
     }
+    lastActionError = ''
     startingJob = true
     consoleCollapsed = false
     try {
@@ -1133,7 +1182,8 @@
       }
     } catch (e) {
       if (!destroyed) {
-        toast.error(translate('recon.toast.jobStartError', { err: e?.message || e }))
+        lastActionError = e?.message || String(e)
+        toast.error(translate('recon.toast.jobStartError', { err: lastActionError }))
       }
     } finally {
       if (!destroyed) startingJob = false
@@ -1156,6 +1206,7 @@
       toast.warning(translate('recon.toast.invalidCustomPorts'))
       return
     }
+    lastActionError = ''
     startingJob = true
     consoleCollapsed = false
     try {
@@ -1180,7 +1231,8 @@
       }
     } catch (e) {
       if (!destroyed) {
-        toast.error(translate('recon.toast.jobStartError', { err: e?.message || e }))
+        lastActionError = e?.message || String(e)
+        toast.error(translate('recon.toast.jobStartError', { err: lastActionError }))
       }
     } finally {
       if (!destroyed) startingJob = false
@@ -1933,6 +1985,29 @@
 
   <!-- 3. Main Scrollable Workspace Content -->
   <main class="workspace-body">
+    {#if activeBannerError}
+      <div class="recon-err-banner mono">
+        <Icon name="alert-circle" size={14} />
+        <span class="recon-err-text">{activeBannerError}</span>
+        <Button
+          variant="ghost"
+          size="xs"
+          icon="sparkles"
+          title={$t('recon.ai.askTitle')}
+          on:click={() => openReconAIHeal(activeBannerError)}
+        >
+          {$t('recon.ai.askBtn')}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          icon="x"
+          iconOnly
+          title={$t('recon.ai.dismissError')}
+          on:click={dismissReconError}
+        />
+      </div>
+    {/if}
     <!-- ==================== TAB 1: DOMAIN INTEL ==================== -->
     {#if activeTab === 'domain'}
       {#if !domainReport}
@@ -2281,7 +2356,16 @@
                 {#if tls.verify_error}
                   <div class="warnings-banner">
                     <Icon name="alert-circle" size={13} />
-                    <span>{tls.verify_error}</span>
+                    <span class="recon-err-text">{tls.verify_error}</span>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      icon="sparkles"
+                      title={$t('recon.ai.askTitle')}
+                      on:click={() => openReconAIHeal(`TLS verify error (${tls.host || target}:${tls.port || 443}): ${tls.verify_error}`)}
+                    >
+                      {$t('recon.ai.askBtn')}
+                    </Button>
                   </div>
                 {/if}
 
@@ -2962,6 +3046,17 @@
                   <input type="checkbox" bind:checked={consoleAutoScroll} />
                   <span>{$t('recon.console.autoScroll')}</span>
                 </label>
+                {#if jobState?.status === 'error'}
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon="sparkles"
+                    title={$t('recon.ai.askTitle')}
+                    on:click={() => openReconAIHeal(jobState?.error || '')}
+                  >
+                    {$t('recon.ai.askBtn')}
+                  </Button>
+                {/if}
                 <Button variant="ghost" size="xs" icon="trash" on:click={clearJobLogs}>
                   {$t('recon.console.clearLogs')}
                 </Button>
@@ -3307,6 +3402,17 @@
                   <input type="checkbox" bind:checked={consoleAutoScroll} />
                   <span>{$t('recon.console.autoScroll')}</span>
                 </label>
+                {#if jobState?.status === 'error'}
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon="sparkles"
+                    title={$t('recon.ai.askTitle')}
+                    on:click={() => openReconAIHeal(jobState?.error || '')}
+                  >
+                    {$t('recon.ai.askBtn')}
+                  </Button>
+                {/if}
                 <Button variant="ghost" size="xs" icon="trash" on:click={clearJobLogs}>
                   {$t('recon.console.clearLogs')}
                 </Button>
@@ -5218,5 +5324,23 @@
     .sec-audit-top {
       flex-direction: column;
     }
+  }
+
+  .recon-err-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    background: var(--status-danger-bg);
+    border: 1px solid var(--status-danger-border);
+    color: var(--status-danger);
+    font-size: 12px;
+  }
+
+  .recon-err-text {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
   }
 </style>

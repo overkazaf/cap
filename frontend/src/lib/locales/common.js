@@ -33,6 +33,11 @@ registerMessages('common', {
           title: 'Analyzer Plugins',
           subtitle: 'Custom scriptable analyzers & flow hooks',
         },
+        recon: {
+          label: 'Site Recon',
+          title: 'Site Reconnaissance',
+          subtitle: 'Domain intel, TLS audit, tech stack, subdomains & Nmap port scanner',
+        },
         trace: {
           label: 'DeepTrace',
           title: 'Deep Trace',
@@ -91,6 +96,7 @@ registerMessages('common', {
       pausedBadge: 'PAUSED',
       hookBadge: 'HOOK',
       reJobBadge: 'RUN',
+      reconBadge: 'SCAN',
       gwBadge: 'GW',
     },
     topbar: {
@@ -125,6 +131,8 @@ registerMessages('common', {
       gatewayStatusTooltip: 'Service Gateway status',
       reJobRunning: 'RE · {engine}',
       reJobTooltip: 'Active emulation job — click to open Emulate & Trace',
+      reconRunning: 'RECON · {kind}',
+      reconTooltip: 'Active site recon scan — click to open Site Recon',
       hintSwitch: '{mod}1–0 Switch',
       hintPalette: '{mod}K Palette',
       switchThemeTooltip: 'Switch theme',
@@ -265,6 +273,11 @@ registerMessages('common', {
           title: '插件工作室',
           subtitle: '可编程流量分析脚本与自定义 Hook',
         },
+        recon: {
+          label: '站点探测',
+          title: '站点信息探测',
+          subtitle: '域名情报、TLS 证书审计、技术栈指纹、子域名与 Nmap 端口扫描',
+        },
         trace: {
           label: '深度追踪',
           title: '深度调用追踪',
@@ -323,6 +336,7 @@ registerMessages('common', {
       pausedBadge: '已暂停',
       hookBadge: '注入中',
       reJobBadge: '运行',
+      reconBadge: '探测',
       gwBadge: 'GW',
     },
     topbar: {
@@ -357,6 +371,8 @@ registerMessages('common', {
       gatewayStatusTooltip: '服务网关运行状态',
       reJobRunning: '逆向 · {engine}',
       reJobTooltip: '正在运行的逆向仿真任务 — 点击进入仿真与追踪',
+      reconRunning: '探测 · {kind}',
+      reconTooltip: '正在运行的站点探测任务 — 点击进入站点探测',
       hintSwitch: '{mod}1–0 切换页面',
       hintPalette: '{mod}K 命令面板',
       switchThemeTooltip: '切换主题',

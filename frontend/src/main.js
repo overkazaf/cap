@@ -2,6 +2,8 @@ import './lib/tokens.css'
 import './lib/locales/common.js'
 import './lib/locales/reLab.js'
 import './lib/locales/gateway.js'
+import './lib/locales/recon.js'
+import './lib/locales/ai.js'
 import { applyTheme } from './lib/theme.js'
 import App from './App.svelte'
 

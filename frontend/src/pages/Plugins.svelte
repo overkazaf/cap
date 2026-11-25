@@ -11,6 +11,7 @@
   import SplitPane from '../components/SplitPane.svelte'
   import { toast } from '../lib/toast.js'
   import { copyToClipboard, formatDuration, formatTime } from '../lib/format.js'
+  import { openAIHealModal } from '../lib/aiState.js'
 
   const api = () => window?.go?.wailsgui?.App
   const runtimeApi = () => window?.runtime
@@ -740,6 +741,56 @@
     dirty = true
   }
 
+  function pluginRuntimeToLanguage(rt) {
+    switch (String(rt || '').toLowerCase()) {
+      case 'python3':
+        return 'python'
+      case 'node':
+        return 'javascript'
+      case 'sh':
+        return 'bash'
+      default:
+        return 'text'
+    }
+  }
+
+  function applyPatchedPluginCode(patchedCode) {
+    if (typeof patchedCode !== 'string') return
+    if (editorRef?.replaceValue) {
+      editorRef.replaceValue(patchedCode, { undoable: true })
+    } else {
+      editCode = patchedCode
+    }
+    dirty = true
+  }
+
+  function openPluginAIHeal() {
+    openAIHealModal({
+      scope: 'plugin',
+      title: `${editName.trim() || 'Plugin Draft'} — ${translate('tools.plugins.aiFixBtn')}`,
+      code: editCode,
+      language: pluginRuntimeToLanguage(editRuntime),
+      errorText: runOutput || '',
+      logs: runOutput || '',
+      metadata: {
+        runtime: editRuntime || 'builtin',
+        plugin_type: editType || 'analyzer',
+        flow_id: runFlowId.trim(),
+      },
+      undoKey: `plugin:${editName.trim() || 'draft'}`,
+      onApplyPatch: (patchedCode) => {
+        applyPatchedPluginCode(patchedCode)
+      },
+      onApplyAndRerun: async (patchedCode) => {
+        applyPatchedPluginCode(patchedCode)
+        await tick()
+        if (runFlowId.trim()) {
+          await runPlugin()
+        }
+      },
+    })
+  }
+
   function summarizeScope(p) {
     const parts = []
     if (p.method) parts.push(p.method)
@@ -1342,6 +1393,17 @@
                     >
                       {dirty || isNew ? $t('tools.plugins.runDraft') : $t('tools.plugins.run')}
                     </Button>
+                    {#if runError && runOutput}
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        icon="sparkles"
+                        title={$t('tools.plugins.aiFixTitle')}
+                        on:click={openPluginAIHeal}
+                      >
+                        {$t('tools.plugins.aiFixBtn')}
+                      </Button>
+                    {/if}
                     <Button
                       variant="ghost"
                       size="xs"

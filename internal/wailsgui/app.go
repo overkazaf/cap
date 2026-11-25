@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/overkazaf/cap/internal/ai"
 	"github.com/overkazaf/cap/internal/buildinfo"
 	"github.com/overkazaf/cap/internal/config"
 	"github.com/overkazaf/cap/internal/exectrace"
@@ -18,6 +19,7 @@ import (
 	"github.com/overkazaf/cap/internal/gateway"
 	"github.com/overkazaf/cap/internal/plugin"
 	"github.com/overkazaf/cap/internal/proxy"
+	"github.com/overkazaf/cap/internal/recon"
 	"github.com/overkazaf/cap/internal/retools"
 	"github.com/overkazaf/cap/internal/rules"
 	"github.com/overkazaf/cap/internal/screen"
@@ -34,6 +36,8 @@ import (
 //   - frida_gui.go: Frida server management, script library, live sessions
 //   - retools_gui.go: Native RE (r2/Unidbg/Qiling/angr), Deobf/VMP, ExecTrace
 //   - gateway_gui.go: Open API Gateway, Proxy Pool, Device Pool, Signers
+//   - recon_gui.go: Site Recon, Domain/TLS/Subdomain/Port scanning, history
+//   - ai_gui.go: Multi-model AI provider config, diagnosis, self-healing loop
 type App struct {
 	ctx         context.Context
 	store       store.Store
@@ -82,6 +86,14 @@ type App struct {
 	retoolsMgr   *retools.Manager
 	execTraceMgr *exectrace.Manager
 	gatewayMgr   *gateway.Manager
+	reconMgr     *recon.Manager
+	aiMgr        *ai.Manager
+
+	aiHealOpMu   sync.Mutex
+	aiHealMu     sync.Mutex
+	aiHealCancel context.CancelFunc
+	aiHealDone   chan struct{}
+	aiHealSeq    uint64
 }
 
 const maxConcurrentAutoPlugins = 4
@@ -93,6 +105,8 @@ func NewApp(st store.Store) *App {
 	retoolsMgr, _ := retools.NewManager(capDir)
 	execTraceMgr, _ := exectrace.NewManager(filepath.Join(capDir, "exec-traces"))
 	gatewayMgr, _ := gateway.NewManager(capDir)
+	reconMgr, _ := recon.NewManager(capDir)
+	aiMgr, _ := ai.NewManager(capDir)
 	settingsFile := filepath.Join(capDir, "settings.json")
 	settings := loadSettings(settingsFile)
 	pCtx, pCancel := context.WithCancel(context.Background())
@@ -132,6 +146,17 @@ func NewApp(st store.Store) *App {
 			},
 		)
 	}
+	if reconMgr != nil {
+		reconMgr.SetToolchainConfig(reconToolchainFromSettings(settings))
+		reconMgr.SetCallbacks(
+			func(ev recon.ReconJobEvent) {
+				events.Emit(EventReconLog, ev)
+			},
+			func(st *recon.ReconJobState) {
+				events.Emit(EventReconStatus, st)
+			},
+		)
+	}
 	return &App{
 		store:            st,
 		certDir:          capDir,
@@ -149,26 +174,33 @@ func NewApp(st store.Store) *App {
 		retoolsMgr:       retoolsMgr,
 		execTraceMgr:     execTraceMgr,
 		gatewayMgr:       gatewayMgr,
+		reconMgr:         reconMgr,
+		aiMgr:            aiMgr,
 	}
 }
 
 func (a *App) Startup(ctx context.Context) {
+	a.mu.Lock()
 	a.ctx = ctx
+	certDir := a.certDir
+	a.mu.Unlock()
 	a.events.SetEmitter(func(event string, data ...interface{}) {
 		runtime.EventsEmit(ctx, event, data...)
 	})
-	proxy.EnsureCA(a.certDir)
+	proxy.EnsureCA(certDir)
 }
 
 func (a *App) Shutdown(ctx context.Context) {
-	// Cancel any active DeepTrace run, Frida session, RE jobs, Gateway server,
-	// and auto-run plugin scripts cleanly.
+	// Cancel any active DeepTrace run, AI Auto-Heal loop, Frida session,
+	// RE jobs, Recon jobs, Gateway server, and auto-run plugin scripts cleanly.
 	_ = a.CancelDeepTrace()
+	_ = a.CancelAIAutoHeal()
 
 	a.mu.Lock()
 	fridaMgr := a.fridaMgr
 	retoolsMgr := a.retoolsMgr
 	gatewayMgr := a.gatewayMgr
+	reconMgr := a.reconMgr
 	a.mu.Unlock()
 
 	if fridaMgr != nil {
@@ -176,6 +208,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	}
 	if retoolsMgr != nil {
 		retoolsMgr.Shutdown()
+	}
+	if reconMgr != nil {
+		reconMgr.Shutdown()
 	}
 	if gatewayMgr != nil {
 		_ = gatewayMgr.Shutdown()
@@ -464,8 +499,10 @@ func (a *App) SetSetting(key string, value interface{}) error {
 	pyPath := a.settings["frida_python_path"]
 	cliPath := a.settings["frida_cli_path"]
 	reCfg := retoolsToolchainFromSettings(a.settings)
+	reconCfg := reconToolchainFromSettings(a.settings)
 	fridaMgr := a.fridaMgr
 	retoolsMgr := a.retoolsMgr
+	reconMgr := a.reconMgr
 	gatewayMgr := a.gatewayMgr
 	certDir := a.certDir
 	snapshot := make(map[string]string, len(a.settings))
@@ -482,6 +519,9 @@ func (a *App) SetSetting(key string, value interface{}) error {
 	}
 	if isREToolchainSettingKey(key) && retoolsMgr != nil {
 		retoolsMgr.SetToolchainConfig(reCfg)
+	}
+	if isReconToolchainSettingKey(key) && reconMgr != nil {
+		reconMgr.SetToolchainConfig(reconCfg)
 	}
 	if key == "gateway_addr" && gatewayMgr != nil {
 		if addr := strings.TrimSpace(strVal); addr != "" {
@@ -503,16 +543,16 @@ func (a *App) GetSetting(key string) string {
 
 func loadSettings(path string) map[string]string {
 	settings := map[string]string{
-		"theme":              "dark",
-		"proxy_addr":         "0.0.0.0:8080",
-		"proxy_port":         "8080",
-		"auto_detect":        "true",
-		"install_cert":       "true",
-		"max_body_size":      "4096",
-		"font_size":          "13",
-		"frida_python_path":  "",
-		"frida_cli_path":     "",
-		"frida_default_port": "27042",
+		"theme":                 "dark",
+		"proxy_addr":            "0.0.0.0:8080",
+		"proxy_port":            "8080",
+		"auto_detect":           "true",
+		"install_cert":          "true",
+		"max_body_size":         "4096",
+		"font_size":             "13",
+		"frida_python_path":     "",
+		"frida_cli_path":        "",
+		"frida_default_port":    "27042",
 		"re_r2_path":            "",
 		"re_java_path":          "",
 		"re_mvn_path":           "",
@@ -521,6 +561,10 @@ func loadSettings(path string) map[string]string {
 		"re_qiling_python_path": "",
 		"re_angr_python_path":   "",
 		"re_qiling_rootfs":      "",
+		"recon_nmap_path":       "",
+		"recon_subfinder_path":  "",
+		"recon_whois_path":      "",
+		"recon_dig_path":        "",
 		"gateway_addr":          "127.0.0.1:9090",
 	}
 	data, err := os.ReadFile(path)

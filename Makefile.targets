@@ -1,4 +1,5 @@
 LOCAL_TEST_PACKAGES := \
+	github.com/overkazaf/cap/internal/ai \
 	github.com/overkazaf/cap/internal/buildinfo \
 	github.com/overkazaf/cap/internal/android \
 	github.com/overkazaf/cap/internal/cli \
@@ -17,6 +18,7 @@ LOCAL_TEST_PACKAGES := \
 	github.com/overkazaf/cap/internal/importer \
 	github.com/overkazaf/cap/internal/plugin \
 	github.com/overkazaf/cap/internal/proto \
+	github.com/overkazaf/cap/internal/recon \
 	github.com/overkazaf/cap/internal/repro \
 	github.com/overkazaf/cap/internal/retools \
 	github.com/overkazaf/cap/internal/rules \

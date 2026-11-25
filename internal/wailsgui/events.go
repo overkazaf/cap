@@ -21,6 +21,9 @@ const (
 	EventREStatus            = "re:status"
 	EventGatewayInvoke       = "gateway:invoke"
 	EventGatewayStatus       = "gateway:status"
+	EventReconLog            = "recon:log"
+	EventReconStatus         = "recon:status"
+	EventAIHeal              = "ai:heal"
 )
 
 type EventBus struct {

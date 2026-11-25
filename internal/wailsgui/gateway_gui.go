@@ -365,6 +365,9 @@ func (a *App) TestGatewaySigner(s gateway.SignerProvider, sampleInput gateway.Si
 		return nil, err
 	}
 	s.Enabled = true
+	if mgr, err := a.ensureGatewayManager(); err == nil && mgr.SignerExecutor() != nil {
+		return mgr.SignerExecutor().Execute(context.Background(), &s, sampleInput)
+	}
 	return gateway.ExecuteSigner(context.Background(), &s, sampleInput)
 }
 
@@ -440,4 +443,183 @@ func (a *App) ClearGatewayLogs() {
 	if mgr, err := a.ensureGatewayManager(); err == nil {
 		mgr.ClearLogs()
 	}
+}
+
+// ==================== Account / Session Pool ====================
+
+// ListGatewayAccounts returns all configured account profiles in the gateway Account Pool.
+func (a *App) ListGatewayAccounts() []gateway.AccountProfile {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return []gateway.AccountProfile{}
+	}
+	return mgr.ListAccounts()
+}
+
+// SaveGatewayAccount validates, normalizes, and persists an AccountProfile.
+func (a *App) SaveGatewayAccount(acc gateway.AccountProfile) (*gateway.AccountProfile, error) {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return nil, err
+	}
+	return mgr.SaveAccount(acc)
+}
+
+// DeleteGatewayAccount removes an AccountProfile by ID.
+func (a *App) DeleteGatewayAccount(id string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	return mgr.DeleteAccount(id)
+}
+
+// GetAccountPoolConfig returns the current AccountPoolConfig.
+func (a *App) GetAccountPoolConfig() gateway.AccountPoolConfig {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return gateway.AccountPoolConfig{Strategy: gateway.StrategyRoundRobin}
+	}
+	return mgr.GetAccountConfig()
+}
+
+// UpdateAccountPoolConfig updates and persists AccountPoolConfig.
+func (a *App) UpdateAccountPoolConfig(cfg gateway.AccountPoolConfig) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	return mgr.UpdateAccountConfig(cfg)
+}
+
+// MarkGatewayAccountHealthy marks an account profile active and clears prior errors/expiry.
+func (a *App) MarkGatewayAccountHealthy(id string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	return mgr.AccountPool().MarkHealthy(id)
+}
+
+// ==================== Managed Signer Worker Pool ====================
+
+// ListGatewayWorkers returns all configured ManagedWorkerSpecs.
+func (a *App) ListGatewayWorkers() []gateway.ManagedWorkerSpec {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return []gateway.ManagedWorkerSpec{}
+	}
+	return mgr.ListWorkers()
+}
+
+// ListGatewayWorkerStatuses returns live runtime health snapshots for all worker pools.
+func (a *App) ListGatewayWorkerStatuses() []gateway.ManagedWorkerStatus {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return []gateway.ManagedWorkerStatus{}
+	}
+	return mgr.ListWorkerStatuses()
+}
+
+// SaveGatewayWorker validates and persists a ManagedWorkerSpec.
+func (a *App) SaveGatewayWorker(spec gateway.ManagedWorkerSpec) (*gateway.ManagedWorkerSpec, error) {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return nil, err
+	}
+	return mgr.SaveWorker(spec)
+}
+
+// DeleteGatewayWorker stops and deletes a ManagedWorkerSpec by ID.
+func (a *App) DeleteGatewayWorker(id string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	return mgr.DeleteWorker(id)
+}
+
+// StartGatewayWorker spawns all configured instances for worker ID.
+func (a *App) StartGatewayWorker(id string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	return mgr.StartWorker(id)
+}
+
+// StopGatewayWorker cleanly stops all running instances for worker ID.
+func (a *App) StopGatewayWorker(id string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	return mgr.StopWorker(id)
+}
+
+// RestartGatewayWorker stops and restarts worker ID with its latest spec.
+func (a *App) RestartGatewayWorker(id string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	return mgr.RestartWorker(id)
+}
+
+// ==================== Resilience, Prometheus & Docker Export ====================
+
+// GetGatewayCircuitStates returns live per-route circuit breaker snapshots.
+func (a *App) GetGatewayCircuitStates() map[string]gateway.CircuitSnapshot {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return map[string]gateway.CircuitSnapshot{}
+	}
+	return mgr.CircuitStates()
+}
+
+// ResetGatewayCircuit resets circuit breaker state for slug (or all routes if empty).
+func (a *App) ResetGatewayCircuit(slug string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	mgr.ResetCircuit(slug)
+	return nil
+}
+
+// ClearGatewayRouteCache evicts cached responses for slug (or all routes if empty).
+func (a *App) ClearGatewayRouteCache(slug string) error {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return err
+	}
+	mgr.ClearRouteCache(slug)
+	return nil
+}
+
+// GetGatewayPrometheusMetrics renders gateway telemetry in Prometheus text exposition format.
+func (a *App) GetGatewayPrometheusMetrics() string {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		return ""
+	}
+	return mgr.PrometheusMetrics()
+}
+
+// ExportGatewayDockerBundle generates Dockerfile and docker-compose.yml artifacts for
+// headless `cap gateway serve` deployment.
+func (a *App) ExportGatewayDockerBundle(listenAddr string) gateway.DockerDeployBundle {
+	mgr, err := a.ensureGatewayManager()
+	if err != nil {
+		addr := strings.TrimSpace(listenAddr)
+		if addr == "" {
+			addr = gateway.DefaultListenAddr
+		}
+		return gateway.DockerDeployBundle{
+			ListenAddr:    addr,
+			Dockerfile:    gateway.GenerateDockerfile(addr),
+			DockerCompose: gateway.GenerateDockerCompose(addr),
+		}
+	}
+	return mgr.ExportDockerBundle(listenAddr)
 }

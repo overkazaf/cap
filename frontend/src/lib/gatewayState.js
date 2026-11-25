@@ -3,13 +3,15 @@ import { navigate } from './navigation.js'
 
 // Persistent UI state for the Service Gateway workspace across route switches
 export const gatewayState = {
-  activeTab: 'routes', // 'routes' | 'proxies' | 'devices' | 'signers' | 'logs'
+  activeTab: 'routes', // 'routes' | 'proxies' | 'devices' | 'signers' | 'logs' | 'accounts' | 'workers'
   listenAddr: '127.0.0.1:9090',
 
   // Selected entity IDs
   selectedRouteId: '',
   selectedDeviceId: '',
   selectedSignerId: '',
+  selectedAccountId: '',
+  selectedWorkerId: '',
 
   // Search & filter state
   routeSearch: '',
@@ -18,6 +20,9 @@ export const gatewayState = {
   deviceSearch: '',
   deviceKindFilter: 'all', // 'all' | 'virtual' | 'physical'
   signerSearch: '',
+  accountSearch: '',
+  accountStatusFilter: 'all', // 'all' | 'active' | 'expired' | 'challenged' | 'disabled'
+  workerSearch: '',
   logRouteFilter: 'all',
   logStatusFilter: 'all', // 'all' | 'ok' | '4xx' | 'error'
   logSearch: '',
@@ -27,6 +32,8 @@ export const gatewayState = {
   testBody: '',
   testDeviceId: '',
   testProxyId: '',
+  testAccountId: '',
+  testBypassCache: false,
   testRaw: false,
   lastTestResult: null,
 

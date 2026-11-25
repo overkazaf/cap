@@ -36,10 +36,11 @@
     qiling_rootfs: '',
   }
 
-  // ==================== Sub-Tab 1: Native Binary & Radare2 ====================
+  // ==================== Sub-Tab 1: Native Binary & Radare2 + iOS + Symbol Bridge ====================
   let binaryPath = S.binaryPath || ''
   let binaryAnalysis = S.binaryAnalysis || null
   let analyzingBinary = false
+  let nativeMode = S.nativeMode || 'r2' // 'r2' | 'ios'
   let nativeLeftTab = S.nativeLeftTab || 'functions'
   let nativeSearch = S.nativeSearch || ''
   let nativeJniOnly = Boolean(S.nativeJniOnly)
@@ -51,6 +52,33 @@
   let r2Running = false
   let r2History = Array.isArray(S.r2History) ? S.r2History : []
   let r2ConsoleEl = null
+
+  // iOS Mach-O / IPA Inspector
+  let iosReport = S.iosReport || null
+  let analyzingIOS = false
+  let iosLeftTab = S.iosLeftTab || 'objc_classes'
+  let iosSearch = S.iosSearch || ''
+  let iosTargetObjCClass = S.iosTargetObjCClass || ''
+  let iosTargetObjCSelector = S.iosTargetObjCSelector || ''
+  let iosTargetSymbol = S.iosTargetSymbol || ''
+  let iosTargetOffset = S.iosTargetOffset || ''
+  let generatingIOSHarness = false
+  let generatingIOSStealth = false
+
+  // Symbol Bridge (IDA / Ghidra / JSON)
+  let showSymbolBridgeDrawer = false
+  let symBridgeTab = 'export' // 'export' | 'import'
+  let symExportFormat = S.symExportFormat || 'ida'
+  let symImageBase = S.symImageBase || '0x0'
+  let symExportOutput = S.symExportOutput || ''
+  let exportingSymbols = false
+  let symNewCmtAddr = ''
+  let symNewCmtText = ''
+  let symCustomComments = Array.isArray(S.symCustomComments) ? S.symCustomComments : []
+  let symImportRaw = S.symImportRaw || ''
+  let importingSymbols = false
+  let importedSymbolBundle = S.importedSymbolBundle || null
+  let appliedSymbolComments = S.appliedSymbolComments ? { ...S.appliedSymbolComments } : {}
 
   const R2_PRESETS = ['iI', 'iS', 'afl', 'iE', 'ii', 'iz', 'pdf @ main']
 
@@ -102,7 +130,40 @@
   let elapsedTick = Date.now()
   let clockTimer = null
 
-  // ==================== Sub-Tab 3: Deobf · Anti-Debug · VMP ====================
+  // Auto-Stub Assistant (Unidbg Smart Env Diagnosis)
+  let showAutoStubDrawer = false
+  let autoStubRawLog = S.autoStubRawLog || ''
+  let analyzingAutoStub = false
+  let autoStubDiagnosis = S.autoStubDiagnosis || null
+  let autoStubSnippetTab = S.autoStubSnippetTab || 'combined'
+  let autoStubPkg = S.autoStubPkg || ''
+  let generatingEnvSnap = false
+
+  // ==================== Sub-Tab 3: JADX Decompiler & Java<->JNI Cross-Link ====================
+  let jadxApkPath = S.jadxApkPath || ''
+  let jadxInfo = S.jadxInfo || null
+  let probingJadx = false
+  let jadxWorkspace = S.jadxWorkspace || null
+  let decompilingJadx = false
+  let jadxClasses = Array.isArray(S.jadxClasses) ? S.jadxClasses : []
+  let jadxLeftTab = S.jadxLeftTab || 'classes'
+  let jadxClassFilter = S.jadxClassFilter || ''
+  let jadxNativeOnly = Boolean(S.jadxNativeOnly)
+  let jadxSearchQuery = S.jadxSearchQuery || ''
+  let searchingJadx = false
+  let jadxSearchHits = Array.isArray(S.jadxSearchHits) ? S.jadxSearchHits : []
+  let jadxSelectedClass = S.jadxSelectedClass || ''
+  let jadxClassSource = S.jadxClassSource || null
+  let loadingJadxSource = false
+  let jadxSoPath = S.jadxSoPath || ''
+  let showRegNativesInput = false
+  let jadxRegisterNativesJSON = S.jadxRegisterNativesJSON || ''
+  let linkingJadx = false
+  let jadxLinkReport = S.jadxLinkReport || null
+  let jadxLinkFilter = S.jadxLinkFilter || 'all'
+  let jadxEditorRef = null
+
+  // ==================== Sub-Tab 4: Deobf · Anti-Debug · VMP · TLS/Proxy Compat ====================
   let deobfView = S.deobfView || 'audit'
   let scanPath = S.scanPath || ''
   let scanningProtection = false
@@ -132,6 +193,27 @@
   let vmpTraceBaseHex = S.vmpTraceBaseHex || ''
   let analyzingVmpTrace = false
   let vmpTraceAnalysis = S.vmpTraceAnalysis || null
+
+  // TLS / Certs / Proxy Compat inside Deobf
+  let tlsApkPath = S.tlsApkPath || ''
+  let scanningTlsCerts = false
+  let tlsCertReport = S.tlsCertReport || null
+  let tlsMtlsCertPath = S.tlsMtlsCertPath || ''
+  let tlsMtlsKeyPath = S.tlsMtlsKeyPath || ''
+  let validatingMtls = false
+  let tlsMtlsResult = S.tlsMtlsResult || null
+  let tlsProfiles = Array.isArray(S.tlsProfiles) ? S.tlsProfiles : []
+  let loadingTlsProfiles = false
+  let tlsSelectedProfileId = S.tlsSelectedProfileId || 'chrome_131'
+  let tlsProfileJA3 = S.tlsProfileJA3 || null
+  let tlsCurlInfo = S.tlsCurlInfo || null
+  let tlsCompatKind = S.tlsCompatKind || 'flutter'
+  let tlsFlutterOpts = { ...(S.tlsFlutterOpts || {}) }
+  let tlsCronetOpts = { ...(S.tlsCronetOpts || {}) }
+  let tlsMtlsObsOpts = { ...(S.tlsMtlsObsOpts || {}) }
+  let generatingTlsScript = false
+  let tlsGeneratedScript = S.tlsGeneratedScript || null
+  let tlsEditorRef = null
 
   const DEOBF_GENERATORS = [
     { id: 'stealth', engine: 'frida', icon: 'shield' },
@@ -215,6 +297,41 @@
   let runningDiff = false
   let diffResult = S.diffResult || null
 
+  // ==================== Sub-Tab 6: CryptoLab (Pipeline · Protobuf · White-Box AES DFA) ====================
+  let cryptoMode = S.cryptoMode || 'pipeline'
+  let cryptoOps = Array.isArray(S.cryptoOps) ? S.cryptoOps : []
+  let loadingCryptoOps = false
+  let cryptoOpSearch = S.cryptoOpSearch || ''
+  let cryptoOpCategory = S.cryptoOpCategory || 'all'
+  let cryptoInput = S.cryptoInput || ''
+  let cryptoInputEncoding = S.cryptoInputEncoding || 'utf8'
+  let cryptoSteps = Array.isArray(S.cryptoSteps) ? S.cryptoSteps : []
+  let cryptoOutputTab = S.cryptoOutputTab || 'utf8'
+  let runningCrypto = false
+  let cryptoResult = S.cryptoResult || null
+  let identifyingCrypto = false
+  let cryptoIdentify = S.cryptoIdentify || null
+  let expandedCryptoSteps = new Set()
+
+  // Protobuf Inspector
+  let protoInput = S.protoInput || ''
+  let decodingProto = false
+  let protoTree = S.protoTree || null
+  let encodingProto = false
+  let protoEncodedHex = S.protoEncodedHex || ''
+  let collapsedProtoNodes = new Set()
+
+  // White-Box AES-128 Round-9 DFA
+  let dfaValidHex = S.dfaValidHex || ''
+  let dfaFaultsText = S.dfaFaultsText || ''
+  let dfaPlaintextHex = S.dfaPlaintextHex || ''
+  let solvingDfa = false
+  let dfaResult = S.dfaResult || null
+  let dfaScriptEngine = S.dfaScriptEngine || 'unidbg'
+  let dfaScriptCfg = { ...(S.dfaScriptCfg || {}) }
+  let generatingDfaScript = false
+  let dfaGeneratedScript = S.dfaGeneratedScript || null
+
   // Subscriptions
   let unsubs = []
   let unsubHandoff = null
@@ -225,6 +342,7 @@
     S.subTab = subTab
     S.binaryPath = binaryPath
     S.binaryAnalysis = binaryAnalysis
+    S.nativeMode = nativeMode
     S.nativeLeftTab = nativeLeftTab
     S.nativeSearch = nativeSearch
     S.nativeJniOnly = nativeJniOnly
@@ -233,6 +351,20 @@
     S.funcViewTab = funcViewTab
     S.r2Cmd = r2Cmd
     S.r2History = r2History
+    S.iosReport = iosReport
+    S.iosLeftTab = iosLeftTab
+    S.iosSearch = iosSearch
+    S.iosTargetObjCClass = iosTargetObjCClass
+    S.iosTargetObjCSelector = iosTargetObjCSelector
+    S.iosTargetSymbol = iosTargetSymbol
+    S.iosTargetOffset = iosTargetOffset
+    S.symExportFormat = symExportFormat
+    S.symImageBase = symImageBase
+    S.symExportOutput = symExportOutput
+    S.symImportRaw = symImportRaw
+    S.importedSymbolBundle = importedSymbolBundle
+    S.symCustomComments = symCustomComments
+    S.appliedSymbolComments = appliedSymbolComments
 
     S.projectEngineFilter = projectEngineFilter
     S.projectSearch = projectSearch
@@ -257,6 +389,26 @@
     S.jobConsoleFilter = jobConsoleFilter
     S.jobConsoleSearch = jobConsoleSearch
     S.jobAutoScroll = jobAutoScroll
+    S.autoStubRawLog = autoStubRawLog
+    S.autoStubDiagnosis = autoStubDiagnosis
+    S.autoStubSnippetTab = autoStubSnippetTab
+    S.autoStubPkg = autoStubPkg
+
+    S.jadxApkPath = jadxApkPath
+    S.jadxInfo = jadxInfo
+    S.jadxWorkspace = jadxWorkspace
+    S.jadxClasses = jadxClasses
+    S.jadxLeftTab = jadxLeftTab
+    S.jadxClassFilter = jadxClassFilter
+    S.jadxNativeOnly = jadxNativeOnly
+    S.jadxSearchQuery = jadxSearchQuery
+    S.jadxSearchHits = jadxSearchHits
+    S.jadxSelectedClass = jadxSelectedClass
+    S.jadxClassSource = jadxClassSource
+    S.jadxSoPath = jadxSoPath
+    S.jadxRegisterNativesJSON = jadxRegisterNativesJSON
+    S.jadxLinkReport = jadxLinkReport
+    S.jadxLinkFilter = jadxLinkFilter
 
     S.deobfView = deobfView
     S.scanPath = scanPath
@@ -281,6 +433,20 @@
     S.vmpTraceRaw = vmpTraceRaw
     S.vmpTraceBaseHex = vmpTraceBaseHex
     S.vmpTraceAnalysis = vmpTraceAnalysis
+    S.tlsApkPath = tlsApkPath
+    S.tlsCertReport = tlsCertReport
+    S.tlsMtlsCertPath = tlsMtlsCertPath
+    S.tlsMtlsKeyPath = tlsMtlsKeyPath
+    S.tlsMtlsResult = tlsMtlsResult
+    S.tlsProfiles = tlsProfiles
+    S.tlsSelectedProfileId = tlsSelectedProfileId
+    S.tlsProfileJA3 = tlsProfileJA3
+    S.tlsCurlInfo = tlsCurlInfo
+    S.tlsCompatKind = tlsCompatKind
+    S.tlsFlutterOpts = tlsFlutterOpts
+    S.tlsCronetOpts = tlsCronetOpts
+    S.tlsMtlsObsOpts = tlsMtlsObsOpts
+    S.tlsGeneratedScript = tlsGeneratedScript
 
     S.selectedTraceId = selectedTraceId
     S.traceViewTab = traceViewTab
@@ -301,6 +467,27 @@
     S.diffMaxDivergences = diffMaxDivergences
     S.diffResult = diffResult
     S.generatedCollector = generatedCollector
+
+    S.cryptoMode = cryptoMode
+    S.cryptoOps = cryptoOps
+    S.cryptoOpSearch = cryptoOpSearch
+    S.cryptoOpCategory = cryptoOpCategory
+    S.cryptoInput = cryptoInput
+    S.cryptoInputEncoding = cryptoInputEncoding
+    S.cryptoSteps = cryptoSteps
+    S.cryptoOutputTab = cryptoOutputTab
+    S.cryptoResult = cryptoResult
+    S.cryptoIdentify = cryptoIdentify
+    S.protoInput = protoInput
+    S.protoTree = protoTree
+    S.protoEncodedHex = protoEncodedHex
+    S.dfaValidHex = dfaValidHex
+    S.dfaFaultsText = dfaFaultsText
+    S.dfaPlaintextHex = dfaPlaintextHex
+    S.dfaResult = dfaResult
+    S.dfaScriptEngine = dfaScriptEngine
+    S.dfaScriptCfg = dfaScriptCfg
+    S.dfaGeneratedScript = dfaGeneratedScript
   }
 
   // ==================== Derived Computations ====================
@@ -476,6 +663,104 @@
     return out
   })()
 
+  // New Pro Derived Computations
+  $: filteredIOSItems = (() => {
+    const q = iosSearch.trim().toLowerCase()
+    const list =
+      iosLeftTab === 'objc_classes'
+        ? (iosReport?.objc_classes || [])
+        : iosLeftTab === 'objc_selectors'
+          ? (iosReport?.objc_selectors || [])
+          : iosLeftTab === 'exports'
+            ? (iosReport?.exported_symbols || [])
+            : [...(iosReport?.linked_dylibs || []), ...(iosReport?.frameworks || [])]
+    if (!q) return list
+    return list.filter((item) => String(item || '').toLowerCase().includes(q))
+  })()
+
+  $: appliedSymbolCount = Object.keys(appliedSymbolComments || {}).length
+
+  $: hasAnyAutoStubSnippet = Boolean(
+    autoStubDiagnosis?.combined_java_snippet ||
+    autoStubDiagnosis?.abstract_jni_snippet ||
+    autoStubDiagnosis?.io_resolver_snippet ||
+    autoStubDiagnosis?.sys_prop_hook_snippet
+  )
+
+  $: activeAutoStubSnippet = (() => {
+    if (!autoStubDiagnosis) return ''
+    if (autoStubSnippetTab === 'jni') return autoStubDiagnosis.abstract_jni_snippet || ''
+    if (autoStubSnippetTab === 'io') return autoStubDiagnosis.io_resolver_snippet || ''
+    if (autoStubSnippetTab === 'sysprop') return autoStubDiagnosis.sys_prop_hook_snippet || ''
+    return autoStubDiagnosis.combined_java_snippet || ''
+  })()
+
+  $: filteredJadxClasses = jadxClasses.filter((cls) => {
+    if (jadxNativeOnly && !cls.has_native) return false
+    const q = jadxClassFilter.trim().toLowerCase()
+    if (!q) return true
+    return (
+      (cls.class_name || '').toLowerCase().includes(q) ||
+      (cls.package_name || '').toLowerCase().includes(q) ||
+      (cls.simple_name || '').toLowerCase().includes(q) ||
+      (cls.native_methods || []).some((m) => m.toLowerCase().includes(q))
+    )
+  })
+
+  $: filteredJadxBindings = (jadxLinkReport?.bindings || []).filter((b) => {
+    if (jadxLinkFilter !== 'all' && b.binding_kind !== jadxLinkFilter) return false
+    return true
+  })
+
+  $: selectedTlsProfile = tlsProfiles.find((p) => p.id === tlsSelectedProfileId) || tlsProfiles[0] || null
+
+  $: cryptoOpByName = Object.fromEntries((cryptoOps || []).map((op) => [op.name, op]))
+
+  $: cryptoOpCategories = ['all', ...Array.from(new Set((cryptoOps || []).map((op) => op.category).filter(Boolean)))]
+
+  $: filteredCryptoOps = (cryptoOps || []).filter((op) => {
+    if (cryptoOpCategory !== 'all' && op.category !== cryptoOpCategory) return false
+    const q = cryptoOpSearch.trim().toLowerCase()
+    if (!q) return true
+    return (
+      (op.name || '').toLowerCase().includes(q) ||
+      (op.label || '').toLowerCase().includes(q) ||
+      (op.description || '').toLowerCase().includes(q) ||
+      (op.category || '').toLowerCase().includes(q)
+    )
+  })
+
+  $: flatProtoRows = (() => {
+    const rows = []
+    const walk = (msgNode, depth, prefix) => {
+      if (!msgNode || !Array.isArray(msgNode.fields)) return
+      msgNode.fields.forEach((field, idx) => {
+        const pathKey = prefix ? `${prefix}.${idx}` : `${idx}`
+        const hasNested = field.kind === 'message' && Boolean(field.nested)
+        const isCollapsed = collapsedProtoNodes.has(pathKey)
+        rows.push({
+          field,
+          parentMsg: msgNode,
+          indexInParent: idx,
+          pathKey,
+          depth,
+          hasNested,
+          isCollapsed,
+        })
+        if (hasNested && !isCollapsed) {
+          walk(field.nested, depth + 1, pathKey)
+        }
+      })
+    }
+    walk(protoTree, 0, '')
+    return rows
+  })()
+
+  $: dfaFaultLines = String(dfaFaultsText || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+
   // Command palette registration
   $: {
     const _t = $t
@@ -490,7 +775,7 @@
           label: `RE Lab: ${_t('reLab.tabs.native')}`,
           category: 'RE Lab',
           icon: 'cpu',
-          keywords: 'radare2 r2 elf disasm binary native',
+          keywords: 'radare2 r2 elf disasm binary native ios macho ipa symbols ida ghidra',
           run: () => (subTab = 'native'),
         },
         {
@@ -498,15 +783,26 @@
           label: `RE Lab: ${_t('reLab.tabs.emulate')}`,
           category: 'RE Lab',
           icon: 'play',
-          keywords: 'unidbg qiling angr emulate symbolic',
+          keywords: 'unidbg qiling angr emulate symbolic autostub',
           run: () => (subTab = 'emulate'),
+        },
+        {
+          id: 'relab:jadx',
+          label: `RE Lab: ${_t('reLab.tabs.jadx')}`,
+          category: 'RE Lab',
+          icon: 'file-code',
+          keywords: 'jadx dex apk decompile java jni crosslink native',
+          run: () => {
+            subTab = 'jadx'
+            if (!jadxInfo) detectJadx()
+          },
         },
         {
           id: 'relab:deobf',
           label: `RE Lab: ${_t('reLab.tabs.deobf')}`,
           category: 'RE Lab',
           icon: 'shield',
-          keywords: 'deobf ollvm antidebug vmp packer stealth',
+          keywords: 'deobf ollvm antidebug vmp packer stealth tls cert mtls flutter cronet',
           run: () => (subTab = 'deobf'),
         },
         {
@@ -515,7 +811,21 @@
           category: 'RE Lab',
           icon: 'activity',
           keywords: 'exectrace taint diff stalker tenet crypto',
-          run: () => (subTab = 'exectrace'),
+          run: () => {
+            subTab = 'exectrace'
+            loadExecTraces()
+          },
+        },
+        {
+          id: 'relab:cryptolab',
+          label: `RE Lab: ${_t('reLab.tabs.cryptolab')}`,
+          category: 'RE Lab',
+          icon: 'key',
+          keywords: 'crypto cyberchef aes sm4 chacha20 rc4 md5 sha256 protobuf dfa whitebox',
+          run: () => {
+            subTab = 'cryptolab'
+            if (!cryptoOps.length) loadCryptoOperations()
+          },
         },
       ])
     }
@@ -837,6 +1147,285 @@
     deobfView = 'audit'
     subTab = 'deobf'
     scanProtection()
+  }
+
+  // ---- Sub-Tab 1 Pro: iOS Mach-O / IPA & Symbol Bridge ----
+  async function analyzeIOSBinary() {
+    const app = api()
+    const path = binaryPath.trim()
+    if (!path) {
+      toast.warning(translate('reLab.toast.enterBinaryFirst'))
+      return
+    }
+    if (!app?.AnalyzeIOSBinary || analyzingIOS) return
+    analyzingIOS = true
+    try {
+      const res = await app.AnalyzeIOSBinary(path)
+      const isNewBinary = !iosReport || iosReport.file_path !== (res?.file_path || path)
+      iosReport = res
+      nativeMode = 'ios'
+      if (isNewBinary) {
+        iosTargetObjCClass = res?.objc_classes?.[0] || ''
+        iosTargetObjCSelector = res?.objc_selectors?.[0] || ''
+        iosTargetSymbol = ''
+        iosTargetOffset = ''
+      } else {
+        if (res?.objc_classes?.length && !iosTargetObjCClass) {
+          iosTargetObjCClass = res.objc_classes[0]
+        }
+        if (res?.objc_selectors?.length && !iosTargetObjCSelector) {
+          iosTargetObjCSelector = res.objc_selectors[0]
+        }
+      }
+      toast.success(
+        translate('reLab.toast.iosAnalyzeDone', {
+          kind: res?.file_kind || 'macho',
+          name: res?.file_name || path,
+          arches: res?.architectures?.length || 0,
+          classes: res?.objc_classes?.length || 0,
+        })
+      )
+    } catch (e) {
+      toast.error(translate('reLab.toast.iosAnalyzeFailed', { err: e?.message || e }))
+    } finally {
+      analyzingIOS = false
+    }
+  }
+
+  function selectIOSTarget(item) {
+    if (iosLeftTab === 'objc_classes') iosTargetObjCClass = item
+    else if (iosLeftTab === 'objc_selectors') iosTargetObjCSelector = item
+    else if (iosLeftTab === 'exports') iosTargetSymbol = item
+  }
+
+  async function generateUnidbgIOSHarness() {
+    const app = api()
+    if (!app?.GenerateUnidbgIOSHarness || generatingIOSHarness) return
+    generatingIOSHarness = true
+    try {
+      const isIPA = iosReport?.file_kind === 'ipa'
+      const opts = {
+        class_name: 'IOSUnidbgHarness',
+        bundle_id: iosReport?.info_plist?.bundle_id || '',
+        binary_path: isIPA ? '' : (iosReport?.file_path || binaryPath.trim()),
+        ipa_path: isIPA ? (iosReport?.file_path || binaryPath.trim()) : '',
+        target_symbol: iosTargetSymbol.trim(),
+        objc_class: iosTargetObjCClass.trim(),
+        objc_selector: iosTargetObjCSelector.trim(),
+        target_offset: iosTargetOffset.trim(),
+        args: [],
+      }
+      const script = await app.GenerateUnidbgIOSHarness(opts)
+      if (script) {
+        loadScriptIntoEmulation(
+          script.name || 'Unidbg iOS Harness',
+          'unidbg',
+          script.description || script.summary || '',
+          script.code || '',
+          {
+            binary_path: iosReport?.file_path || binaryPath.trim(),
+            target_class: opts.objc_class,
+            target_method: opts.objc_selector,
+            target_addr: opts.target_offset,
+          }
+        )
+        toast.success(translate('reLab.toast.iosHarnessLoaded', { name: script.name || 'Unidbg iOS' }))
+      }
+    } catch (e) {
+      toast.error(translate('reLab.toast.scriptGenFailed', { err: e?.message || e }))
+    } finally {
+      generatingIOSHarness = false
+    }
+  }
+
+  async function generateIOSStealthScript() {
+    const app = api()
+    if (!app?.GenerateIOSStealthScript || generatingIOSStealth) return
+    generatingIOSStealth = true
+    try {
+      const opts = {
+        bundle_id: iosReport?.info_plist?.bundle_id || '',
+        target_binary: iosReport?.main_binary_name || iosReport?.file_name || '',
+        bypass_ptrace: true,
+        bypass_sysctl: true,
+        bypass_getppid: true,
+        bypass_dyld_checks: true,
+        bypass_jailbreak_checks: true,
+      }
+      const script = await app.GenerateIOSStealthScript(opts)
+      if (script) {
+        sendScriptToFrida(
+          script.name || 'iOS Stealth Suite',
+          'anti-detect',
+          script.description || script.summary || '',
+          script.code || '',
+          opts.bundle_id
+        )
+        toast.success(translate('reLab.toast.iosStealthOpened'))
+      }
+    } catch (e) {
+      toast.error(translate('reLab.toast.scriptGenFailed', { err: e?.message || e }))
+    } finally {
+      generatingIOSStealth = false
+    }
+  }
+
+  function buildCurrentSymbolBundle() {
+    const byAddr = new Map()
+    const addSym = (item, fallbackType) => {
+      const addr = item?.addr || (item?.offset ? formatHex(item.offset) : '')
+      const name = String(item?.name || '').trim()
+      if (!addr || addr === '—' || !name) return
+      const key = addr.toLowerCase()
+      if (!byAddr.has(key)) {
+        byAddr.set(key, {
+          name,
+          address: addr,
+          size: Number(item?.size) || 0,
+          signature: item?.signature || '',
+          type: item?.type || fallbackType,
+          comment: appliedSymbolComments[key] || '',
+        })
+      }
+    }
+    for (const fn of binaryAnalysis?.functions || []) addSym(fn, 'function')
+    for (const ex of binaryAnalysis?.exports || []) addSym(ex, 'export')
+    for (const fn of importedSymbolBundle?.functions || []) {
+      if (fn?.address && fn?.name) {
+        byAddr.set(fn.address.toLowerCase(), { ...fn })
+      }
+    }
+
+    const comments = []
+    const seenCmt = new Set()
+    const pushCmt = (address, text, repeatable = false) => {
+      const a = String(address || '').trim()
+      const tx = String(text || '').trim()
+      if (!a || !tx) return
+      const k = `${a.toLowerCase()}:${tx}`
+      if (seenCmt.has(k)) return
+      seenCmt.add(k)
+      comments.push({ address: a, text: tx, repeatable: Boolean(repeatable) })
+    }
+    for (const c of importedSymbolBundle?.comments || []) pushCmt(c.address, c.text, c.repeatable)
+    for (const c of symCustomComments) pushCmt(c.address, c.text, c.repeatable)
+
+    return {
+      version: '1.0',
+      binary_name:
+        binaryAnalysis?.file_name ||
+        iosReport?.main_binary_name ||
+        iosReport?.file_name ||
+        importedSymbolBundle?.binary_name ||
+        (binaryPath.trim().split(/[/\\]/).pop() || 'target.so'),
+      arch: binaryAnalysis?.arch || iosReport?.architectures?.[0]?.arch || importedSymbolBundle?.arch || 'arm64',
+      image_base: symImageBase.trim() || '0x0',
+      functions: Array.from(byAddr.values()),
+      comments,
+      jni_bindings: jadxLinkReport?.bindings?.length
+        ? jadxLinkReport.bindings
+        : (importedSymbolBundle?.jni_bindings || []),
+    }
+  }
+
+  function addCustomSymbolComment() {
+    const rawAddr = (symNewCmtAddr.trim() || functionDetail?.addr || '').trim()
+    const text = symNewCmtText.trim()
+    if (!rawAddr || !text) return
+    const parsed = parseAddrNumber(rawAddr)
+    if (!parsed.ok) {
+      toast.warning(translate('reLab.toast.invalidHexAddr', { val: rawAddr }))
+      return
+    }
+    const normAddr = `0x${parsed.value.toString(16)}`
+    symCustomComments = [...symCustomComments, { address: normAddr, text, repeatable: false }]
+    appliedSymbolComments = { ...appliedSymbolComments, [normAddr.toLowerCase()]: text }
+    symNewCmtAddr = normAddr
+    symNewCmtText = ''
+  }
+
+  function clearCustomSymbolComments() {
+    if (!symCustomComments.length) return
+    const customAddrs = new Set(symCustomComments.map((c) => String(c.address || '').toLowerCase()))
+    const nextApplied = { ...appliedSymbolComments }
+    for (const addr of customAddrs) {
+      delete nextApplied[addr]
+    }
+    // Re-apply any imported annotations that may have shared an address
+    for (const c of importedSymbolBundle?.comments || []) {
+      if (c.address && c.text) nextApplied[c.address.toLowerCase()] = c.text
+    }
+    for (const fn of importedSymbolBundle?.functions || []) {
+      if (fn.address && (fn.comment || fn.name) && !(fn.address.toLowerCase() in nextApplied)) {
+        nextApplied[fn.address.toLowerCase()] = fn.comment ? `${fn.name}: ${fn.comment}` : fn.name
+      }
+    }
+    symCustomComments = []
+    appliedSymbolComments = nextApplied
+  }
+
+  async function exportSymbolBridge() {
+    const app = api()
+    if (!app?.ExportSymbolScript || exportingSymbols) return
+    exportingSymbols = true
+    try {
+      const bundle = buildCurrentSymbolBundle()
+      symExportOutput = await app.ExportSymbolScript(bundle, symExportFormat)
+      toast.success(translate('reLab.toast.symExportDone', { format: symExportFormat.toUpperCase() }))
+    } catch (e) {
+      toast.error(translate('reLab.toast.symExportFailed', { err: e?.message || e }))
+    } finally {
+      exportingSymbols = false
+    }
+  }
+
+  function downloadSymbolBridge() {
+    if (!symExportOutput) return
+    const base = (binaryAnalysis?.file_name || iosReport?.file_name || 'symbols').replace(/[^a-zA-Z0-9._-]+/g, '_')
+    const ext = symExportFormat === 'json' ? 'json' : `${symExportFormat}.py`
+    downloadTextFile(`${base}.${ext}`, symExportOutput)
+  }
+
+  async function importSymbolBridge() {
+    const app = api()
+    if (!app?.ImportSymbolBundleJSON || importingSymbols || !symImportRaw.trim()) return
+    importingSymbols = true
+    try {
+      const bundle = await app.ImportSymbolBundleJSON(symImportRaw)
+      importedSymbolBundle = bundle
+      toast.success(
+        translate('reLab.toast.symImportDone', {
+          binary: bundle?.binary_name || 'binary',
+          funcs: bundle?.functions?.length || 0,
+          comments: bundle?.comments?.length || 0,
+        })
+      )
+    } catch (e) {
+      toast.error(translate('reLab.toast.symImportFailed', { err: e?.message || e }))
+    } finally {
+      importingSymbols = false
+    }
+  }
+
+  function applyImportedSymbols() {
+    if (!importedSymbolBundle) return
+    const nextComments = { ...appliedSymbolComments }
+    let count = 0
+    for (const c of importedSymbolBundle.comments || []) {
+      if (c.address && c.text) {
+        nextComments[c.address.toLowerCase()] = c.text
+        count++
+      }
+    }
+    for (const fn of importedSymbolBundle.functions || []) {
+      if (fn.address && (fn.comment || fn.name)) {
+        const key = fn.address.toLowerCase()
+        nextComments[key] = fn.comment ? `${fn.name}: ${fn.comment}` : fn.name
+        count++
+      }
+    }
+    appliedSymbolComments = nextComments
+    toast.success(translate('reLab.toast.symApplied', { count }))
   }
 
   // ==================== Sub-Tab 2 Actions: Emulation & Symbolic ====================
@@ -1222,6 +1811,276 @@
     expandedJobEvents = next
   }
 
+  // ---- Sub-Tab 2 Pro: Auto-Stub Assistant ----
+  function pullConsoleLogsForAutoStub() {
+    const lines = (jobEvents || [])
+      .filter((ev) => ev && (ev.stream === 'stdout' || ev.stream === 'stderr' || ev.level === 'error'))
+      .map((ev) => ev.raw || ev.message || '')
+      .filter(Boolean)
+    autoStubRawLog = lines.join('\n')
+  }
+
+  function openAutoStubAssistant() {
+    showAutoStubDrawer = !showAutoStubDrawer
+    if (showAutoStubDrawer) {
+      if (!autoStubRawLog.trim() && jobEvents.length > 0) {
+        pullConsoleLogsForAutoStub()
+      }
+      if (autoStubRawLog.trim()) {
+        analyzeUnidbgLog()
+      }
+    }
+  }
+
+  async function analyzeUnidbgLog() {
+    const app = api()
+    if (!app?.AnalyzeUnidbgLog || analyzingAutoStub) return
+    analyzingAutoStub = true
+    try {
+      const diag = await app.AnalyzeUnidbgLog(autoStubRawLog)
+      autoStubDiagnosis = diag
+      const tabMap = {
+        combined: diag?.combined_java_snippet,
+        jni: diag?.abstract_jni_snippet,
+        io: diag?.io_resolver_snippet,
+        sysprop: diag?.sys_prop_hook_snippet,
+      }
+      if (!tabMap[autoStubSnippetTab]) {
+        autoStubSnippetTab = 'combined'
+      }
+      toast.success(translate('reLab.toast.autoStubDone', { count: diag?.total_errors || 0 }))
+    } catch (e) {
+      toast.error(e?.message || String(e))
+    } finally {
+      analyzingAutoStub = false
+    }
+  }
+
+  function appendAutoStubToEditor() {
+    const snippet = (activeAutoStubSnippet || autoStubDiagnosis?.combined_java_snippet || '').trim()
+    if (!snippet) return
+    const cur = String(projCode || '')
+    const lastBrace = cur.lastIndexOf('}')
+    let nextCode
+    if (lastBrace !== -1) {
+      const before = cur.slice(0, lastBrace).trimEnd()
+      const after = cur.slice(lastBrace)
+      nextCode = `${before}\n\n    // ─── Auto-Stub Assistant Generated Methods ───\n${snippet}\n${after}`
+    } else {
+      nextCode = cur ? `${cur}\n\n${snippet}\n` : `${snippet}\n`
+    }
+    projCode = nextCode
+    projDirty = true
+    emuEditorRef?.replaceValue?.(nextCode, { undoable: true })
+    toast.success(translate('reLab.toast.autoStubAppended'))
+  }
+
+  async function generateFridaEnvSnapshot() {
+    const app = api()
+    if (!app?.GenerateFridaEnvSnapshotScript || generatingEnvSnap) return
+    generatingEnvSnap = true
+    try {
+      const pkg = autoStubPkg.trim() || stealthOpts.target_package || genTargetPkg || ''
+      const script = await app.GenerateFridaEnvSnapshotScript(pkg)
+      if (script) {
+        sendScriptToFrida(
+          script.name || 'Frida Env Snapshot',
+          'trace',
+          script.description || script.summary || '',
+          script.code || '',
+          pkg
+        )
+        toast.success(translate('reLab.toast.fridaSnapshotOpened'))
+      }
+    } catch (e) {
+      toast.error(translate('reLab.toast.scriptGenFailed', { err: e?.message || e }))
+    } finally {
+      generatingEnvSnap = false
+    }
+  }
+
+  // ==================== Sub-Tab 3 Actions: JADX & Java<->JNI Cross-Link ====================
+  async function detectJadx() {
+    const app = api()
+    if (!app?.DetectJadx || probingJadx) return
+    probingJadx = true
+    try {
+      jadxInfo = await app.DetectJadx('')
+    } catch (_) {}
+    finally {
+      probingJadx = false
+    }
+  }
+
+  async function decompileWithJadx() {
+    const app = api()
+    const path = jadxApkPath.trim()
+    if (!path) {
+      toast.warning(translate('reLab.toast.enterApkFirst'))
+      return
+    }
+    if (!app?.DecompileAPKWithJadx || decompilingJadx) return
+    decompilingJadx = true
+    try {
+      const ws = await app.DecompileAPKWithJadx(path, 2000)
+      jadxWorkspace = ws
+      jadxSelectedClass = ''
+      jadxClassSource = null
+      jadxSearchHits = []
+      jadxLinkReport = null
+      jadxLeftTab = 'classes'
+      if (ws?.workspace_dir) {
+        await loadJadxClasses(ws.workspace_dir)
+      }
+      toast.success(
+        translate('reLab.toast.jadxDecompileDone', {
+          mode: ws?.mode || 'jadx',
+          classes: ws?.class_count || 0,
+          native: ws?.native_class_count || 0,
+        })
+      )
+    } catch (e) {
+      toast.error(translate('reLab.toast.jadxDecompileFailed', { err: e?.message || e }))
+    } finally {
+      decompilingJadx = false
+    }
+  }
+
+  async function loadJadxClasses(wsDir = '') {
+    const app = api()
+    const dir = wsDir || jadxWorkspace?.workspace_dir
+    if (!app?.ListJadxClasses || !dir) return
+    try {
+      const list = await app.ListJadxClasses(dir, '', 2000)
+      jadxClasses = Array.isArray(list) ? list : []
+      const firstNative = jadxClasses.find((c) => c.has_native)
+      const pick = firstNative || jadxClasses[0]
+      if (pick && !jadxSelectedClass) {
+        readJadxClassSource(pick.class_name)
+      }
+    } catch (e) {
+      toast.error(e?.message || String(e))
+    }
+  }
+
+  async function readJadxClassSource(className) {
+    const app = api()
+    const dir = jadxWorkspace?.workspace_dir
+    if (!app?.ReadJadxClassSource || !dir || !className) return
+    jadxSelectedClass = className
+    loadingJadxSource = true
+    try {
+      const src = await app.ReadJadxClassSource(dir, className)
+      jadxClassSource = src
+      tick().then(() => jadxEditorRef?.resetHistory?.(src?.source || ''))
+    } catch (e) {
+      toast.error(e?.message || String(e))
+    } finally {
+      loadingJadxSource = false
+    }
+  }
+
+  async function searchJadxSource() {
+    const app = api()
+    const dir = jadxWorkspace?.workspace_dir
+    const q = jadxSearchQuery.trim()
+    if (!app?.SearchJadxSource || !dir || !q || searchingJadx) return
+    searchingJadx = true
+    try {
+      const hits = await app.SearchJadxSource(dir, q, 200)
+      jadxSearchHits = Array.isArray(hits) ? hits : []
+      jadxLeftTab = 'search'
+      toast.success(translate('reLab.toast.jadxSearchDone', { count: jadxSearchHits.length }))
+    } catch (e) {
+      toast.error(translate('reLab.toast.jadxSearchFailed', { err: e?.message || e }))
+    } finally {
+      searchingJadx = false
+    }
+  }
+
+  async function linkJavaToNative() {
+    const app = api()
+    const dir = jadxWorkspace?.workspace_dir
+    if (!app?.LinkJavaToNative || !dir || linkingJadx) return
+    linkingJadx = true
+    try {
+      const report = await app.LinkJavaToNative(dir, jadxSoPath.trim(), jadxRegisterNativesJSON.trim())
+      jadxLinkReport = report
+      toast.success(
+        translate('reLab.toast.jadxLinkDone', {
+          total: report?.total_native_methods || 0,
+          static: report?.static_count || 0,
+          dynamic: report?.dynamic_count || 0,
+          unresolved: report?.unresolved_count || 0,
+        })
+      )
+    } catch (e) {
+      toast.error(translate('reLab.toast.jadxLinkFailed', { err: e?.message || e }))
+    } finally {
+      linkingJadx = false
+    }
+  }
+
+  async function inspectJadxBindingInR2(binding) {
+    const soPath = jadxLinkReport?.so_path || jadxSoPath.trim()
+    const targetSym = binding?.native_addr || binding?.native_symbol || binding?.mangled_name || ''
+    if (soPath) {
+      binaryPath = soPath
+    }
+    nativeMode = 'r2'
+    subTab = 'native'
+    if (soPath && binaryAnalysis?.file_path !== soPath) {
+      await analyzeBinary()
+    }
+    if (targetSym && (binaryAnalysis?.file_path || binaryPath.trim())) {
+      inspectFunction(targetSym, binding?.native_symbol || binding?.mangled_name || targetSym)
+    }
+  }
+
+  async function emulateJadxBindingInUnidbg(binding) {
+    const app = api()
+    const soPath = jadxLinkReport?.so_path || jadxSoPath.trim()
+    const apk = jadxWorkspace?.apk_path || jadxApkPath.trim()
+    const javaCls = String(binding?.java_class || '').replace(/\./g, '/')
+    const javaMethod = `${binding?.java_method || ''}${binding?.java_signature || ''}`
+    const sym = binding?.native_symbol || binding?.mangled_name || ''
+    const addr = binding?.native_addr || ''
+
+    if (app?.GenerateREHarnessFromTrace) {
+      try {
+        const harness = await app.GenerateREHarnessFromTrace('unidbg', {
+          binary_path: soPath,
+          so_file: soPath,
+          apk_path: apk,
+          target_class: javaCls,
+          target_method: javaMethod,
+          target_symbol: sym,
+          target_addr: addr,
+          arch: jadxLinkReport?.so_arch || 'arm64',
+        })
+        if (harness) {
+          applyGeneratedHarness(harness)
+          subTab = 'emulate'
+          toast.success(translate('reLab.toast.harnessGenerated', { engine: 'unidbg', name: harness.name }))
+          return
+        }
+      } catch (_) {}
+    }
+
+    projId = ''
+    projEngine = 'unidbg'
+    projName = `Unidbg · ${binding?.java_method || sym || 'native'}`
+    projBinaryPath = soPath
+    projAPKPath = apk
+    projTargetClass = javaCls
+    projTargetMethod = javaMethod
+    projTargetSymbol = sym
+    projTargetAddr = addr
+    projBuiltin = false
+    projDirty = true
+    subTab = 'emulate'
+  }
+
   // ==================== Sub-Tab 3 Actions: Deobf · Anti-Debug · VMP ====================
   function deriveStealthOptsFromReport(report, prevOpts, scannedPath) {
     // Mirrors deobf.StealthOptionsFromReport so UI toggles and generated scripts
@@ -1420,6 +2279,124 @@
       toast.error(translate('reLab.toast.vmpAnalyzeFailed', { err: e?.message || e }))
     } finally {
       analyzingVmpTrace = false
+    }
+  }
+
+  // ---- Sub-Tab 4 Pro: TLS / APK Certs / mTLS / Local-Proxy Compat ----
+  async function loadTlsEnvironment() {
+    const app = api()
+    if (!app || loadingTlsProfiles) return
+    loadingTlsProfiles = true
+    try {
+      const [profiles, curlInfo] = await Promise.all([
+        app.ListTLSProfiles?.().catch(() => []),
+        app.DetectCurlImpersonate?.().catch(() => null),
+      ])
+      if (Array.isArray(profiles) && profiles.length > 0) {
+        tlsProfiles = profiles
+        if (!tlsSelectedProfileId || !profiles.some((p) => p.id === tlsSelectedProfileId)) {
+          tlsSelectedProfileId = profiles[0].id
+        }
+        await selectTlsProfile(tlsSelectedProfileId)
+      }
+      if (curlInfo) tlsCurlInfo = curlInfo
+    } finally {
+      loadingTlsProfiles = false
+    }
+  }
+
+  let tlsJa3ReqSeq = 0
+
+  async function selectTlsProfile(profileId) {
+    tlsSelectedProfileId = profileId
+    const reqId = ++tlsJa3ReqSeq
+    if (tlsProfileJA3?.profile_id !== profileId) {
+      tlsProfileJA3 = null
+    }
+    const app = api()
+    if (!app?.ComputeTLSProfileJA3 || !profileId) return
+    try {
+      const res = await app.ComputeTLSProfileJA3(profileId)
+      if (reqId === tlsJa3ReqSeq && tlsSelectedProfileId === profileId) {
+        tlsProfileJA3 = res
+      }
+    } catch (_) {}
+  }
+
+  async function scanApkCertificates() {
+    const app = api()
+    const path = tlsApkPath.trim() || scanPath.trim()
+    if (!path) {
+      toast.warning(translate('reLab.toast.enterApkFirst'))
+      return
+    }
+    if (!tlsApkPath.trim()) tlsApkPath = path
+    if (!app?.ScanAPKForCertificates || scanningTlsCerts) return
+    scanningTlsCerts = true
+    try {
+      const rep = await app.ScanAPKForCertificates(path)
+      tlsCertReport = rep
+      toast.success(
+        translate('reLab.toast.tlsCertScanDone', {
+          certs: rep?.certificates?.length || 0,
+          pins: rep?.pins?.length || 0,
+          keystores: rep?.keystores?.length || 0,
+        })
+      )
+    } catch (e) {
+      toast.error(translate('reLab.toast.tlsCertScanFailed', { err: e?.message || e }))
+    } finally {
+      scanningTlsCerts = false
+    }
+  }
+
+  async function validateMtlsKeyPair() {
+    const app = api()
+    if (!app?.ValidateMTLSKeyPair || validatingMtls) return
+    validatingMtls = true
+    try {
+      const res = await app.ValidateMTLSKeyPair(tlsMtlsCertPath.trim(), tlsMtlsKeyPath.trim())
+      tlsMtlsResult = res
+      toast.success(
+        translate('reLab.toast.mtlsValidateDone', {
+          status: res?.valid ? 'VALID' : 'INVALID',
+        })
+      )
+    } catch (e) {
+      toast.error(translate('reLab.toast.mtlsValidateFailed', { err: e?.message || e }))
+    } finally {
+      validatingMtls = false
+    }
+  }
+
+  async function generateTlsCompatScript() {
+    const app = api()
+    if (!app || generatingTlsScript) return
+    generatingTlsScript = true
+    try {
+      let res = null
+      if (tlsCompatKind === 'flutter') {
+        res = await app.GenerateFlutterProxyDebugScript?.({
+          ...tlsFlutterOpts,
+          proxy_port: Number(tlsFlutterOpts.proxy_port) || 8080,
+        })
+      } else if (tlsCompatKind === 'cronet') {
+        res = await app.GenerateCronetHTTP2Script?.({ ...tlsCronetOpts })
+      } else {
+        res = await app.GenerateMTLSObserverScript?.({
+          ...tlsMtlsObsOpts,
+          max_aliases_per_store: Number(tlsMtlsObsOpts.max_aliases_per_store) || 32,
+        })
+      }
+      if (res) {
+        tlsGeneratedScript = res
+        tlsEditorRef?.resetHistory?.(res.code || '')
+        toast.success(translate('reLab.toast.tlsCompatGenerated', { name: res.name || tlsCompatKind }))
+      }
+    } catch (e) {
+      toast.error(translate('reLab.toast.scriptGenFailed', { err: e?.message || e }))
+    } finally {
+      generatingTlsScript = false
     }
   }
 
@@ -1690,6 +2667,416 @@
     collapsedCallNodes = next
   }
 
+  // ==================== Sub-Tab 6 Actions: CryptoLab (Pipeline · Protobuf · DFA) ====================
+  async function loadCryptoOperations() {
+    const app = api()
+    if (!app?.ListCryptoOperations || loadingCryptoOps) return
+    loadingCryptoOps = true
+    try {
+      const list = await app.ListCryptoOperations()
+      cryptoOps = Array.isArray(list) ? list : []
+    } catch (_) {}
+    finally {
+      loadingCryptoOps = false
+    }
+  }
+
+  function addCryptoStep(opSpec) {
+    if (!opSpec) return
+    const params = {}
+    for (const p of opSpec.params || []) {
+      params[p.name] = p.default !== undefined && p.default !== null ? String(p.default) : ''
+    }
+    cryptoSteps = [
+      ...cryptoSteps,
+      {
+        uid: `${opSpec.name}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        op: opSpec.name,
+        params,
+        disabled: false,
+      },
+    ]
+  }
+
+  function removeCryptoStep(idx) {
+    cryptoSteps = cryptoSteps.filter((_, i) => i !== idx)
+  }
+
+  function moveCryptoStep(idx, dir) {
+    const target = idx + dir
+    if (target < 0 || target >= cryptoSteps.length) return
+    const next = [...cryptoSteps]
+    const [item] = next.splice(idx, 1)
+    next.splice(target, 0, item)
+    cryptoSteps = next
+  }
+
+  function toggleCryptoStep(idx) {
+    cryptoSteps = cryptoSteps.map((s, i) => (i === idx ? { ...s, disabled: !s.disabled } : s))
+  }
+
+  function updateCryptoStepParam(idx, paramName, val) {
+    cryptoSteps = cryptoSteps.map((s, i) =>
+      i === idx
+        ? { ...s, params: { ...(s.params || {}), [paramName]: String(val ?? '') } }
+        : s
+    )
+  }
+
+  async function runCryptoPipeline() {
+    const app = api()
+    if (!app?.RunCryptoPipeline || runningCrypto) return
+    runningCrypto = true
+    try {
+      const stepsPayload = cryptoSteps.map((s) => {
+        const cleanParams = {}
+        for (const [k, v] of Object.entries(s.params || {})) {
+          cleanParams[k] = String(v ?? '')
+        }
+        return {
+          op: s.op,
+          params: cleanParams,
+          disabled: Boolean(s.disabled),
+        }
+      })
+      const res = await app.RunCryptoPipeline({
+        input: cryptoInput,
+        input_encoding: cryptoInputEncoding,
+        steps: stepsPayload,
+      })
+      cryptoResult = res
+      if (res && !res.success && res.error) {
+        toast.error(translate('reLab.toast.cryptoRunFailed', { err: res.error }))
+      }
+    } catch (e) {
+      toast.error(translate('reLab.toast.cryptoRunFailed', { err: e?.message || e }))
+    } finally {
+      runningCrypto = false
+    }
+  }
+
+  async function identifyCryptoPayload() {
+    const app = api()
+    if (!app?.IdentifyCryptoPayload || identifyingCrypto || !cryptoInput.trim()) return
+    identifyingCrypto = true
+    try {
+      const res = await app.IdentifyCryptoPayload(cryptoInput)
+      cryptoIdentify = res
+      toast.success(
+        translate('reLab.toast.cryptoIdentified', {
+          count: res?.candidates?.length || 0,
+          entropy: (res?.entropy || 0).toFixed(2),
+        })
+      )
+    } catch (e) {
+      toast.error(e?.message || String(e))
+    } finally {
+      identifyingCrypto = false
+    }
+  }
+
+  async function applyCryptoRecipe(recipe) {
+    if (!recipe) return
+    if (recipe.input_encoding) {
+      cryptoInputEncoding = recipe.input_encoding
+    }
+    cryptoSteps = (recipe.steps || []).map((st, idx) => {
+      const spec = cryptoOpByName[st.op]
+      const defaults = {}
+      for (const p of spec?.params || []) {
+        defaults[p.name] = p.default !== undefined && p.default !== null ? String(p.default) : ''
+      }
+      const merged = { ...defaults }
+      for (const [k, v] of Object.entries(st.params || {})) {
+        merged[k] = String(v ?? '')
+      }
+      return {
+        uid: `${st.op}_${Date.now()}_${idx}`,
+        op: st.op,
+        params: merged,
+        disabled: Boolean(st.disabled),
+      }
+    })
+    await runCryptoPipeline()
+  }
+
+  function swapCryptoOutputToInput() {
+    if (!cryptoResult) return
+    if (cryptoOutputTab === 'hex') {
+      cryptoInput = cryptoResult.output_hex || ''
+      cryptoInputEncoding = 'hex'
+    } else if (cryptoOutputTab === 'base64') {
+      cryptoInput = cryptoResult.output_base64 || ''
+      cryptoInputEncoding = 'base64'
+    } else {
+      cryptoInput = cryptoResult.output_utf8 || ''
+      cryptoInputEncoding = 'utf8'
+    }
+  }
+
+  function toggleCryptoStepTrace(idx) {
+    const next = new Set(expandedCryptoSteps)
+    if (next.has(idx)) next.delete(idx)
+    else next.add(idx)
+    expandedCryptoSteps = next
+  }
+
+  // ---- Protobuf Wire Inspector ----
+  async function decodeProtobuf() {
+    const app = api()
+    if (!app?.DecodeProtobufRawHex || decodingProto || !protoInput.trim()) return
+    decodingProto = true
+    try {
+      const tree = await app.DecodeProtobufRawHex(protoInput.trim())
+      protoTree = tree
+      protoEncodedHex = ''
+      collapsedProtoNodes = new Set()
+      toast.success(translate('reLab.toast.protoDecodeDone', { count: tree?.fields?.length || 0 }))
+    } catch (e) {
+      toast.error(translate('reLab.toast.protoDecodeFailed', { err: e?.message || e }))
+    } finally {
+      decodingProto = false
+    }
+  }
+
+  function sanitizeProtoMessageForEncode(msg) {
+    if (!msg || !Array.isArray(msg.fields)) {
+      return { fields: [], byte_len: 0 }
+    }
+    const cleanNum = (v, isFloat = false) => {
+      if (v === null || v === undefined || v === '') return undefined
+      const s = String(v).trim()
+      if (!s || s === '-' || s === '+' || s === '.' || s === '-.' || s === '+.') return undefined
+      const n = isFloat ? Number.parseFloat(s) : Number.parseInt(s, 10)
+      return Number.isFinite(n) ? n : undefined
+    }
+    const fields = msg.fields.map((f) => {
+      const hasDraft = f._draft !== undefined
+      const out = {
+        field_number: Math.max(1, Number.parseInt(String(f.field_number || 1), 10) || 1),
+        wire_type: Number(f.wire_type ?? 0),
+        wire_type_name: f.wire_type_name || '',
+        kind: f.kind || 'varint',
+      }
+      if (out.wire_type === 0) {
+        if (out.kind === 'sint64') out.varint_s64 = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.varint_s64) ?? 0
+        else if (out.kind === 'int64') out.varint_i64 = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.varint_i64) ?? 0
+        else out.varint_u64 = Math.max(0, (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.varint_u64) ?? 0)
+      } else if (out.wire_type === 1) {
+        if (out.kind === 'double') out.double_val = (hasDraft ? cleanNum(f._draft, true) : undefined) ?? cleanNum(f.double_val, true) ?? 0
+        else if (out.kind === 'sfixed64') out.fixed64_s = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed64_s) ?? 0
+        else out.fixed64_u = Math.max(0, (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed64_u) ?? 0)
+      } else if (out.wire_type === 5) {
+        if (out.kind === 'float') out.float_val = (hasDraft ? cleanNum(f._draft, true) : undefined) ?? cleanNum(f.float_val, true) ?? 0
+        else if (out.kind === 'sfixed32') out.fixed32_s = (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed32_s) ?? 0
+        else out.fixed32_u = Math.max(0, (hasDraft ? cleanNum(f._draft) : undefined) ?? cleanNum(f.fixed32_u) ?? 0)
+      } else if (out.wire_type === 2) {
+        if (out.kind === 'message') {
+          out.nested = sanitizeProtoMessageForEncode(f.nested || { fields: [] })
+        } else if (out.kind === 'bytes') {
+          out.bytes_hex = String(hasDraft ? f._draft : (f.bytes_hex || ''))
+        } else {
+          out.string_val = String(hasDraft ? f._draft : (f.string_val ?? ''))
+        }
+      }
+      return out
+    })
+    return { fields, byte_len: msg.byte_len || 0 }
+  }
+
+  async function encodeProtobuf() {
+    const app = api()
+    if (!app?.EncodeProtobufRawHex || !protoTree || encodingProto) return
+    encodingProto = true
+    try {
+      const payload = sanitizeProtoMessageForEncode(protoTree)
+      const hexOut = await app.EncodeProtobufRawHex(payload)
+      protoEncodedHex = hexOut || ''
+      toast.success(translate('reLab.toast.protoEncodeDone', { bytes: Math.floor(protoEncodedHex.length / 2) }))
+    } catch (e) {
+      toast.error(translate('reLab.toast.protoEncodeFailed', { err: e?.message || e }))
+    } finally {
+      encodingProto = false
+    }
+  }
+
+  function protoFieldDisplayValue(field) {
+    if (!field) return ''
+    if (field._draft !== undefined) return String(field._draft)
+    if (field.wire_type === 0) {
+      if (field.kind === 'sint64') return String(field.varint_s64 ?? 0)
+      if (field.kind === 'int64') return String(field.varint_i64 ?? 0)
+      return String(field.varint_u64 ?? 0)
+    }
+    if (field.wire_type === 1) {
+      if (field.kind === 'double') return String(field.double_val ?? 0)
+      if (field.kind === 'sfixed64') return String(field.fixed64_s ?? 0)
+      return String(field.fixed64_u ?? 0)
+    }
+    if (field.wire_type === 5) {
+      if (field.kind === 'float') return String(field.float_val ?? 0)
+      if (field.kind === 'sfixed32') return String(field.fixed32_s ?? 0)
+      return String(field.fixed32_u ?? 0)
+    }
+    if (field.kind === 'bytes') return String(field.bytes_hex ?? '')
+    return String(field.string_val ?? '')
+  }
+
+  function updateProtoFieldValue(field, rawVal) {
+    if (!field) return
+    const str = String(rawVal ?? '')
+    field._draft = str
+    const trimmed = str.trim()
+    const isInt = /^[+-]?\d+$/.test(trimmed)
+    const isFloat = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)
+    if (field.wire_type === 0) {
+      if (isInt) {
+        const n = Number.parseInt(trimmed, 10)
+        if (Number.isFinite(n)) {
+          if (field.kind === 'sint64') field.varint_s64 = n
+          else if (field.kind === 'int64') field.varint_i64 = n
+          else field.varint_u64 = Math.max(0, n)
+        }
+      }
+    } else if (field.wire_type === 1) {
+      if (field.kind === 'double') {
+        if (isFloat) {
+          const f = Number.parseFloat(trimmed)
+          if (Number.isFinite(f)) field.double_val = f
+        }
+      } else if (isInt) {
+        const n = Number.parseInt(trimmed, 10)
+        if (Number.isFinite(n)) {
+          if (field.kind === 'sfixed64') field.fixed64_s = n
+          else field.fixed64_u = Math.max(0, n)
+        }
+      }
+    } else if (field.wire_type === 5) {
+      if (field.kind === 'float') {
+        if (isFloat) {
+          const f = Number.parseFloat(trimmed)
+          if (Number.isFinite(f)) field.float_val = f
+        }
+      } else if (isInt) {
+        const n = Number.parseInt(trimmed, 10)
+        if (Number.isFinite(n)) {
+          if (field.kind === 'sfixed32') field.fixed32_s = n
+          else field.fixed32_u = Math.max(0, n)
+        }
+      }
+    } else if (field.wire_type === 2) {
+      if (field.kind === 'bytes') field.bytes_hex = str
+      else field.string_val = str
+    }
+    protoTree = protoTree
+  }
+
+  function updateProtoFieldKind(field, nextKind) {
+    if (!field) return
+    delete field._draft
+    field.kind = nextKind
+    if (field.wire_type === 2 && nextKind === 'message' && !field.nested) {
+      field.nested = { fields: [], byte_len: 0 }
+    }
+    protoTree = protoTree
+  }
+
+  function addProtoField(targetMsg = null) {
+    if (!protoTree) {
+      protoTree = { fields: [], byte_len: 0 }
+    }
+    const container = targetMsg || protoTree
+    if (!Array.isArray(container.fields)) container.fields = []
+    const maxNum = container.fields.reduce((m, f) => Math.max(m, Number(f.field_number) || 0), 0)
+    container.fields.push({
+      field_number: maxNum + 1,
+      wire_type: 2,
+      wire_type_name: 'length_delimited',
+      kind: 'string',
+      string_val: '',
+      bytes_hex: '',
+    })
+    protoTree = protoTree
+  }
+
+  function removeProtoField(parentMsg, indexInParent) {
+    if (!parentMsg || !Array.isArray(parentMsg.fields)) return
+    parentMsg.fields.splice(indexInParent, 1)
+    protoTree = protoTree
+  }
+
+  function toggleProtoCollapse(pathKey) {
+    const next = new Set(collapsedProtoNodes)
+    if (next.has(pathKey)) next.delete(pathKey)
+    else next.add(pathKey)
+    collapsedProtoNodes = next
+  }
+
+  // ---- White-Box AES-128 Round-9 DFA ----
+  async function solveAes128Dfa() {
+    const app = api()
+    if (!app?.SolveAES128DFA || solvingDfa) return
+    solvingDfa = true
+    try {
+      const res = await app.SolveAES128DFA({
+        valid_ciphertext_hex: dfaValidHex.trim(),
+        faulty_ciphertexts_hex: dfaFaultLines,
+        plaintext_hex: dfaPlaintextHex.trim(),
+      })
+      dfaResult = res
+      if (res?.solved) {
+        toast.success(translate('reLab.toast.dfaSolved', { key: res.master_key_hex }))
+      } else {
+        const solvedCols = (res?.columns || []).filter((c) => c.solved).length
+        toast.info(translate('reLab.toast.dfaPartial', { solved: solvedCols }))
+      }
+    } catch (e) {
+      toast.error(translate('reLab.toast.dfaFailed', { err: e?.message || e }))
+    } finally {
+      solvingDfa = false
+    }
+  }
+
+  async function generateDfaScript() {
+    const app = api()
+    if (!app?.GenerateDFAFaultScript || generatingDfaScript) return
+    generatingDfaScript = true
+    try {
+      const xorVal = Math.max(1, Math.min(255, Number(dfaScriptCfg.fault_xor) || 1))
+      const fpbVal = Math.max(1, Math.min(32, Number(dfaScriptCfg.faults_per_byte) || 2))
+      const script = await app.GenerateDFAFaultScript(dfaScriptEngine, {
+        ...dfaScriptCfg,
+        plaintext_hex: dfaScriptCfg.plaintext_hex || dfaPlaintextHex.trim(),
+        fault_xor: xorVal,
+        faults_per_byte: fpbVal,
+      })
+      dfaGeneratedScript = script
+      toast.success(translate('reLab.toast.dfaScriptGenerated', { engine: dfaScriptEngine }))
+    } catch (e) {
+      toast.error(translate('reLab.toast.scriptGenFailed', { err: e?.message || e }))
+    } finally {
+      generatingDfaScript = false
+    }
+  }
+
+  function loadDfaScriptIntoEmulation() {
+    if (!dfaGeneratedScript) return
+    loadScriptIntoEmulation(
+      dfaGeneratedScript.title || `AES-128 DFA (${dfaGeneratedScript.engine})`,
+      dfaGeneratedScript.engine || dfaScriptEngine,
+      dfaGeneratedScript.description || '',
+      dfaGeneratedScript.code || '',
+      {
+        binary_path: dfaScriptCfg.binary_path,
+        apk_path: dfaScriptCfg.apk_path,
+        target_class: dfaScriptCfg.target_class,
+        target_method: dfaScriptCfg.target_method,
+        target_addr: dfaScriptCfg.target_addr,
+        rootfs: dfaScriptCfg.rootfs,
+      }
+    )
+  }
+
   // ==================== Events, Handoff & Lifecycle ====================
   function applyHandoff(h) {
     if (!h) return
@@ -1698,10 +3085,13 @@
       binaryPath = h.binaryPath
       projBinaryPath = h.binaryPath
       if (!genSoPath) genSoPath = h.binaryPath
+      if (!jadxSoPath) jadxSoPath = h.binaryPath
     }
     if (h.apkPath) {
       projAPKPath = h.apkPath
       if (!genApkPath) genApkPath = h.apkPath
+      if (!jadxApkPath) jadxApkPath = h.apkPath
+      if (!tlsApkPath) tlsApkPath = h.apkPath
     }
     if (h.engine) projEngine = h.engine
     if (h.scanPath) {
@@ -1753,8 +3143,13 @@
       loadToolchain(false),
       loadProjects(),
       loadExecTraces(),
+      detectJadx(),
+      loadCryptoOperations(),
       app?.GetREJobState?.().then((st) => { if (st) applyJobStatus(st) }).catch(() => {}),
     ])
+    if (subTab === 'deobf' && deobfView === 'tls' && !tlsProfiles.length) {
+      loadTlsEnvironment()
+    }
     if (projCode && emuEditorRef?.resetHistory) {
       emuEditorRef.resetHistory(projCode)
     }
@@ -1808,10 +3203,30 @@
       <button
         type="button"
         role="tab"
+        aria-selected={subTab === 'jadx'}
+        class="subtab-btn"
+        class:active={subTab === 'jadx'}
+        on:click={() => {
+          subTab = 'jadx'
+          if (!jadxInfo) detectJadx()
+        }}
+      >
+        <Icon name="file-code" size={13} />
+        <span>{$t('reLab.tabs.jadx')}</span>
+        {#if jadxWorkspace?.class_count > 0}
+          <span class="tab-cnt mono tabular-nums">{jadxWorkspace.class_count}</span>
+        {/if}
+      </button>
+      <button
+        type="button"
+        role="tab"
         aria-selected={subTab === 'deobf'}
         class="subtab-btn"
         class:active={subTab === 'deobf'}
-        on:click={() => (subTab = 'deobf')}
+        on:click={() => {
+          subTab = 'deobf'
+          if (deobfView === 'tls' && !tlsProfiles.length) loadTlsEnvironment()
+        }}
       >
         <Icon name="shield" size={13} />
         <span>{$t('reLab.tabs.deobf')}</span>
@@ -1832,6 +3247,20 @@
         {#if traceSessions.length > 0}
           <span class="tab-cnt mono tabular-nums">{traceSessions.length}</span>
         {/if}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={subTab === 'cryptolab'}
+        class="subtab-btn"
+        class:active={subTab === 'cryptolab'}
+        on:click={() => {
+          subTab = 'cryptolab'
+          if (!cryptoOps.length) loadCryptoOperations()
+        }}
+      >
+        <Icon name="key" size={13} />
+        <span>{$t('reLab.tabs.cryptolab')}</span>
       </button>
     </div>
 
@@ -1985,10 +3414,33 @@
               on:keydown={(e) => { if (e.key === 'Enter') analyzeBinary() }}
             />
           </div>
-          <Button variant="primary" size="sm" icon="search" loading={analyzingBinary} on:click={analyzeBinary}>
+          <Button variant="primary" size="sm" icon="search" loading={analyzingBinary} on:click={() => { nativeMode = 'r2'; analyzeBinary() }}>
             {analyzingBinary ? $t('reLab.native.analyzing') : $t('reLab.native.analyzeBtn')}
           </Button>
-          {#if binaryAnalysis}
+          <Button variant="secondary" size="sm" icon="smartphone" loading={analyzingIOS} on:click={analyzeIOSBinary}>
+            {analyzingIOS ? $t('reLab.native.ios.analyzing') : $t('reLab.native.ios.analyzeBtn')}
+          </Button>
+          <div class="seg-toggle">
+            <button type="button" class="seg-btn" class:active={nativeMode === 'r2'} on:click={() => (nativeMode = 'r2')}>
+              {$t('reLab.native.ios.modeR2')}
+            </button>
+            <button type="button" class="seg-btn" class:active={nativeMode === 'ios'} on:click={() => (nativeMode = 'ios')}>
+              {$t('reLab.native.ios.modeIOS')}
+            </button>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="link"
+            active={showSymbolBridgeDrawer}
+            on:click={() => (showSymbolBridgeDrawer = !showSymbolBridgeDrawer)}
+          >
+            {$t('reLab.native.symbolBridge.btn')}
+            {#if appliedSymbolCount > 0}
+              <Badge variant="accent" size="xs" mono>{appliedSymbolCount}</Badge>
+            {/if}
+          </Button>
+          {#if binaryAnalysis && nativeMode === 'r2'}
             <span class="v-sep"></span>
             <Button variant="secondary" size="sm" icon="shield" on:click={sendBinaryToProtectionScan}>
               {$t('reLab.native.scanDeobfBtn')}
@@ -2005,6 +3457,397 @@
           {/if}
         </section>
 
+        <!-- Collapsible Symbol Bridge Drawer (IDA / Ghidra / JSON) -->
+        {#if showSymbolBridgeDrawer}
+          <section class="drawer-panel cap-card">
+            <div class="drawer-head">
+              <div>
+                <div class="drawer-title">{$t('reLab.native.symbolBridge.title')}</div>
+                <div class="drawer-sub">{$t('reLab.native.symbolBridge.subtitle')}</div>
+              </div>
+              <div class="ph-right">
+                <div class="seg-toggle">
+                  <button type="button" class="seg-btn" class:active={symBridgeTab === 'export'} on:click={() => (symBridgeTab = 'export')}>
+                    {$t('reLab.native.symbolBridge.exportTab')}
+                  </button>
+                  <button type="button" class="seg-btn" class:active={symBridgeTab === 'import'} on:click={() => (symBridgeTab = 'import')}>
+                    {$t('reLab.native.symbolBridge.importTab')}
+                  </button>
+                </div>
+                <Button variant="ghost" size="xs" icon="x" on:click={() => (showSymbolBridgeDrawer = false)}>
+                  {$t('common.actions.close')}
+                </Button>
+              </div>
+            </div>
+
+            {#if symBridgeTab === 'export'}
+              <div class="drawer-grid four-col">
+                <label class="d-field">
+                  <span>{$t('reLab.native.symbolBridge.formatLabel')}</span>
+                  <select class="cap-input mono" bind:value={symExportFormat}>
+                    <option value="ida">{$t('reLab.native.symbolBridge.formatIda')}</option>
+                    <option value="ghidra">{$t('reLab.native.symbolBridge.formatGhidra')}</option>
+                    <option value="json">{$t('reLab.native.symbolBridge.formatJson')}</option>
+                  </select>
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.native.symbolBridge.imageBase')}</span>
+                  <input type="text" class="cap-input mono" bind:value={symImageBase} placeholder="0x0" />
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.native.symbolBridge.addCommentAddr')}</span>
+                  <input type="text" class="cap-input mono" bind:value={symNewCmtAddr} placeholder={functionDetail?.addr || '0x1000'} />
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.native.symbolBridge.addCommentText')}</span>
+                  <div class="inline-action-row">
+                    <input
+                      type="text"
+                      class="cap-input flex-1"
+                      bind:value={symNewCmtText}
+                      placeholder="AES key schedule"
+                      on:keydown={(e) => { if (e.key === 'Enter') addCustomSymbolComment() }}
+                    />
+                    <Button variant="secondary" size="xs" icon="plus" on:click={addCustomSymbolComment}>
+                      {$t('reLab.native.symbolBridge.addCommentBtn')}
+                    </Button>
+                  </div>
+                </label>
+              </div>
+
+              <div class="drawer-foot">
+                <span class="hint-muted mono">
+                  funcs: {(binaryAnalysis?.functions?.length || 0) + (binaryAnalysis?.exports?.length || 0)} · comments: {symCustomComments.length + (importedSymbolBundle?.comments?.length || 0)} · jni: {jadxLinkReport?.bindings?.length || importedSymbolBundle?.jni_bindings?.length || 0}
+                </span>
+                {#if symCustomComments.length > 0}
+                  <Button variant="ghost" size="xs" icon="trash" on:click={clearCustomSymbolComments}>
+                    {$t('reLab.native.symbolBridge.clearCommentsBtn')} ({symCustomComments.length})
+                  </Button>
+                {/if}
+                <div class="strip-spacer"></div>
+                {#if symExportOutput}
+                  <Button variant="secondary" size="xs" icon="copy" on:click={() => copyToClipboard(symExportOutput, translate('reLab.toast.copied'))}>
+                    {$t('common.actions.copy')}
+                  </Button>
+                  <Button variant="secondary" size="xs" icon="download" on:click={downloadSymbolBridge}>
+                    {$t('reLab.native.symbolBridge.downloadBtn')}
+                  </Button>
+                {/if}
+                <Button variant="primary" size="xs" icon="sparkles" loading={exportingSymbols} on:click={exportSymbolBridge}>
+                  {$t('reLab.native.symbolBridge.exportBtn')}
+                </Button>
+              </div>
+
+              {#if symExportOutput}
+                <pre class="collector-code mono">{symExportOutput}</pre>
+              {/if}
+            {:else}
+              <textarea
+                class="cap-textarea mono"
+                rows="4"
+                bind:value={symImportRaw}
+                placeholder={$t('reLab.native.symbolBridge.importPlaceholder')}
+              ></textarea>
+              <div class="drawer-foot">
+                {#if importedSymbolBundle}
+                  <Badge variant="success" size="xs" mono>
+                    {$t('reLab.native.symbolBridge.importedSummary', {
+                      binary: importedSymbolBundle.binary_name || 'binary',
+                      funcs: importedSymbolBundle.functions?.length || 0,
+                      comments: importedSymbolBundle.comments?.length || 0,
+                      jni: importedSymbolBundle.jni_bindings?.length || 0,
+                    })}
+                  </Badge>
+                {/if}
+                <div class="strip-spacer"></div>
+                {#if importedSymbolBundle}
+                  <Button variant="success" size="xs" icon="check" on:click={applyImportedSymbols}>
+                    {$t('reLab.native.symbolBridge.applyBtn')}
+                  </Button>
+                {/if}
+                <Button variant="primary" size="xs" icon="upload" loading={importingSymbols} disabled={!symImportRaw.trim()} on:click={importSymbolBridge}>
+                  {$t('reLab.native.symbolBridge.importBtn')}
+                </Button>
+              </div>
+              {#if importedSymbolBundle && (importedSymbolBundle.functions?.length > 0 || importedSymbolBundle.comments?.length > 0)}
+                <div class="table-wrap compact-table-box">
+                  <table class="data-table mono">
+                    <thead>
+                      <tr>
+                        <th>Addr</th>
+                        <th>Symbol / Comment</th>
+                        <th>Type</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each (importedSymbolBundle.functions || []).slice(0, 40) as fn, idx (`impfn:${fn.address}:${idx}`)}
+                        <tr>
+                          <td class="accent-txt">{fn.address}</td>
+                          <td class="bold">{fn.name}{fn.comment ? ` — ${fn.comment}` : ''}</td>
+                          <td><Badge variant="info" size="xs" mono>{fn.type || 'function'}</Badge></td>
+                          <td>
+                            <Button variant="ghost" size="xs" on:click={() => { nativeMode = 'r2'; inspectFunction(fn.address, fn.name) }}>
+                              Inspect
+                            </Button>
+                          </td>
+                        </tr>
+                      {/each}
+                      {#each (importedSymbolBundle.comments || []).slice(0, 40) as cmt, idx (`impcmt:${cmt.address}:${idx}`)}
+                        <tr>
+                          <td class="accent-txt">{cmt.address}</td>
+                          <td>{cmt.text}</td>
+                          <td><Badge variant="neutral" size="xs" mono>comment</Badge></td>
+                          <td>
+                            <Button variant="ghost" size="xs" on:click={() => { nativeMode = 'r2'; inspectFunction(cmt.address, cmt.address) }}>
+                              Inspect
+                            </Button>
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+            {/if}
+          </section>
+        {/if}
+
+        <!-- VIEW: iOS Mach-O / IPA Static Inspector -->
+        {#if nativeMode === 'ios'}
+          {#if !iosReport}
+            <div class="scroll-workspace">
+              <EmptyState
+                icon="smartphone"
+                title={$t('reLab.native.ios.emptyTitle')}
+                description={$t('reLab.native.ios.emptyDesc')}
+              >
+                <Button variant="primary" size="sm" icon="smartphone" loading={analyzingIOS} on:click={analyzeIOSBinary}>
+                  {$t('reLab.native.ios.analyzeBtn')}
+                </Button>
+              </EmptyState>
+            </div>
+          {:else}
+            <!-- iOS FairPlay & Mitigations Strip -->
+            <section class="mitigation-strip">
+              <div class="mit-group">
+                <strong class="mono file-tag">{iosReport.main_binary_name || iosReport.file_name}</strong>
+                <Badge variant="accent" size="xs" mono>{(iosReport.file_kind || 'macho').toUpperCase()}</Badge>
+                {#if iosReport.is_universal}
+                  <Badge variant="purple" size="xs">{$t('reLab.native.ios.universal')}</Badge>
+                {/if}
+                <Badge variant={iosReport.fairplay_encrypted ? 'danger' : 'success'} size="xs" solid={iosReport.fairplay_encrypted} mono>
+                  {iosReport.fairplay_encrypted
+                    ? $t('reLab.native.ios.fairplayEncrypted', { id: iosReport.crypt_id })
+                    : $t('reLab.native.ios.fairplayClear')}
+                </Badge>
+                <span class="meta-text mono tabular-nums">{formatBytes(iosReport.file_size)}</span>
+                {#if iosReport.min_os}
+                  <Badge variant="neutral" size="xs" mono>{$t('reLab.native.ios.minOS')}: {iosReport.min_os}</Badge>
+                {/if}
+              </div>
+
+              <div class="strip-spacer"></div>
+
+              <div class="mit-group">
+                <Badge variant={iosReport.pie ? 'success' : 'warning'} size="xs" mono>PIE: {iosReport.pie ? 'ON' : 'OFF'}</Badge>
+                <Badge variant={iosReport.nx ? 'success' : 'danger'} size="xs" mono>NX: {iosReport.nx ? 'ON' : 'OFF'}</Badge>
+                <Badge variant={iosReport.arc ? 'success' : 'warning'} size="xs" mono>{$t('reLab.native.ios.arc')}: {iosReport.arc ? 'ON' : 'OFF'}</Badge>
+                <Badge variant={iosReport.stack_canary ? 'success' : 'warning'} size="xs" mono>{$t('reLab.native.mitigations.canary')}: {iosReport.stack_canary ? 'ON' : 'OFF'}</Badge>
+                <span class="v-sep"></span>
+                <Button variant="primary" size="xs" icon="play" loading={generatingIOSHarness} on:click={generateUnidbgIOSHarness}>
+                  {$t('reLab.native.ios.harnessBtn')}
+                </Button>
+                <Button variant="secondary" size="xs" icon="shield" loading={generatingIOSStealth} on:click={generateIOSStealthScript}>
+                  {$t('reLab.native.ios.stealthBtn')}
+                </Button>
+              </div>
+            </section>
+
+            <div class="pane-fill">
+              <SplitPane direction="horizontal" initialSize={38} minPrimary={24} minSecondary={40} storageKey="cap.relab.ios.hsplit">
+                <!-- LEFT: Searchable ObjC Classes / Selectors / Exports / Dylibs -->
+                <div slot="primary" class="panel-col surface">
+                  <div class="inner-tabs">
+                    {#each [
+                      { id: 'objc_classes', count: iosReport.objc_classes?.length || 0 },
+                      { id: 'objc_selectors', count: iosReport.objc_selectors?.length || 0 },
+                      { id: 'exports', count: iosReport.exported_symbols?.length || 0 },
+                      { id: 'dylibs', count: (iosReport.linked_dylibs?.length || 0) + (iosReport.frameworks?.length || 0) },
+                    ] as tab (tab.id)}
+                      <button
+                        type="button"
+                        class="itab"
+                        class:active={iosLeftTab === tab.id}
+                        on:click={() => (iosLeftTab = tab.id)}
+                      >
+                        <span>{$t(`reLab.native.ios.tabs.${tab.id}`)}</span>
+                        <span class="itab-cnt mono tabular-nums">{tab.count}</span>
+                      </button>
+                    {/each}
+                  </div>
+                  <div class="list-toolbar">
+                    <div class="search-box">
+                      <Icon name="search" size={12} />
+                      <input type="text" class="search-input" bind:value={iosSearch} placeholder={$t('reLab.native.ios.searchPlaceholder')} />
+                      {#if iosSearch}
+                        <button type="button" class="mini-icon-btn" title={$t('common.actions.clear')} aria-label={$t('common.actions.clear')} on:click={() => (iosSearch = '')}>
+                          <Icon name="x" size={11} />
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+                  <div class="list-scroll">
+                    {#if filteredIOSItems.length === 0}
+                      <EmptyState icon="search" title={$t('reLab.native.emptyFilterTitle')} compact />
+                    {:else}
+                      {#each filteredIOSItems.slice(0, 500) as item, idx (`ios:${iosLeftTab}:${idx}`)}
+                        <button
+                          type="button"
+                          class="sym-row"
+                          class:active={item === iosTargetObjCClass || item === iosTargetObjCSelector || item === iosTargetSymbol}
+                          on:click={() => selectIOSTarget(item)}
+                        >
+                          <span class="sym-name mono truncate" title={item}>{item}</span>
+                        </button>
+                      {/each}
+                    {/if}
+                  </div>
+                </div>
+
+                <!-- RIGHT: Architectures, Info.plist, Harness Target & Warnings -->
+                <div slot="secondary" class="scroll-workspace">
+                  {#if iosReport.summary}
+                    <div class="summary-banner cap-card">{iosReport.summary}</div>
+                  {/if}
+
+                  <!-- Unidbg iOS Target Quick Config -->
+                  <div class="section-card cap-card">
+                    <div class="card-head">
+                      <Icon name="play" size={13} />
+                      <span>{$t('reLab.native.ios.harnessTargetTitle')}</span>
+                    </div>
+                    <div class="drawer-grid four-col">
+                      <label class="d-field">
+                        <span>{$t('reLab.native.ios.objcClass')}</span>
+                        <input type="text" class="cap-input mono" bind:value={iosTargetObjCClass} placeholder="SignManager" />
+                      </label>
+                      <label class="d-field">
+                        <span>{$t('reLab.native.ios.objcSelector')}</span>
+                        <input type="text" class="cap-input mono" bind:value={iosTargetObjCSelector} placeholder="signWithPayload:" />
+                      </label>
+                      <label class="d-field">
+                        <span>{$t('reLab.native.ios.targetSymbol')}</span>
+                        <input type="text" class="cap-input mono" bind:value={iosTargetSymbol} placeholder="_compute_sig" />
+                      </label>
+                      <label class="d-field">
+                        <span>{$t('reLab.native.ios.targetOffset')}</span>
+                        <input type="text" class="cap-input mono" bind:value={iosTargetOffset} placeholder="0x100004000" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- Mach-O Architecture Slices -->
+                  <div class="section-card cap-card">
+                    <div class="card-head">
+                      <Icon name="cpu" size={13} />
+                      <span>{$t('reLab.native.ios.archTitle', { count: iosReport.architectures?.length || 0 })}</span>
+                    </div>
+                    <div class="table-wrap">
+                      <table class="data-table mono">
+                        <thead>
+                          <tr>
+                            <th>Arch</th>
+                            <th>CPU</th>
+                            <th>Type</th>
+                            <th>MinOS / SDK</th>
+                            <th>Mitigations</th>
+                            <th>FairPlay (LC_ENCRYPTION_INFO)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each iosReport.architectures || [] as sl, idx (`arch:${sl.arch}:${idx}`)}
+                            <tr>
+                              <td class="bold accent-txt">{sl.arch} ({sl.bits}-bit)</td>
+                              <td>{sl.cpu_type}{sl.cpu_subtype ? ` / ${sl.cpu_subtype}` : ''}</td>
+                              <td>{sl.file_type || '—'}</td>
+                              <td>{sl.min_os || '—'}{sl.sdk_version ? ` / SDK ${sl.sdk_version}` : ''}</td>
+                              <td>
+                                <div class="chip-wrap">
+                                  <Badge variant={sl.pie ? 'success' : 'warning'} size="xs" mono>PIE</Badge>
+                                  <Badge variant={sl.nx ? 'success' : 'danger'} size="xs" mono>NX</Badge>
+                                  <Badge variant={sl.arc ? 'success' : 'neutral'} size="xs" mono>ARC</Badge>
+                                  <Badge variant={sl.stack_canary ? 'success' : 'warning'} size="xs" mono>Canary</Badge>
+                                </div>
+                              </td>
+                              <td>
+                                <Badge variant={sl.encrypted ? 'danger' : 'success'} size="xs" mono>
+                                  {sl.encrypted ? `ENCRYPTED id=${sl.crypt_id} (${sl.crypt_size}B)` : 'CLEAR (id=0)'}
+                                </Badge>
+                              </td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <!-- Info.plist Summary -->
+                  {#if iosReport.info_plist}
+                    {@const pl = iosReport.info_plist}
+                    <div class="section-card cap-card">
+                      <div class="card-head">
+                        <Icon name="file-text" size={13} />
+                        <span>{$t('reLab.native.ios.plistTitle')}</span>
+                        {#if pl.raw_format}
+                          <Badge variant="neutral" size="xs" mono>{pl.raw_format}</Badge>
+                        {/if}
+                      </div>
+                      <div class="plist-kv-grid mono">
+                        <div><span class="meta-text">{$t('reLab.native.ios.bundleId')}:</span> <span class="bold">{pl.bundle_id || '—'}</span></div>
+                        <div><span class="meta-text">{$t('reLab.native.ios.displayName')}:</span> <span>{pl.display_name || pl.bundle_name || '—'}</span></div>
+                        <div><span class="meta-text">{$t('reLab.native.ios.executable')}:</span> <span>{pl.executable || '—'}</span></div>
+                        <div><span class="meta-text">{$t('reLab.native.ios.version')}:</span> <span>{pl.version || '—'}{pl.build_version ? ` (${pl.build_version})` : ''}</span></div>
+                        <div>
+                          <span class="meta-text">{$t('reLab.native.ios.atsArbitrary')}:</span>
+                          <Badge variant={pl.ats_allows_arbitrary_loads ? 'warning' : 'success'} size="xs" mono>
+                            {pl.ats_allows_arbitrary_loads ? 'YES' : 'NO'}
+                          </Badge>
+                        </div>
+                      </div>
+                      {#if pl.url_schemes?.length}
+                        <div class="fi-note">{$t('reLab.native.ios.urlSchemes')}:</div>
+                        <div class="chip-wrap">
+                          {#each pl.url_schemes as s, j (j)}<span class="mono-chip">{s}://</span>{/each}
+                        </div>
+                      {/if}
+                      {#if pl.queries_schemes?.length}
+                        <div class="fi-note">{$t('reLab.native.ios.queriesSchemes')}:</div>
+                        <div class="chip-wrap">
+                          {#each pl.queries_schemes as s, j (j)}<span class="mono-chip">{s}</span>{/each}
+                        </div>
+                      {/if}
+                      {#if pl.ats_exception_domains?.length}
+                        <div class="fi-note">{$t('reLab.native.ios.atsExceptions')}:</div>
+                        <div class="chip-wrap">
+                          {#each pl.ats_exception_domains as d, j (j)}<Badge variant="warning" size="xs" mono>{d}</Badge>{/each}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+
+                  {#if iosReport.warnings?.length > 0}
+                    <div class="issues-box">
+                      {#each iosReport.warnings as w, idx (idx)}
+                        <div class="issue-line"><Icon name="alert-triangle" size={12} /><span>{w}</span></div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </SplitPane>
+            </div>
+          {/if}
+        {:else}
         <!-- Security Mitigation Strip -->
         {#if binaryAnalysis}
           <section class="mitigation-strip">
@@ -2212,6 +4055,9 @@
                         {#if functionDetail.pseudo_c_engine}
                           <Badge variant="purple" size="xs" mono>{functionDetail.pseudo_c_engine}</Badge>
                         {/if}
+                        {#if appliedSymbolComments[(functionDetail.addr || '').toLowerCase()]}
+                          <Badge variant="warning" size="xs" mono>{appliedSymbolComments[(functionDetail.addr || '').toLowerCase()]}</Badge>
+                        {/if}
                       {:else}
                         <span class="ph-title">{$t('reLab.native.inspector.disasmTab')}</span>
                       {/if}
@@ -2399,6 +4245,7 @@
             </div>
           </SplitPane>
         </div>
+        {/if}
       </div>
 
     <!-- ======================================================================
@@ -2470,6 +4317,185 @@
                 {generatingHarness ? $t('reLab.emulate.generating') : $t('reLab.emulate.generateLoadBtn')}
               </Button>
             </div>
+          </section>
+        {/if}
+
+        <!-- Optional Drawer: Unidbg Auto-Stub Assistant -->
+        {#if showAutoStubDrawer}
+          <section class="drawer-panel cap-card">
+            <div class="drawer-head">
+              <div>
+                <div class="drawer-title">{$t('reLab.emulate.autoStub.title')}</div>
+                <div class="drawer-sub">{$t('reLab.emulate.autoStub.subtitle')}</div>
+              </div>
+              <div class="ph-right">
+                <Button variant="secondary" size="xs" icon="terminal" disabled={jobEvents.length === 0} on:click={pullConsoleLogsForAutoStub}>
+                  {$t('reLab.emulate.autoStub.loadConsoleBtn')}
+                </Button>
+                <Button variant="ghost" size="xs" icon="x" on:click={() => (showAutoStubDrawer = false)}>
+                  {$t('common.actions.close')}
+                </Button>
+              </div>
+            </div>
+
+            <textarea
+              class="cap-textarea mono"
+              rows="4"
+              bind:value={autoStubRawLog}
+              placeholder={$t('reLab.emulate.autoStub.rawPlaceholder')}
+            ></textarea>
+
+            <div class="drawer-foot">
+              <label class="inline-field">
+                <span class="meta-text">{$t('reLab.emulate.autoStub.pkgLabel')}:</span>
+                <input type="text" class="cap-input mono compact-input" bind:value={autoStubPkg} placeholder={stealthOpts.target_package || 'com.example.app'} />
+              </label>
+              <Button variant="secondary" size="xs" icon="zap" loading={generatingEnvSnap} on:click={generateFridaEnvSnapshot}>
+                {$t('reLab.emulate.autoStub.fridaSnapBtn')}
+              </Button>
+              <div class="strip-spacer"></div>
+              <Button variant="primary" size="xs" icon="sparkles" loading={analyzingAutoStub} disabled={!autoStubRawLog.trim()} on:click={analyzeUnidbgLog}>
+                {analyzingAutoStub ? $t('reLab.emulate.autoStub.analyzing') : $t('reLab.emulate.autoStub.analyzeBtn')}
+              </Button>
+            </div>
+
+            {#if autoStubDiagnosis}
+              <div class="summary-banner cap-card">
+                <Badge variant={autoStubDiagnosis.total_errors > 0 ? 'warning' : 'success'} size="xs" mono>
+                  {autoStubDiagnosis.total_errors || 0} errors
+                </Badge>
+                <span>{autoStubDiagnosis.summary || $t('reLab.emulate.autoStub.noIssues')}</span>
+              </div>
+
+              {#if autoStubDiagnosis.missing_jni?.length > 0 || autoStubDiagnosis.missing_files?.length > 0 || autoStubDiagnosis.missing_sys_props?.length > 0 || autoStubDiagnosis.missing_libraries?.length > 0 || autoStubDiagnosis.missing_classes?.length > 0}
+                <div class="findings-grid">
+                  {#if autoStubDiagnosis.missing_jni?.length > 0}
+                    <div class="section-card cap-card">
+                      <div class="card-head">
+                        <Icon name="code" size={12} />
+                        <span>{$t('reLab.emulate.autoStub.cards.jni', { count: autoStubDiagnosis.missing_jni.length })}</span>
+                      </div>
+                      <div class="finding-list">
+                        {#each autoStubDiagnosis.missing_jni as item, idx (`jni:${item.callback}:${item.signature}:${idx}`)}
+                          <div class="finding-item">
+                            <div class="fi-top">
+                              <Badge variant="accent" size="xs" mono>{item.callback}</Badge>
+                              <Badge variant="neutral" size="xs" mono>×{item.count}</Badge>
+                              {#if item.smart_match}
+                                <Badge variant="success" size="xs">{$t('reLab.emulate.autoStub.smartMatch')}</Badge>
+                              {/if}
+                            </div>
+                            <div class="mono fi-pattern">{item.signature}</div>
+                            {#if item.note}<div class="fi-note">{item.note}</div>{/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if autoStubDiagnosis.missing_files?.length > 0}
+                    <div class="section-card cap-card">
+                      <div class="card-head">
+                        <Icon name="folder" size={12} />
+                        <span>{$t('reLab.emulate.autoStub.cards.files', { count: autoStubDiagnosis.missing_files.length })}</span>
+                      </div>
+                      <div class="finding-list">
+                        {#each autoStubDiagnosis.missing_files as item, idx (`file:${item.path}:${idx}`)}
+                          <div class="finding-item">
+                            <div class="fi-top">
+                              <span class="mono bold truncate">{item.path}</span>
+                              <Badge variant="neutral" size="xs" mono>×{item.count}</Badge>
+                            </div>
+                            {#if item.note}<div class="fi-note">{item.note}</div>{/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if autoStubDiagnosis.missing_sys_props?.length > 0}
+                    <div class="section-card cap-card">
+                      <div class="card-head">
+                        <Icon name="sliders" size={12} />
+                        <span>{$t('reLab.emulate.autoStub.cards.sysProps', { count: autoStubDiagnosis.missing_sys_props.length })}</span>
+                      </div>
+                      <div class="finding-list">
+                        {#each autoStubDiagnosis.missing_sys_props as item, idx (`sp:${item.key}:${idx}`)}
+                          <div class="finding-item">
+                            <div class="fi-top">
+                              <span class="mono bold">{item.key}</span>
+                              <Badge variant="info" size="xs" mono>{item.suggested_value}</Badge>
+                              <Badge variant="neutral" size="xs" mono>×{item.count}</Badge>
+                            </div>
+                            {#if item.note}<div class="fi-note">{item.note}</div>{/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if autoStubDiagnosis.missing_libraries?.length > 0 || autoStubDiagnosis.missing_classes?.length > 0}
+                    <div class="section-card cap-card">
+                      {#if autoStubDiagnosis.missing_libraries?.length > 0}
+                        <div class="card-head">
+                          <Icon name="box" size={12} />
+                          <span>{$t('reLab.emulate.autoStub.cards.libs', { count: autoStubDiagnosis.missing_libraries.length })}</span>
+                        </div>
+                        <div class="chip-wrap">
+                          {#each autoStubDiagnosis.missing_libraries as lib, idx (`lib:${lib.name}:${idx}`)}
+                            <Badge variant="danger" size="xs" mono>{lib.name} ×{lib.count}</Badge>
+                          {/each}
+                        </div>
+                      {/if}
+                      {#if autoStubDiagnosis.missing_classes?.length > 0}
+                        <div class="card-head">
+                          <Icon name="layers" size={12} />
+                          <span>{$t('reLab.emulate.autoStub.cards.classes', { count: autoStubDiagnosis.missing_classes.length })}</span>
+                        </div>
+                        <div class="chip-wrap">
+                          {#each autoStubDiagnosis.missing_classes as cls, idx (`cls:${cls}:${idx}`)}
+                            <span class="mono-chip">{cls}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              {#if hasAnyAutoStubSnippet}
+                <div class="collector-preview">
+                  <div class="cp-head">
+                    <div class="seg-toggle">
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'combined'} disabled={!autoStubDiagnosis.combined_java_snippet} on:click={() => (autoStubSnippetTab = 'combined')}>
+                        {$t('reLab.emulate.autoStub.tabs.combined')}
+                      </button>
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'jni'} disabled={!autoStubDiagnosis.abstract_jni_snippet} on:click={() => (autoStubSnippetTab = 'jni')}>
+                        {$t('reLab.emulate.autoStub.tabs.jni')}
+                      </button>
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'io'} disabled={!autoStubDiagnosis.io_resolver_snippet} on:click={() => (autoStubSnippetTab = 'io')}>
+                        {$t('reLab.emulate.autoStub.tabs.io')}
+                      </button>
+                      <button type="button" class="seg-btn" class:active={autoStubSnippetTab === 'sysprop'} disabled={!autoStubDiagnosis.sys_prop_hook_snippet} on:click={() => (autoStubSnippetTab = 'sysprop')}>
+                        {$t('reLab.emulate.autoStub.tabs.sysprop')}
+                      </button>
+                    </div>
+                    <div class="strip-spacer"></div>
+                    <Button variant="secondary" size="xs" icon="copy" disabled={!activeAutoStubSnippet} on:click={() => copyToClipboard(activeAutoStubSnippet, translate('reLab.toast.copied'))}>
+                      {$t('reLab.emulate.autoStub.copyStubBtn')}
+                    </Button>
+                    <Button variant="primary" size="xs" icon="plus" disabled={!activeAutoStubSnippet} on:click={appendAutoStubToEditor}>
+                      {$t('reLab.emulate.autoStub.appendStubBtn')}
+                    </Button>
+                  </div>
+                  {#if activeAutoStubSnippet}
+                    <pre class="collector-code mono">{activeAutoStubSnippet}</pre>
+                  {:else}
+                    <div class="r2-output-scroll"><div class="r2-empty">{$t('reLab.emulate.autoStub.noSnippetForTab')}</div></div>
+                  {/if}
+                </div>
+              {/if}
+            {/if}
           </section>
         {/if}
 
@@ -2720,6 +4746,15 @@
                         <input type="checkbox" bind:checked={jobAutoScroll} />
                         <span>{$t('reLab.emulate.console.autoScroll')}</span>
                       </label>
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        icon="sparkles"
+                        active={showAutoStubDrawer}
+                        on:click={openAutoStubAssistant}
+                      >
+                        {$t('reLab.emulate.autoStub.btn')}
+                      </Button>
                       <Button variant="ghost" size="xs" icon="trash" disabled={jobEvents.length === 0 && jobResults.length === 0} on:click={clearJobConsole}>
                         {$t('common.actions.clear')}
                       </Button>
@@ -2810,7 +4845,351 @@
       </div>
 
     <!-- ======================================================================
-         SUB-TAB 3: DEOBF · ANTI-DEBUG · VMP
+         SUB-TAB 3: JADX DECOMPILER & JAVA<->JNI CROSS-LINK
+         ====================================================================== -->
+    {:else if subTab === 'jadx'}
+      <div class="subtab-pane">
+        <!-- Top APK / DEX Bar + DetectJadx Badge + Search -->
+        <section class="action-bar">
+          <div class="input-with-icon wide">
+            <Icon name="file-code" size={13} />
+            <input
+              type="text"
+              class="cap-input mono flex-1"
+              bind:value={jadxApkPath}
+              placeholder={$t('reLab.jadx.apkPlaceholder')}
+              on:keydown={(e) => { if (e.key === 'Enter') decompileWithJadx() }}
+            />
+          </div>
+          <Button variant="primary" size="sm" icon="code" loading={decompilingJadx} on:click={decompileWithJadx}>
+            {decompilingJadx ? $t('reLab.jadx.decompiling') : $t('reLab.jadx.decompileBtn')}
+          </Button>
+
+          <span class="v-sep"></span>
+
+          <span title={jadxInfo?.available ? `${jadxInfo.path} (${jadxInfo.version})` : (jadxInfo?.issue || '')}>
+            <Badge variant={jadxInfo?.available ? 'success' : 'info'} size="sm" dot>
+              {jadxInfo?.available
+                ? $t('reLab.jadx.jadxReady', { version: jadxInfo.version || 'OK' })
+                : $t('reLab.jadx.jadxFallback')}
+            </Badge>
+          </span>
+          <Button variant="ghost" size="xs" icon="refresh" iconOnly loading={probingJadx} title={$t('common.actions.refresh')} on:click={detectJadx} />
+
+          {#if jadxWorkspace}
+            <span class="v-sep"></span>
+            <div class="search-box jadx-src-search">
+              <Icon name="search" size={12} />
+              <input
+                type="text"
+                class="search-input"
+                bind:value={jadxSearchQuery}
+                placeholder={$t('reLab.jadx.searchPlaceholder')}
+                on:keydown={(e) => { if (e.key === 'Enter') searchJadxSource() }}
+              />
+            </div>
+            <Button variant="secondary" size="sm" icon="search" loading={searchingJadx} disabled={!jadxSearchQuery.trim()} on:click={searchJadxSource}>
+              {searchingJadx ? $t('reLab.jadx.searching') : $t('reLab.jadx.searchBtn')}
+            </Button>
+          {/if}
+        </section>
+
+        <!-- JADX Workspace Metadata Strip -->
+        {#if jadxWorkspace}
+          <section class="mitigation-strip">
+            <div class="mit-group">
+              <Badge variant={jadxWorkspace.mode === 'jadx' ? 'success' : 'info'} size="xs" mono>
+                {jadxWorkspace.mode === 'jadx' ? $t('reLab.jadx.modeJadx') : $t('reLab.jadx.modeDex')}
+              </Badge>
+              {#if jadxWorkspace.cache_hit}
+                <Badge variant="accent" size="xs">{$t('reLab.jadx.cacheHit')}</Badge>
+              {/if}
+              <span class="meta-text mono tabular-nums">
+                {$t('reLab.jadx.statsClasses', {
+                  classes: jadxWorkspace.class_count || 0,
+                  native: jadxWorkspace.native_class_count || 0,
+                })}
+              </span>
+              {#if jadxWorkspace.elapsed_ms > 0}
+                <span class="meta-text mono tabular-nums">{formatDuration(jadxWorkspace.elapsed_ms)}</span>
+              {/if}
+            </div>
+            <div class="strip-spacer"></div>
+            <span class="meta-text mono truncate">{jadxWorkspace.workspace_dir}</span>
+          </section>
+        {/if}
+
+        <div class="pane-fill">
+          <SplitPane direction="horizontal" initialSize={32} minPrimary={22} minSecondary={44} storageKey="cap.relab.jadx.hsplit">
+            <!-- LEFT: Class Tree List & Search Hits -->
+            <div slot="primary" class="panel-col surface">
+              <div class="inner-tabs">
+                <button type="button" class="itab" class:active={jadxLeftTab === 'classes'} on:click={() => (jadxLeftTab = 'classes')}>
+                  <span>{$t('reLab.jadx.classesTab')}</span>
+                  <span class="itab-cnt mono tabular-nums">{filteredJadxClasses.length}</span>
+                </button>
+                <button type="button" class="itab" class:active={jadxLeftTab === 'search'} on:click={() => (jadxLeftTab = 'search')}>
+                  <span>{$t('reLab.jadx.hitsTab')}</span>
+                  <span class="itab-cnt mono tabular-nums">{jadxSearchHits.length}</span>
+                </button>
+              </div>
+
+              {#if jadxLeftTab === 'classes'}
+                <div class="list-toolbar">
+                  <div class="search-box">
+                    <Icon name="search" size={12} />
+                    <input
+                      type="text"
+                      class="search-input"
+                      bind:value={jadxClassFilter}
+                      placeholder={$t('reLab.jadx.classFilterPlaceholder')}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    class="filter-chip"
+                    class:active={jadxNativeOnly}
+                    on:click={() => (jadxNativeOnly = !jadxNativeOnly)}
+                  >
+                    {$t('reLab.jadx.nativeOnly')}
+                  </button>
+                </div>
+
+                <div class="list-scroll">
+                  {#if !jadxWorkspace}
+                    <EmptyState icon="file-code" title={$t('reLab.jadx.emptyLeftTitle')} description={$t('reLab.jadx.emptyLeftDesc')} compact />
+                  {:else if filteredJadxClasses.length === 0}
+                    <EmptyState icon="search" title={$t('reLab.native.emptyFilterTitle')} compact />
+                  {:else}
+                    {#each filteredJadxClasses.slice(0, 600) as cls (cls.class_name)}
+                      <button
+                        type="button"
+                        class="sym-row jadx-cls-row"
+                        class:active={jadxSelectedClass === cls.class_name}
+                        on:click={() => readJadxClassSource(cls.class_name)}
+                      >
+                        <div class="jadx-cls-main">
+                          <span class="sym-name mono bold truncate" title={cls.class_name}>{cls.simple_name || cls.class_name}</span>
+                          {#if cls.has_native}
+                            <Badge variant="purple" size="xs" mono>native{cls.native_methods?.length ? ` ×${cls.native_methods.length}` : ''}</Badge>
+                          {/if}
+                        </div>
+                        {#if cls.package_name}
+                          <span class="meta-text mono truncate">{cls.package_name}</span>
+                        {/if}
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              {:else}
+                <div class="list-scroll">
+                  {#if jadxSearchHits.length === 0}
+                    <EmptyState icon="search" title={$t('reLab.native.emptyFilterTitle')} compact />
+                  {:else}
+                    {#each jadxSearchHits as hit, idx (`hit:${hit.class_name}:${hit.line}:${idx}`)}
+                      <button
+                        type="button"
+                        class="sym-row xref-row"
+                        class:active={jadxSelectedClass === hit.class_name}
+                        on:click={() => readJadxClassSource(hit.class_name)}
+                      >
+                        <div class="xref-line mono">
+                          <span class="accent-txt bold truncate">{hit.class_name}</span>
+                          <Badge variant="neutral" size="xs" mono>L{hit.line}:{hit.column}</Badge>
+                        </div>
+                        <div class="xref-op mono truncate">{hit.snippet}</div>
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              {/if}
+            </div>
+
+            <!-- RIGHT: Read-Only Java Source Viewer (Top) + Java<->JNI Cross-Linker (Bottom) -->
+            <div slot="secondary" class="panel-col">
+              <SplitPane direction="vertical" initialSize={58} minPrimary={28} minSecondary={26} storageKey="cap.relab.jadx.vsplit">
+                <!-- TOP: Decompiled Java Source Viewer -->
+                <div slot="primary" class="panel-col">
+                  <div class="pane-header">
+                    <div class="ph-left">
+                      {#if jadxClassSource}
+                        <strong class="mono truncate fn-title">{jadxClassSource.class_name}</strong>
+                        <Badge variant="neutral" size="xs" mono>{jadxClassSource.line_count} lines</Badge>
+                        {#if jadxClassSource.has_native}
+                          <Badge variant="purple" size="xs" mono>
+                            {$t('reLab.jadx.nativeDeclsHeader', { count: jadxClassSource.native_methods?.length || 0 })}
+                          </Badge>
+                        {/if}
+                      {:else}
+                        <span class="ph-title">{$t('reLab.jadx.emptySourceTitle')}</span>
+                      {/if}
+                    </div>
+                    <div class="ph-right">
+                      {#if jadxClassSource?.source}
+                        <Button variant="ghost" size="xs" icon="copy" on:click={() => copyToClipboard(jadxClassSource.source, translate('reLab.toast.copied'))}>
+                          {$t('common.actions.copy')}
+                        </Button>
+                      {/if}
+                    </div>
+                  </div>
+
+                  {#if jadxClassSource?.native_methods?.length > 0}
+                    <div class="gen-meta-strip">
+                      <div class="chip-wrap">
+                        {#each jadxClassSource.native_methods as nm, idx (`nm:${nm.method_name}:${idx}`)}
+                          <Badge variant="purple" size="xs" mono>
+                            L{nm.line} {nm.is_static ? 'static ' : ''}{nm.method_name}{nm.jni_signature}
+                          </Badge>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  <div class="editor-host">
+                    {#if loadingJadxSource}
+                      <div class="center-loading"><span class="meta-text">{$t('common.actions.loading')}</span></div>
+                    {:else if !jadxClassSource}
+                      <EmptyState icon="code" title={$t('reLab.jadx.emptySourceTitle')} description={$t('reLab.jadx.emptySourceDesc')} compact />
+                    {:else}
+                      <CodeEditor
+                        bind:this={jadxEditorRef}
+                        value={jadxClassSource.source || ''}
+                        runtime="node"
+                        readonly={true}
+                        minHeight="140px"
+                      />
+                    {/if}
+                  </div>
+                </div>
+
+                <!-- BOTTOM: Java <-> JNI Cross-Linker -->
+                <div slot="secondary" class="panel-col surface">
+                  <div class="pane-header compact">
+                    <div class="ph-left">
+                      <Icon name="link" size={13} />
+                      <span class="ph-title">{$t('reLab.jadx.linker.title')}</span>
+                      {#if jadxLinkReport}
+                        <Badge variant="success" size="xs" mono>static:{jadxLinkReport.static_count}</Badge>
+                        <Badge variant="purple" size="xs" mono>dynamic:{jadxLinkReport.dynamic_count}</Badge>
+                        <Badge variant="warning" size="xs" mono>unresolved:{jadxLinkReport.unresolved_count}</Badge>
+                      {/if}
+                    </div>
+                    <div class="ph-right">
+                      {#if jadxLinkReport}
+                        <div class="seg-toggle">
+                          <button type="button" class="seg-btn" class:active={jadxLinkFilter === 'all'} on:click={() => (jadxLinkFilter = 'all')}>{$t('reLab.jadx.linker.filterAll')}</button>
+                          <button type="button" class="seg-btn" class:active={jadxLinkFilter === 'static_export'} on:click={() => (jadxLinkFilter = 'static_export')}>{$t('reLab.jadx.linker.filterStatic')}</button>
+                          <button type="button" class="seg-btn" class:active={jadxLinkFilter === 'dynamic_register'} on:click={() => (jadxLinkFilter = 'dynamic_register')}>{$t('reLab.jadx.linker.filterDynamic')}</button>
+                          <button type="button" class="seg-btn" class:active={jadxLinkFilter === 'unresolved'} on:click={() => (jadxLinkFilter = 'unresolved')}>{$t('reLab.jadx.linker.filterUnresolved')}</button>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div class="r2-input-row">
+                    <input
+                      type="text"
+                      class="cap-input mono flex-1"
+                      bind:value={jadxSoPath}
+                      placeholder={$t('reLab.jadx.linker.soPlaceholder')}
+                    />
+                    <Button variant="ghost" size="xs" icon="code" active={showRegNativesInput} on:click={() => (showRegNativesInput = !showRegNativesInput)}>
+                      {$t('reLab.jadx.linker.regNativesToggle')}
+                    </Button>
+                    <Button variant="primary" size="xs" icon="link" loading={linkingJadx} disabled={!jadxWorkspace} on:click={linkJavaToNative}>
+                      {linkingJadx ? $t('reLab.jadx.linker.linking') : $t('reLab.jadx.linker.linkBtn')}
+                    </Button>
+                  </div>
+
+                  {#if showRegNativesInput}
+                    <div class="jadx-reg-box">
+                      <textarea
+                        class="cap-textarea mono"
+                        rows="3"
+                        bind:value={jadxRegisterNativesJSON}
+                        placeholder={$t('reLab.jadx.linker.regNativesPlaceholder')}
+                      ></textarea>
+                    </div>
+                  {/if}
+
+                  <div class="events-table-scroll">
+                    {#if !jadxLinkReport}
+                      <div class="r2-output-scroll"><div class="r2-empty">{$t('reLab.jadx.linker.emptyDesc')}</div></div>
+                    {:else if filteredJadxBindings.length === 0}
+                      <EmptyState icon="link" title={$t('reLab.native.emptyFilterTitle')} compact />
+                    {:else}
+                      <table class="data-table mono">
+                        <thead>
+                          <tr>
+                            <th>{$t('reLab.jadx.linker.cols.javaMethod')}</th>
+                            <th>{$t('reLab.jadx.linker.cols.kind')}</th>
+                            <th>{$t('reLab.jadx.linker.cols.nativeTarget')}</th>
+                            <th>{$t('reLab.jadx.linker.cols.actions')}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each filteredJadxBindings as b, idx (`jb:${b.java_class}:${b.java_method}:${idx}`)}
+                            <tr>
+                              <td>
+                                <button type="button" class="jump-link mono bold" on:click={() => readJadxClassSource(b.java_class)}>
+                                  {b.java_class}.{b.java_method}
+                                </button>
+                                <div class="meta-text truncate">{b.java_signature}</div>
+                              </td>
+                              <td>
+                                <Badge
+                                  variant={b.binding_kind === 'static_export'
+                                    ? 'success'
+                                    : b.binding_kind === 'dynamic_register'
+                                      ? 'purple'
+                                      : 'warning'}
+                                  size="xs"
+                                  mono
+                                >
+                                  {b.binding_kind}
+                                </Badge>
+                              </td>
+                              <td>
+                                <div class="bold truncate">{b.native_symbol || b.mangled_name}</div>
+                                {#if b.native_addr || b.so_name}
+                                  <div class="meta-text">{b.so_name ? `${b.so_name} · ` : ''}{b.native_addr || formatHex(b.native_offset)}</div>
+                                {/if}
+                              </td>
+                              <td>
+                                <div class="inline-action-row">
+                                  <Button variant="subtle" size="xs" icon="cpu" on:click={() => inspectJadxBindingInR2(b)}>
+                                    {$t('reLab.jadx.linker.inspectR2')}
+                                  </Button>
+                                  <Button variant="subtle" size="xs" icon="play" on:click={() => emulateJadxBindingInUnidbg(b)}>
+                                    {$t('reLab.jadx.linker.emulateUnidbg')}
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                      {#if jadxLinkReport.orphan_exports?.length > 0}
+                        <div class="gen-footer">
+                          <span class="gf-lbl">{$t('reLab.jadx.linker.orphanExports', { count: jadxLinkReport.orphan_exports.length })}:</span>
+                          <div class="chip-wrap">
+                            {#each jadxLinkReport.orphan_exports.slice(0, 30) as oe, idx (idx)}
+                              <span class="mono-chip">{oe}</span>
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+                    {/if}
+                  </div>
+                </div>
+              </SplitPane>
+            </div>
+          </SplitPane>
+        </div>
+      </div>
+
+    <!-- ======================================================================
+         SUB-TAB 4: DEOBF · ANTI-DEBUG · VMP · TLS/PROXY COMPAT
          ====================================================================== -->
     {:else if subTab === 'deobf'}
       <div class="subtab-pane">
@@ -2841,6 +5220,18 @@
             </button>
             <button type="button" class="seg-btn" class:active={deobfView === 'vmp_trace'} on:click={() => (deobfView = 'vmp_trace')}>
               {$t('reLab.deobf.views.vmpTrace')}
+            </button>
+            <button
+              type="button"
+              class="seg-btn"
+              class:active={deobfView === 'tls'}
+              on:click={() => {
+                deobfView = 'tls'
+                if (!tlsApkPath && scanPath) tlsApkPath = scanPath
+                if (!tlsProfiles.length) loadTlsEnvironment()
+              }}
+            >
+              {$t('reLab.deobf.views.tls')}
             </button>
           </div>
         </section>
@@ -3435,7 +5826,7 @@
           </div>
 
         <!-- VIEW C: Interactive VMP Trace Analyzer -->
-        {:else}
+        {:else if deobfView === 'vmp_trace'}
           <div class="scroll-workspace">
             <div class="section-card cap-card">
               <div class="card-head">
@@ -3669,11 +6060,472 @@
               </div>
             {/if}
           </div>
+
+        <!-- VIEW D: TLS / APK Certs / mTLS / Local-Proxy Compat -->
+        {:else}
+          <div class="scroll-workspace">
+            <!-- 1. APK Certificate, Pin & mTLS Keystore Scanner -->
+            <div class="section-card cap-card">
+              <div class="card-head">
+                <Icon name="shield-check" size={13} />
+                <span>{$t('reLab.deobf.tls.apkCertTitle')}</span>
+                {#if tlsCertReport}
+                  <Badge variant="info" size="xs" mono>{$t('reLab.deobf.tls.certsCount', { count: tlsCertReport.certificates?.length || 0 })}</Badge>
+                  <Badge variant={tlsCertReport.has_pinning ? 'warning' : 'neutral'} size="xs" mono>{$t('reLab.deobf.tls.pinsCount', { count: tlsCertReport.pins?.length || 0 })}</Badge>
+                  <Badge variant={tlsCertReport.has_mtls_indicators ? 'danger' : 'neutral'} size="xs" mono>{$t('reLab.deobf.tls.keystoresCount', { count: tlsCertReport.keystores?.length || 0 })}</Badge>
+                {/if}
+              </div>
+
+              <div class="inline-action-row">
+                <input
+                  type="text"
+                  class="cap-input mono flex-1"
+                  bind:value={tlsApkPath}
+                  placeholder={$t('reLab.deobf.tls.apkCertPlaceholder')}
+                  on:keydown={(e) => { if (e.key === 'Enter') scanApkCertificates() }}
+                />
+                <Button variant="primary" size="sm" icon="search" loading={scanningTlsCerts} on:click={scanApkCertificates}>
+                  {scanningTlsCerts ? $t('reLab.deobf.tls.scanningCerts') : $t('reLab.deobf.tls.scanCertsBtn')}
+                </Button>
+              </div>
+
+              {#if tlsCertReport}
+                <div class="chip-wrap">
+                  {#if tlsCertReport.has_pinning}
+                    <Badge variant="warning" size="xs" dot>{$t('reLab.deobf.tls.pinningDetected')}</Badge>
+                  {/if}
+                  {#if tlsCertReport.has_mtls_indicators}
+                    <Badge variant="danger" size="xs" dot>{$t('reLab.deobf.tls.mtlsDetected')}</Badge>
+                  {/if}
+                  {#if tlsCertReport.truncated}
+                    <Badge variant="warning" size="xs">{$t('reLab.deobf.tls.truncated')}</Badge>
+                  {/if}
+                  <span class="meta-text mono tabular-nums">{tlsCertReport.entries_scanned} entries · {formatBytes(tlsCertReport.total_bytes_read)}</span>
+                </div>
+
+                {#if tlsCertReport.certificates?.length > 0}
+                  <div class="form-section-label">{$t('reLab.deobf.tls.certsSubTitle', { count: tlsCertReport.certificates.length })}</div>
+                  <div class="table-wrap">
+                    <table class="data-table mono">
+                      <thead>
+                        <tr>
+                          <th>Subject / Source</th>
+                          <th>Key</th>
+                          <th>Status</th>
+                          <th>SHA-256 / SPKI</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each tlsCertReport.certificates as cert, idx (`cert:${cert.sha256_fingerprint}:${idx}`)}
+                          <tr>
+                            <td>
+                              <div class="bold">{cert.common_name || cert.subject}</div>
+                              <div class="meta-text truncate">{cert.source_path || cert.issuer}</div>
+                            </td>
+                            <td>
+                              <Badge variant="neutral" size="xs" mono>{cert.public_key_algorithm} {cert.public_key_bits}b</Badge>
+                              {#if cert.is_ca}<Badge variant="purple" size="xs">CA</Badge>{/if}
+                              {#if cert.self_signed}<Badge variant="warning" size="xs">Self-Signed</Badge>{/if}
+                            </td>
+                            <td>
+                              <Badge variant={cert.expired ? 'danger' : cert.not_yet_valid ? 'warning' : 'success'} size="xs" mono>
+                                {cert.expired
+                                  ? $t('reLab.deobf.tls.certExpired')
+                                  : cert.not_yet_valid
+                                    ? $t('reLab.deobf.tls.certNotYetValid')
+                                    : $t('reLab.deobf.tls.certValid')}
+                              </Badge>
+                              <div class="meta-text">{String(cert.not_after || '').slice(0, 10)}</div>
+                            </td>
+                            <td>
+                              <div class="inline-action-row">
+                                <span class="truncate-cell">{cert.spki_sha256 || cert.sha256_fingerprint}</span>
+                                <button
+                                  type="button"
+                                  class="mini-icon-btn"
+                                  title={$t('common.actions.copy')}
+                                  aria-label={$t('common.actions.copy')}
+                                  on:click={() => copyToClipboard(cert.spki_sha256 || cert.sha256_fingerprint, translate('reLab.toast.copied'))}
+                                >
+                                  <Icon name="copy" size={11} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                {/if}
+
+                {#if tlsCertReport.pins?.length > 0 || tlsCertReport.network_security_configs?.length > 0}
+                  <div class="form-section-label">{$t('reLab.deobf.tls.pinsSubTitle', { count: tlsCertReport.pins?.length || 0 })}</div>
+                  <div class="finding-list">
+                    {#each tlsCertReport.network_security_configs || [] as nsc, idx (`nsc:${nsc.path}:${idx}`)}
+                      <div class="finding-item">
+                        <div class="fi-top">
+                          <span class="mono bold">{nsc.path}</span>
+                          <Badge variant={nsc.trusts_user_certs ? 'success' : 'warning'} size="xs">
+                            {$t('reLab.deobf.tls.nscTrustsUser')}: {nsc.trusts_user_certs ? 'YES' : 'NO'}
+                          </Badge>
+                          {#if nsc.cleartext_permitted !== null && nsc.cleartext_permitted !== undefined}
+                            <Badge variant={nsc.cleartext_permitted ? 'warning' : 'info'} size="xs">
+                              {$t('reLab.deobf.tls.nscCleartext')}: {nsc.cleartext_permitted ? 'YES' : 'NO'}
+                            </Badge>
+                          {/if}
+                        </div>
+                        {#if nsc.domains?.length}
+                          <div class="chip-wrap">
+                            {#each nsc.domains as d, j (j)}<span class="mono-chip">{d}</span>{/each}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                    {#each tlsCertReport.pins || [] as pin, idx (`pin:${pin.value}:${idx}`)}
+                      <div class="finding-item">
+                        <div class="fi-top">
+                          <Badge variant="warning" size="xs" mono>{pin.digest || 'SHA-256'}</Badge>
+                          <span class="mono bold truncate">{pin.value}</span>
+                          {#if pin.expiration}<Badge variant="neutral" size="xs" mono>exp {pin.expiration}</Badge>{/if}
+                          <button
+                            type="button"
+                            class="mini-icon-btn"
+                            title={$t('common.actions.copy')}
+                            aria-label={$t('common.actions.copy')}
+                            on:click={() => copyToClipboard(pin.value, translate('reLab.toast.copied'))}
+                          >
+                            <Icon name="copy" size={11} />
+                          </button>
+                        </div>
+                        {#if pin.domains?.length}
+                          <div class="chip-wrap">
+                            {#each pin.domains as d, j (j)}<span class="mono-chip">{d}</span>{/each}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if tlsCertReport.keystores?.length > 0}
+                  <div class="form-section-label">{$t('reLab.deobf.tls.keystoresSubTitle', { count: tlsCertReport.keystores.length })}</div>
+                  <div class="finding-list">
+                    {#each tlsCertReport.keystores as ks, idx (`ks:${ks.path}:${idx}`)}
+                      <div class="finding-item">
+                        <div class="fi-top">
+                          <Badge variant="danger" size="xs" mono>{ks.format}</Badge>
+                          <span class="mono bold truncate">{ks.path}</span>
+                          <span class="meta-text mono tabular-nums">{formatBytes(ks.size_bytes)}</span>
+                          {#if ks.magic_verified}<Badge variant="success" size="xs">Magic OK</Badge>{/if}
+                          {#if ks.requires_mtls_config}<Badge variant="warning" size="xs">mTLS</Badge>{/if}
+                        </div>
+                        {#if ks.note}<div class="fi-note">{ks.note}</div>{/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if tlsCertReport.warnings?.length > 0}
+                  <div class="issues-box">
+                    {#each tlsCertReport.warnings as w, idx (idx)}
+                      <div class="issue-line"><Icon name="alert-triangle" size={12} /><span>{w}</span></div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+            </div>
+
+            <!-- 2. mTLS KeyPair Validator & Host curl-impersonate / TLS Profiles -->
+            <div class="findings-grid">
+              <!-- mTLS Validator -->
+              <div class="section-card cap-card">
+                <div class="card-head">
+                  <Icon name="key" size={13} />
+                  <span>{$t('reLab.deobf.tls.mtlsTitle')}</span>
+                </div>
+                <label class="d-field">
+                  <span>{$t('reLab.deobf.tls.certPath')}</span>
+                  <input type="text" class="cap-input mono" bind:value={tlsMtlsCertPath} placeholder="/path/to/client.crt.pem" />
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.deobf.tls.keyPath')}</span>
+                  <input type="text" class="cap-input mono" bind:value={tlsMtlsKeyPath} placeholder="/path/to/client.key.pem" />
+                </label>
+                <div class="inline-action-row">
+                  <div class="strip-spacer"></div>
+                  <Button variant="primary" size="xs" icon="check-circle" loading={validatingMtls} disabled={!tlsMtlsCertPath.trim() || !tlsMtlsKeyPath.trim()} on:click={validateMtlsKeyPair}>
+                    {validatingMtls ? $t('reLab.deobf.tls.validating') : $t('reLab.deobf.tls.validateBtn')}
+                  </Button>
+                </div>
+
+                {#if tlsMtlsResult}
+                  <div class="finding-item">
+                    <div class="fi-top">
+                      <Badge variant={tlsMtlsResult.valid ? 'success' : 'danger'} size="xs" solid={!tlsMtlsResult.valid}>
+                        {tlsMtlsResult.valid ? $t('reLab.deobf.tls.pairValid') : $t('reLab.deobf.tls.pairInvalid')}
+                      </Badge>
+                      <Badge variant={tlsMtlsResult.key_pair_match ? 'success' : 'danger'} size="xs">
+                        {$t('reLab.deobf.tls.pairMatch')}: {tlsMtlsResult.key_pair_match ? 'OK' : 'NO'}
+                      </Badge>
+                      {#if tlsMtlsResult.has_client_auth_eku}
+                        <Badge variant="info" size="xs">{$t('reLab.deobf.tls.clientAuthEku')}</Badge>
+                      {/if}
+                      {#if !tlsMtlsResult.expired && tlsMtlsResult.expires_in_days > 0}
+                        <Badge variant="neutral" size="xs" mono>{$t('reLab.deobf.tls.expiresIn', { days: tlsMtlsResult.expires_in_days })}</Badge>
+                      {/if}
+                    </div>
+                    {#if tlsMtlsResult.leaf}
+                      <div class="mono fi-pattern">{tlsMtlsResult.leaf.subject}</div>
+                      <div class="fi-note mono">Issuer: {tlsMtlsResult.leaf.issuer} · Chain: {tlsMtlsResult.chain_length}</div>
+                    {/if}
+                    {#if tlsMtlsResult.error}
+                      <div class="danger-txt fi-note">{tlsMtlsResult.error}</div>
+                    {/if}
+                    {#each tlsMtlsResult.warnings || [] as w, j (j)}
+                      <div class="warn-txt fi-note">• {w}</div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+
+              <!-- Host curl-impersonate & Curated TLS Profiles -->
+              <div class="section-card cap-card">
+                <div class="card-head">
+                  <Icon name="globe" size={13} />
+                  <span>{$t('reLab.deobf.tls.profilesTitle')}</span>
+                  <div class="strip-spacer"></div>
+                  <Button variant="ghost" size="xs" icon="refresh" iconOnly loading={loadingTlsProfiles} title={$t('common.actions.refresh')} on:click={loadTlsEnvironment} />
+                </div>
+
+                {#if tlsCurlInfo}
+                  <div class="finding-item">
+                    <div class="fi-top">
+                      <Badge variant={tlsCurlInfo.available ? 'success' : 'neutral'} size="xs" dot>
+                        {tlsCurlInfo.available
+                          ? $t('reLab.deobf.tls.curlReady', { bin: tlsCurlInfo.primary_binary || 'available' })
+                          : $t('reLab.deobf.tls.curlMissing')}
+                      </Badge>
+                    </div>
+                    {#if tlsCurlInfo.binaries?.length > 0}
+                      <div class="chip-wrap">
+                        {#each tlsCurlInfo.binaries as b, idx (`curl:${b.name}:${idx}`)}
+                          <Badge variant="accent" size="xs" mono>{b.name} ({b.family})</Badge>
+                        {/each}
+                      </div>
+                    {:else if tlsCurlInfo.install_hint}
+                      <div class="fi-note">{tlsCurlInfo.install_hint}</div>
+                    {/if}
+                  </div>
+                {/if}
+
+                <div class="cat-pills inline-pills">
+                  {#each tlsProfiles as prof (prof.id)}
+                    <button
+                      type="button"
+                      class="cat-pill"
+                      class:active={tlsSelectedProfileId === prof.id}
+                      on:click={() => selectTlsProfile(prof.id)}
+                    >
+                      {prof.name}
+                    </button>
+                  {/each}
+                </div>
+
+                {#if selectedTlsProfile}
+                  {@const ja3 = tlsProfileJA3?.profile_id === selectedTlsProfile.id ? tlsProfileJA3 : selectedTlsProfile.ja3}
+                  <div class="finding-item">
+                    <div class="fi-top">
+                      <strong>{selectedTlsProfile.name}</strong>
+                      <Badge variant="info" size="xs" mono>{selectedTlsProfile.platform}</Badge>
+                      <Badge variant="neutral" size="xs" mono>{selectedTlsProfile.min_version_name}–{selectedTlsProfile.max_version_name}</Badge>
+                      <Badge variant="accent" size="xs" mono>ALPN: {(selectedTlsProfile.alpn || []).join(', ')}</Badge>
+                    </div>
+                    <div class="fi-note">{selectedTlsProfile.description}</div>
+                    {#if ja3}
+                      <div class="ja3-box mono">
+                        <div class="inline-action-row">
+                          <span class="meta-text">{$t('reLab.deobf.tls.ja3Hash')}:</span>
+                          <span class="accent-txt bold truncate">{ja3.ja3_hash}</span>
+                          <button
+                            type="button"
+                            class="mini-icon-btn"
+                            title={$t('common.actions.copy')}
+                            aria-label={$t('common.actions.copy')}
+                            on:click={() => copyToClipboard(ja3.ja3_hash, translate('reLab.toast.copied'))}
+                          >
+                            <Icon name="copy" size={11} />
+                          </button>
+                        </div>
+                        <div class="fi-note truncate" title={ja3.ja3_string}>{$t('reLab.deobf.tls.ja3String')}: {ja3.ja3_string}</div>
+                        <div class="meta-text">
+                          {$t('reLab.deobf.tls.ciphersCurves', { ciphers: ja3.cipher_count, curves: ja3.curve_count })}
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            <!-- 3. Local-Proxy Compat Frida Script Generators -->
+            <div class="section-card cap-card">
+              <div class="card-head">
+                <Icon name="zap" size={13} />
+                <span>{$t('reLab.deobf.tls.compatTitle')}</span>
+                <div class="strip-spacer"></div>
+                <div class="seg-toggle">
+                  <button type="button" class="seg-btn" class:active={tlsCompatKind === 'flutter'} on:click={() => (tlsCompatKind = 'flutter')}>
+                    {$t('reLab.deobf.tls.kinds.flutter')}
+                  </button>
+                  <button type="button" class="seg-btn" class:active={tlsCompatKind === 'cronet'} on:click={() => (tlsCompatKind = 'cronet')}>
+                    {$t('reLab.deobf.tls.kinds.cronet')}
+                  </button>
+                  <button type="button" class="seg-btn" class:active={tlsCompatKind === 'mtls_observer'} on:click={() => (tlsCompatKind = 'mtls_observer')}>
+                    {$t('reLab.deobf.tls.kinds.mtls_observer')}
+                  </button>
+                </div>
+              </div>
+
+              {#if tlsCompatKind === 'flutter'}
+                <div class="drawer-grid four-col">
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.packageName')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsFlutterOpts.package_name} placeholder="com.example.flutterapp" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.platform')}</span>
+                    <select class="cap-input mono" bind:value={tlsFlutterOpts.platform}>
+                      <option value="android">android</option>
+                      <option value="ios">ios</option>
+                    </select>
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.moduleName')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsFlutterOpts.module_name} placeholder="libflutter.so" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.offsetHex')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsFlutterOpts.offset_hex} placeholder="0x5a1230" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.proxyHost')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsFlutterOpts.proxy_host} placeholder="127.0.0.1" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.proxyPort')}</span>
+                    <input type="number" class="cap-input mono" bind:value={tlsFlutterOpts.proxy_port} min="1" max="65535" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.verifySymbol')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsFlutterOpts.verify_symbol} />
+                  </label>
+                  <div class="d-field center-v">
+                    <label class="check-opt">
+                      <input type="checkbox" bind:checked={tlsFlutterOpts.force_allow_local_verify} />
+                      <span>{$t('reLab.deobf.tls.fields.forceLocalVerify')}</span>
+                    </label>
+                  </div>
+                </div>
+              {:else if tlsCompatKind === 'cronet'}
+                <div class="drawer-grid four-col">
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.packageName')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsCronetOpts.package_name} placeholder="com.example.app" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.proxyHint')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsCronetOpts.proxy_hint} placeholder="127.0.0.1:8080" />
+                  </label>
+                  <div class="d-field center-v">
+                    <label class="check-opt"><input type="checkbox" bind:checked={tlsCronetOpts.disable_quic} /><span>{$t('reLab.deobf.tls.fields.disableQuic')}</span></label>
+                    <label class="check-opt"><input type="checkbox" bind:checked={tlsCronetOpts.configure_okhttp_protocols} /><span>{$t('reLab.deobf.tls.fields.okHttpProto')}</span></label>
+                  </div>
+                  <div class="d-field center-v">
+                    <label class="check-opt"><input type="checkbox" bind:checked={tlsCronetOpts.log_alt_svc_headers} /><span>{$t('reLab.deobf.tls.fields.logAltSvc')}</span></label>
+                  </div>
+                </div>
+              {:else}
+                <div class="drawer-grid four-col">
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.packageName')}</span>
+                    <input type="text" class="cap-input mono" bind:value={tlsMtlsObsOpts.package_name} placeholder="com.example.app" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.deobf.tls.fields.maxAliases')}</span>
+                    <input type="number" class="cap-input mono" bind:value={tlsMtlsObsOpts.max_aliases_per_store} min="1" max="256" />
+                  </label>
+                  <div class="d-field center-v">
+                    <label class="check-opt"><input type="checkbox" bind:checked={tlsMtlsObsOpts.observe_keystore} /><span>{$t('reLab.deobf.tls.fields.obsKeyStore')}</span></label>
+                    <label class="check-opt"><input type="checkbox" bind:checked={tlsMtlsObsOpts.observe_key_manager} /><span>{$t('reLab.deobf.tls.fields.obsKeyMgr')}</span></label>
+                  </div>
+                  <div class="d-field center-v">
+                    <label class="check-opt"><input type="checkbox" bind:checked={tlsMtlsObsOpts.observe_ssl_context} /><span>{$t('reLab.deobf.tls.fields.obsSslCtx')}</span></label>
+                    <label class="check-opt"><input type="checkbox" bind:checked={tlsMtlsObsOpts.observe_certificates} /><span>{$t('reLab.deobf.tls.fields.obsCerts')}</span></label>
+                  </div>
+                </div>
+              {/if}
+
+              <div class="drawer-foot">
+                <div class="strip-spacer"></div>
+                {#if tlsGeneratedScript}
+                  <Button variant="secondary" size="xs" icon="copy" on:click={() => copyToClipboard(tlsGeneratedScript.code, translate('reLab.toast.copied'))}>
+                    {$t('common.actions.copy')}
+                  </Button>
+                  <Button
+                    variant="success"
+                    size="xs"
+                    icon="zap"
+                    on:click={() =>
+                      sendScriptToFrida(
+                        tlsGeneratedScript.name,
+                        'ssl',
+                        tlsGeneratedScript.description,
+                        tlsGeneratedScript.code,
+                        tlsGeneratedScript.package_name || ''
+                      )}
+                  >
+                    {$t('reLab.deobf.tls.openFrida')}
+                  </Button>
+                {/if}
+                <Button variant="primary" size="xs" icon="sparkles" loading={generatingTlsScript} on:click={generateTlsCompatScript}>
+                  {$t('reLab.deobf.tls.generateBtn')}
+                </Button>
+              </div>
+
+              {#if tlsGeneratedScript}
+                <div class="collector-preview">
+                  <div class="cp-head">
+                    <strong class="mono">{tlsGeneratedScript.name}</strong>
+                    <Badge variant="warning" size="xs" mono>{tlsGeneratedScript.kind}</Badge>
+                    <span class="meta-text truncate">{tlsGeneratedScript.description}</span>
+                  </div>
+                  <div class="tls-editor-box">
+                    <CodeEditor
+                      bind:this={tlsEditorRef}
+                      bind:value={tlsGeneratedScript.code}
+                      runtime="node"
+                      minHeight="210px"
+                    />
+                  </div>
+                  {#if tlsGeneratedScript.notes?.length || tlsGeneratedScript.warnings?.length}
+                    <div class="cp-steps">
+                      {#each tlsGeneratedScript.notes || [] as note, idx (idx)}
+                        <div>• {note}</div>
+                      {/each}
+                      {#each tlsGeneratedScript.warnings || [] as w, idx (idx)}
+                        <div class="warn-txt">! {w}</div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          </div>
         {/if}
       </div>
 
     <!-- ======================================================================
-         SUB-TAB 4: EXECTRACE & TAINT
+         SUB-TAB 5: EXECTRACE & TAINT
          ====================================================================== -->
     {:else if subTab === 'exectrace'}
       <div class="subtab-pane">
@@ -4745,6 +7597,687 @@
           </SplitPane>
         </div>
       </div>
+
+    <!-- ======================================================================
+         SUB-TAB 6: CRYPTOLAB (PIPELINE · PROTOBUF · WHITE-BOX AES DFA)
+         ====================================================================== -->
+    {:else if subTab === 'cryptolab'}
+      <div class="subtab-pane">
+        <!-- Inner Mode Switcher -->
+        <section class="action-bar">
+          <div class="seg-toggle">
+            <button type="button" class="seg-btn" class:active={cryptoMode === 'pipeline'} on:click={() => (cryptoMode = 'pipeline')}>
+              {$t('reLab.cryptolab.modes.pipeline')}
+            </button>
+            <button type="button" class="seg-btn" class:active={cryptoMode === 'protobuf'} on:click={() => (cryptoMode = 'protobuf')}>
+              {$t('reLab.cryptolab.modes.protobuf')}
+            </button>
+            <button type="button" class="seg-btn" class:active={cryptoMode === 'dfa'} on:click={() => (cryptoMode = 'dfa')}>
+              {$t('reLab.cryptolab.modes.dfa')}
+            </button>
+          </div>
+          <div class="strip-spacer"></div>
+          {#if cryptoMode === 'pipeline'}
+            <Button variant="secondary" size="sm" icon="sparkles" loading={identifyingCrypto} disabled={!cryptoInput.trim()} on:click={identifyCryptoPayload}>
+              {identifyingCrypto ? $t('reLab.cryptolab.pipeline.identifying') : $t('reLab.cryptolab.pipeline.autoIdentifyBtn')}
+            </Button>
+            <Button variant="primary" size="sm" icon="play" loading={runningCrypto} on:click={runCryptoPipeline}>
+              {runningCrypto ? $t('reLab.cryptolab.pipeline.running') : $t('reLab.cryptolab.pipeline.runBtn')}
+            </Button>
+          {/if}
+        </section>
+
+        <!-- MODE 1: CyberChef-Style Composable Crypto Pipeline -->
+        {#if cryptoMode === 'pipeline'}
+          <div class="pane-fill">
+            <SplitPane direction="horizontal" initialSize={40} minPrimary={28} minSecondary={42} storageKey="cap.relab.crypto.hsplit">
+              <!-- LEFT: Operations Catalog + Interactive Step Stack -->
+              <div slot="primary" class="panel-col surface">
+                <SplitPane direction="vertical" initialSize={44} minPrimary={26} minSecondary={32} storageKey="cap.relab.crypto.vsplit">
+                  <!-- TOP: Operations Catalog -->
+                  <div slot="primary" class="panel-col surface">
+                    <div class="pane-header compact">
+                      <span class="ph-title">{$t('reLab.cryptolab.pipeline.opsTitle')}</span>
+                      <Badge variant="neutral" size="xs" mono>{filteredCryptoOps.length}</Badge>
+                    </div>
+                    <div class="list-toolbar">
+                      <div class="search-box">
+                        <Icon name="search" size={12} />
+                        <input type="text" class="search-input" bind:value={cryptoOpSearch} placeholder={$t('reLab.cryptolab.pipeline.opSearchPlaceholder')} />
+                      </div>
+                    </div>
+                    <div class="cat-pills">
+                      {#each cryptoOpCategories as cat (cat)}
+                        <button
+                          type="button"
+                          class="cat-pill"
+                          class:active={cryptoOpCategory === cat}
+                          on:click={() => (cryptoOpCategory = cat)}
+                        >
+                          {cat === 'all' ? $t('reLab.cryptolab.pipeline.catAll') : cat}
+                        </button>
+                      {/each}
+                    </div>
+                    <div class="list-scroll padded">
+                      {#each filteredCryptoOps as op (op.name)}
+                        <button type="button" class="op-catalog-row" on:click={() => addCryptoStep(op)}>
+                          <div class="op-row-top">
+                            <span class="bold truncate">{op.label}</span>
+                            <Badge variant="neutral" size="xs" mono>{op.category}</Badge>
+                            <Icon name="plus" size={11} />
+                          </div>
+                          <div class="fi-note truncate">{op.description}</div>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+
+                  <!-- BOTTOM: Active Recipe Step Stack -->
+                  <div slot="secondary" class="panel-col">
+                    <div class="pane-header compact">
+                      <div class="ph-left">
+                        <Icon name="layers" size={13} />
+                        <span class="ph-title">{$t('reLab.cryptolab.pipeline.recipeTitle', { count: cryptoSteps.length })}</span>
+                      </div>
+                      <Button variant="ghost" size="xs" icon="trash" disabled={cryptoSteps.length === 0} on:click={() => (cryptoSteps = [])}>
+                        {$t('reLab.cryptolab.pipeline.clearRecipe')}
+                      </Button>
+                    </div>
+                    <div class="list-scroll padded">
+                      {#if cryptoSteps.length === 0}
+                        <div class="card-empty">{$t('reLab.cryptolab.pipeline.emptyRecipe')}</div>
+                      {:else}
+                        {#each cryptoSteps as step, idx (step.uid || `${step.op}:${idx}`)}
+                          {@const spec = cryptoOpByName[step.op]}
+                          <div class="step-card cap-card" class:step-disabled={step.disabled}>
+                            <div class="step-card-head">
+                              <Badge variant="accent" size="xs" mono>#{idx + 1}</Badge>
+                              <strong class="truncate flex-1">{spec?.label || step.op}</strong>
+                              {#if step.disabled}
+                                <Badge variant="neutral" size="xs">{$t('reLab.cryptolab.pipeline.stepDisabled')}</Badge>
+                              {/if}
+                              <button type="button" class="mini-icon-btn" title="Move Up" aria-label="Move Up" disabled={idx === 0} on:click={() => moveCryptoStep(idx, -1)}>
+                                <Icon name="arrow-up" size={11} />
+                              </button>
+                              <button type="button" class="mini-icon-btn" title="Move Down" aria-label="Move Down" disabled={idx === cryptoSteps.length - 1} on:click={() => moveCryptoStep(idx, 1)}>
+                                <Icon name="arrow-down" size={11} />
+                              </button>
+                              <button type="button" class="mini-icon-btn" title={step.disabled ? $t('common.actions.enable') : $t('common.actions.disable')} aria-label="Toggle step" on:click={() => toggleCryptoStep(idx)}>
+                                <Icon name={step.disabled ? 'eye-off' : 'eye'} size={11} />
+                              </button>
+                              <button type="button" class="mini-icon-btn" title={$t('common.actions.delete')} aria-label="Remove step" on:click={() => removeCryptoStep(idx)}>
+                                <Icon name="x" size={11} />
+                              </button>
+                            </div>
+                            {#if spec?.params?.length > 0}
+                              <div class="step-params-grid">
+                                {#each spec.params as param (param.name)}
+                                  {#if param.type === 'boolean'}
+                                    <label class="check-opt compact">
+                                      <input
+                                        type="checkbox"
+                                        checked={String(step.params?.[param.name] ?? param.default) === 'true'}
+                                        on:change={(e) => updateCryptoStepParam(idx, param.name, e.currentTarget.checked ? 'true' : 'false')}
+                                      />
+                                      <span>{param.label}</span>
+                                    </label>
+                                  {:else if param.type === 'select'}
+                                    <label class="d-field">
+                                      <span>{param.label}</span>
+                                      <select
+                                        class="cap-input mono"
+                                        value={step.params?.[param.name] ?? param.default ?? ''}
+                                        on:change={(e) => updateCryptoStepParam(idx, param.name, e.currentTarget.value)}
+                                      >
+                                        {#each param.options || [] as opt (opt)}
+                                          <option value={opt}>{opt}</option>
+                                        {/each}
+                                      </select>
+                                    </label>
+                                  {:else}
+                                    <label class="d-field">
+                                      <span>{param.label}{param.required ? ' *' : ''}</span>
+                                      <input
+                                        type="text"
+                                        class="cap-input mono"
+                                        value={step.params?.[param.name] ?? ''}
+                                        placeholder={param.placeholder || param.default || ''}
+                                        on:input={(e) => updateCryptoStepParam(idx, param.name, e.currentTarget.value)}
+                                      />
+                                    </label>
+                                  {/if}
+                                {/each}
+                              </div>
+                            {/if}
+                          </div>
+                        {/each}
+                      {/if}
+                    </div>
+                  </div>
+                </SplitPane>
+              </div>
+
+              <!-- RIGHT: Input + Auto-Identify + Final Output & Expandable Step Trace -->
+              <div slot="secondary" class="scroll-workspace">
+                <!-- Input Card -->
+                <div class="section-card cap-card">
+                  <div class="card-head">
+                    <Icon name="file-text" size={13} />
+                    <span>{$t('reLab.cryptolab.pipeline.inputTitle')}</span>
+                    <div class="strip-spacer"></div>
+                    <div class="seg-toggle">
+                      {#each ['utf8', 'hex', 'base64'] as enc (enc)}
+                        <button type="button" class="seg-btn mono" class:active={cryptoInputEncoding === enc} on:click={() => (cryptoInputEncoding = enc)}>
+                          {enc}
+                        </button>
+                      {/each}
+                    </div>
+                    {#if cryptoResult}
+                      <Button variant="ghost" size="xs" icon="repeat" on:click={swapCryptoOutputToInput}>
+                        {$t('reLab.cryptolab.pipeline.swapBtn')}
+                      </Button>
+                    {/if}
+                  </div>
+                  <textarea
+                    class="cap-textarea mono"
+                    rows="5"
+                    bind:value={cryptoInput}
+                    placeholder={$t('reLab.cryptolab.pipeline.inputPlaceholder')}
+                  ></textarea>
+                </div>
+
+                <!-- Auto-Identify Panel -->
+                {#if cryptoIdentify}
+                  <div class="section-card cap-card">
+                    <div class="card-head">
+                      <Icon name="sparkles" size={13} />
+                      <span>{$t('reLab.cryptolab.pipeline.identifyTitle')}</span>
+                      <Badge variant="info" size="xs" mono>
+                        {$t('reLab.cryptolab.pipeline.entropyLabel', {
+                          val: (cryptoIdentify.entropy || 0).toFixed(2),
+                          cls: cryptoIdentify.entropy_class || '',
+                        })}
+                      </Badge>
+                      <Badge variant="neutral" size="xs" mono>{cryptoIdentify.decoded_byte_len} B</Badge>
+                    </div>
+
+                    {#if cryptoIdentify.candidates?.length > 0}
+                      <div class="finding-list">
+                        {#each cryptoIdentify.candidates as cand, idx (`cand:${cand.format}:${idx}`)}
+                          <div class="finding-item">
+                            <div class="fi-top">
+                              <Badge variant="accent" size="xs" mono>{cand.label || cand.format}</Badge>
+                              <Badge variant="success" size="xs" mono>{Math.round((cand.confidence || 0) * 100)}%</Badge>
+                              {#if cand.details}<span class="meta-text">{cand.details}</span>{/if}
+                            </div>
+                            {#if cand.preview}
+                              <div class="mono fi-pattern truncate">{cand.preview}</div>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    {#if cryptoIdentify.jwt}
+                      <div class="finding-item">
+                        <div class="fi-top">
+                          <Badge variant="purple" size="xs" mono>{$t('reLab.cryptolab.pipeline.jwtTitle')}</Badge>
+                          {#if cryptoIdentify.jwt.algorithm}
+                            <Badge variant="accent" size="xs" mono>{cryptoIdentify.jwt.algorithm}</Badge>
+                          {/if}
+                        </div>
+                        <div class="findings-grid">
+                          <pre class="collector-code mono">{cryptoIdentify.jwt.header_json}</pre>
+                          <pre class="collector-code mono">{cryptoIdentify.jwt.payload_json}</pre>
+                        </div>
+                      </div>
+                    {/if}
+
+                    {#if cryptoIdentify.recipes?.length > 0}
+                      <div class="chip-wrap">
+                        {#each cryptoIdentify.recipes as rec, idx (`rec:${rec.name}:${idx}`)}
+                          <Button variant="secondary" size="xs" icon="play" on:click={() => applyCryptoRecipe(rec)}>
+                            {$t('reLab.cryptolab.pipeline.applyRecipe')}: {rec.name}
+                          </Button>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+
+                <!-- Pipeline Output & Expandable Step Trace -->
+                {#if cryptoResult}
+                  <div class="section-card cap-card">
+                    <div class="card-head">
+                      <Icon name="terminal" size={13} />
+                      <span>{$t('reLab.cryptolab.pipeline.outputTitle')}</span>
+                      <Badge variant={cryptoResult.success ? 'success' : 'danger'} size="xs" mono>
+                        {cryptoResult.success
+                          ? `${cryptoResult.byte_len} B · ${cryptoResult.total_elapsed_us} µs`
+                          : (cryptoResult.failed_step >= 0
+                              ? $t('reLab.cryptolab.pipeline.stepFailed', { idx: cryptoResult.failed_step + 1 })
+                              : $t('reLab.cryptolab.pipeline.inputDecodeFailed'))}
+                      </Badge>
+                      <div class="strip-spacer"></div>
+                      <div class="seg-toggle">
+                        <button type="button" class="seg-btn mono" class:active={cryptoOutputTab === 'utf8'} on:click={() => (cryptoOutputTab = 'utf8')}>UTF-8</button>
+                        <button type="button" class="seg-btn mono" class:active={cryptoOutputTab === 'hex'} on:click={() => (cryptoOutputTab = 'hex')}>Hex</button>
+                        <button type="button" class="seg-btn mono" class:active={cryptoOutputTab === 'base64'} on:click={() => (cryptoOutputTab = 'base64')}>Base64</button>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        icon="copy"
+                        on:click={() =>
+                          copyToClipboard(
+                            cryptoOutputTab === 'hex'
+                              ? cryptoResult.output_hex
+                              : cryptoOutputTab === 'base64'
+                                ? cryptoResult.output_base64
+                                : cryptoResult.output_utf8,
+                            translate('reLab.toast.copied')
+                          )}
+                      >
+                        {$t('common.actions.copy')}
+                      </Button>
+                    </div>
+
+                    {#if cryptoResult.error}
+                      <div class="danger-txt mono fi-note">{cryptoResult.error}</div>
+                    {/if}
+                    <pre class="collector-code mono crypto-out-pre">{cryptoOutputTab === 'hex'
+                      ? (cryptoResult.output_hex || '')
+                      : cryptoOutputTab === 'base64'
+                        ? (cryptoResult.output_base64 || '')
+                        : (cryptoResult.output_utf8 || '')}</pre>
+
+                    {#if cryptoResult.steps?.length > 0}
+                      <div class="form-section-label">{$t('reLab.cryptolab.pipeline.traceTitle', { count: cryptoResult.steps.length })}</div>
+                      <div class="finding-list">
+                        {#each cryptoResult.steps as st (st.index)}
+                          {@const isExp = expandedCryptoSteps.has(st.index)}
+                          <div class="finding-item">
+                            <button type="button" class="trace-step-btn" on:click={() => toggleCryptoStepTrace(st.index)}>
+                              <Icon name={isExp ? 'chevron-down' : 'chevron-right'} size={12} />
+                              <Badge variant={st.error ? 'danger' : st.disabled ? 'neutral' : 'accent'} size="xs" mono>#{st.index + 1} {st.op}</Badge>
+                              <span class="meta-text mono tabular-nums">{st.byte_len} B · {st.elapsed_us} µs</span>
+                              <span class="mono truncate flex-1">{st.error || st.output_utf8 || st.output_hex}</span>
+                            </button>
+                            {#if isExp}
+                              <div class="trace-step-body mono">
+                                {#if st.error}
+                                  <div class="danger-txt">{st.error}</div>
+                                {:else}
+                                  <div><span class="meta-text">UTF-8:</span> {st.output_utf8}</div>
+                                  <div class="fi-pattern"><span class="meta-text">HEX:</span> {st.output_hex}</div>
+                                {/if}
+                              </div>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            </SplitPane>
+          </div>
+
+        <!-- MODE 2: Schema-less Protobuf Wire Inspector & Editor -->
+        {:else if cryptoMode === 'protobuf'}
+          <div class="scroll-workspace">
+            <div class="section-card cap-card">
+              <div class="card-head">
+                <Icon name="database" size={13} />
+                <span>{$t('reLab.cryptolab.protobuf.title')}</span>
+              </div>
+              <p class="sub-copy">{$t('reLab.cryptolab.protobuf.subtitle')}</p>
+              <textarea
+                class="cap-textarea mono"
+                rows="3"
+                bind:value={protoInput}
+                placeholder={$t('reLab.cryptolab.protobuf.inputPlaceholder')}
+              ></textarea>
+              <div class="drawer-foot">
+                <Button variant="secondary" size="xs" icon="plus" on:click={() => addProtoField(null)}>
+                  {$t('reLab.cryptolab.protobuf.addFieldBtn')}
+                </Button>
+                <div class="strip-spacer"></div>
+                <Button variant="secondary" size="xs" icon="code" loading={encodingProto} disabled={!protoTree} on:click={encodeProtobuf}>
+                  {encodingProto ? $t('reLab.cryptolab.protobuf.encoding') : $t('reLab.cryptolab.protobuf.encodeBtn')}
+                </Button>
+                <Button variant="primary" size="xs" icon="search" loading={decodingProto} disabled={!protoInput.trim()} on:click={decodeProtobuf}>
+                  {decodingProto ? $t('reLab.cryptolab.protobuf.decoding') : $t('reLab.cryptolab.protobuf.decodeBtn')}
+                </Button>
+              </div>
+            </div>
+
+            {#if protoEncodedHex}
+              <div class="section-card cap-card">
+                <div class="card-head">
+                  <Icon name="check-circle" size={13} />
+                  <span>{$t('reLab.cryptolab.protobuf.encodedOutput', { bytes: Math.floor(protoEncodedHex.length / 2) })}</span>
+                  <div class="strip-spacer"></div>
+                  <Button variant="ghost" size="xs" icon="repeat" on:click={() => { protoInput = protoEncodedHex; decodeProtobuf() }}>
+                    {$t('reLab.cryptolab.protobuf.useAsInput')}
+                  </Button>
+                  <Button variant="secondary" size="xs" icon="copy" on:click={() => copyToClipboard(protoEncodedHex, translate('reLab.toast.copied'))}>
+                    {$t('common.actions.copy')}
+                  </Button>
+                </div>
+                <pre class="collector-code mono">{protoEncodedHex}</pre>
+              </div>
+            {/if}
+
+            {#if !protoTree}
+              <EmptyState icon="database" title={$t('reLab.cryptolab.protobuf.emptyTitle')} description={$t('reLab.cryptolab.protobuf.emptyDesc')} compact />
+            {:else}
+              {#if protoTree.warnings?.length > 0}
+                <div class="issues-box">
+                  {#each protoTree.warnings as w, idx (idx)}
+                    <div class="issue-line"><Icon name="alert-triangle" size={12} /><span>{w}</span></div>
+                  {/each}
+                </div>
+              {/if}
+
+              <div class="section-card cap-card">
+                <div class="proto-tree-list">
+                  {#each flatProtoRows as row (row.pathKey)}
+                    <div class="proto-row" style="padding-left: {8 + row.depth * 22}px;">
+                      {#if row.hasNested}
+                        <button type="button" class="mini-icon-btn" title="Toggle nested" aria-label="Toggle nested" on:click={() => toggleProtoCollapse(row.pathKey)}>
+                          <Icon name={row.isCollapsed ? 'chevron-right' : 'chevron-down'} size={12} />
+                        </button>
+                      {:else}
+                        <span class="ct-leaf">·</span>
+                      {/if}
+
+                      <label class="proto-num-lbl mono">
+                        <span>#</span>
+                        <input
+                          type="number"
+                          class="cap-input mono proto-num-inp"
+                          min="1"
+                          value={row.field.field_number}
+                          on:input={(e) => {
+                            const n = Number.parseInt(e.currentTarget.value, 10)
+                            if (Number.isFinite(n) && n > 0) {
+                              row.field.field_number = n
+                              protoTree = protoTree
+                            }
+                          }}
+                        />
+                      </label>
+
+                      <Badge variant="neutral" size="xs" mono>{row.field.wire_type_name || `wt${row.field.wire_type}`}</Badge>
+
+                      <select
+                        class="cap-input mono proto-kind-sel"
+                        value={row.field.kind}
+                        on:change={(e) => updateProtoFieldKind(row.field, e.currentTarget.value)}
+                      >
+                        {#if row.field.wire_type === 0}
+                          <option value="varint">uint64</option>
+                          <option value="int64">int64</option>
+                          <option value="sint64">sint64</option>
+                        {:else if row.field.wire_type === 1}
+                          <option value="fixed64">fixed64</option>
+                          <option value="sfixed64">sfixed64</option>
+                          <option value="double">double</option>
+                        {:else if row.field.wire_type === 5}
+                          <option value="fixed32">fixed32</option>
+                          <option value="sfixed32">sfixed32</option>
+                          <option value="float">float</option>
+                        {:else}
+                          <option value="string">string</option>
+                          <option value="bytes">bytes (hex)</option>
+                          <option value="message">message (nested)</option>
+                        {/if}
+                      </select>
+
+                      {#if row.field.kind === 'message'}
+                        <Badge variant="purple" size="xs" mono>{row.field.nested?.fields?.length || 0} fields</Badge>
+                        <Button variant="subtle" size="xs" icon="plus" on:click={() => addProtoField(row.field.nested)}>
+                          {$t('reLab.cryptolab.protobuf.addChildBtn')}
+                        </Button>
+                        <div class="strip-spacer"></div>
+                      {:else}
+                        <input
+                          type="text"
+                          class="cap-input mono flex-1"
+                          value={protoFieldDisplayValue(row.field)}
+                          placeholder={$t('reLab.cryptolab.protobuf.valuePlaceholder')}
+                          on:input={(e) => updateProtoFieldValue(row.field, e.currentTarget.value)}
+                        />
+                        {#if row.field.wire_type === 0 && row.field.varint_s64 !== undefined}
+                          <span class="meta-text mono">sint64={row.field.varint_s64}</span>
+                        {/if}
+                      {/if}
+
+                      <button type="button" class="mini-icon-btn" title={$t('common.actions.delete')} aria-label="Delete field" on:click={() => removeProtoField(row.parentMsg, row.indexInParent)}>
+                        <Icon name="trash" size={12} />
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+
+        <!-- MODE 3: White-Box AES-128 Round-9 DFA Solver & Fault Script Generator -->
+        {:else}
+          <div class="scroll-workspace">
+            <!-- Solver Form -->
+            <div class="section-card cap-card">
+              <div class="card-head">
+                <Icon name="key" size={13} />
+                <span>{$t('reLab.cryptolab.dfa.solverTitle')}</span>
+              </div>
+              <p class="sub-copy">{$t('reLab.cryptolab.dfa.solverSubtitle')}</p>
+
+              <div class="form-grid two-col">
+                <label class="d-field">
+                  <span>{$t('reLab.cryptolab.dfa.validCtLabel')}</span>
+                  <input type="text" class="cap-input mono" bind:value={dfaValidHex} placeholder="3925841d02dc09fbdc118597196a0b32" />
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.cryptolab.dfa.plaintextLabel')}</span>
+                  <input type="text" class="cap-input mono" bind:value={dfaPlaintextHex} placeholder="3243f6a8885a308d313198a2e0370734" />
+                </label>
+              </div>
+
+              <label class="d-field">
+                <span>{$t('reLab.cryptolab.dfa.faultsLabel', { count: dfaFaultLines.length })}</span>
+                <textarea
+                  class="cap-textarea mono"
+                  rows="5"
+                  bind:value={dfaFaultsText}
+                  placeholder={$t('reLab.cryptolab.dfa.faultsPlaceholder')}
+                ></textarea>
+              </label>
+
+              <div class="drawer-foot">
+                <div class="strip-spacer"></div>
+                <Button variant="primary" size="sm" icon="zap" loading={solvingDfa} disabled={!dfaValidHex.trim() || dfaFaultLines.length === 0} on:click={solveAes128Dfa}>
+                  {solvingDfa ? $t('reLab.cryptolab.dfa.solving') : $t('reLab.cryptolab.dfa.solveBtn')}
+                </Button>
+              </div>
+            </div>
+
+            <!-- Recovery Result & 4-Column Convergence -->
+            {#if dfaResult}
+              <div class="section-card cap-card">
+                <div class="card-head">
+                  <Badge variant={dfaResult.solved ? 'success' : 'warning'} size="sm" solid={dfaResult.solved}>
+                    {dfaResult.solved ? $t('reLab.cryptolab.dfa.solvedBadge') : $t('reLab.cryptolab.dfa.unsolvedBadge')}
+                  </Badge>
+                  {#if dfaResult.verified_with_plaintext}
+                    <Badge variant="accent" size="xs" dot>{$t('reLab.cryptolab.dfa.verifiedBadge')}</Badge>
+                  {/if}
+                  <span class="meta-text mono tabular-nums">
+                    {$t('reLab.cryptolab.dfa.usableStats', {
+                      usable: dfaResult.usable_faults || 0,
+                      total: dfaResult.total_faults_input || 0,
+                      ignored: dfaResult.ignored_faults || 0,
+                      us: dfaResult.elapsed_us || 0,
+                    })}
+                  </span>
+                </div>
+
+                {#if dfaResult.master_key_hex || dfaResult.round10_key_hex}
+                  <div class="findings-grid">
+                    <div class="finding-item dfa-key-card">
+                      <div class="fi-top">
+                        <span class="meta-text">{$t('reLab.cryptolab.dfa.masterKeyLabel')}</span>
+                        <div class="strip-spacer"></div>
+                        <Button variant="ghost" size="xs" icon="copy" on:click={() => copyToClipboard(dfaResult.master_key_hex, translate('reLab.toast.copied'))}>
+                          {$t('common.actions.copy')}
+                        </Button>
+                      </div>
+                      <div class="dfa-key-val mono success-txt">{dfaResult.master_key_hex || '—'}</div>
+                    </div>
+                    <div class="finding-item dfa-key-card">
+                      <div class="fi-top">
+                        <span class="meta-text">{$t('reLab.cryptolab.dfa.round10KeyLabel')}</span>
+                        <div class="strip-spacer"></div>
+                        <Button variant="ghost" size="xs" icon="copy" on:click={() => copyToClipboard(dfaResult.round10_key_hex, translate('reLab.toast.copied'))}>
+                          {$t('common.actions.copy')}
+                        </Button>
+                      </div>
+                      <div class="dfa-key-val mono accent-txt">{dfaResult.round10_key_hex || '—'}</div>
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- 4-Column Convergence Progress -->
+                <div class="kpi-grid four-col">
+                  {#each dfaResult.columns || [] as col (col.group_index)}
+                    <div class="finding-item" class:dfa-col-solved={col.solved}>
+                      <div class="fi-top">
+                        <strong>{$t('reLab.cryptolab.dfa.colTitle', { idx: col.group_index })}</strong>
+                        <div class="strip-spacer"></div>
+                        <Badge variant={col.solved ? 'success' : 'warning'} size="xs" mono>
+                          {col.solved ? $t('reLab.cryptolab.dfa.colSolved') : $t('reLab.cryptolab.dfa.colCandidates', { count: col.candidate_count })}
+                        </Badge>
+                      </div>
+                      <div class="meta-text mono">
+                        {$t('reLab.cryptolab.dfa.colBytes', { bytes: (col.byte_indices || []).join(', ') })} · {$t('reLab.cryptolab.dfa.colFaults', { count: col.fault_count })}
+                      </div>
+                      {#if col.subkey_bytes_hex}
+                        <div class="mono bold success-txt">K10: {col.subkey_bytes_hex}</div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+
+                {#if dfaResult.notes?.length > 0}
+                  <ul class="rec-list">
+                    {#each dfaResult.notes as note, idx (idx)}
+                      <li>{note}</li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/if}
+
+            <!-- Fault-Injection Script Generator -->
+            <div class="section-card cap-card">
+              <div class="card-head">
+                <Icon name="code" size={13} />
+                <span>{$t('reLab.cryptolab.dfa.scriptTitle')}</span>
+                <div class="strip-spacer"></div>
+                <div class="seg-toggle">
+                  <button type="button" class="seg-btn mono" class:active={dfaScriptEngine === 'unidbg'} on:click={() => (dfaScriptEngine = 'unidbg')}>Unidbg (Java)</button>
+                  <button type="button" class="seg-btn mono" class:active={dfaScriptEngine === 'qiling'} on:click={() => (dfaScriptEngine = 'qiling')}>Qiling (Python)</button>
+                </div>
+              </div>
+
+              <div class="drawer-grid four-col">
+                <label class="d-field">
+                  <span>{$t('reLab.cryptolab.dfa.fields.binaryPath')}</span>
+                  <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.binary_path} placeholder="/path/to/libwbaes.so" />
+                </label>
+                {#if dfaScriptEngine === 'unidbg'}
+                  <label class="d-field">
+                    <span>{$t('reLab.cryptolab.dfa.fields.apkPath')}</span>
+                    <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.apk_path} placeholder="/path/to/app.apk" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.cryptolab.dfa.fields.targetClass')}</span>
+                    <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.target_class} placeholder="com/example/Whitebox" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.cryptolab.dfa.fields.targetMethod')}</span>
+                    <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.target_method} placeholder="encrypt" />
+                  </label>
+                {:else}
+                  <label class="d-field">
+                    <span>{$t('reLab.cryptolab.dfa.fields.rootfs')}</span>
+                    <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.rootfs} placeholder="./rootfs/arm64_linux" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.cryptolab.dfa.fields.targetSymbol')}</span>
+                    <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.target_symbol} placeholder="wb_aes_encrypt" />
+                  </label>
+                  <label class="d-field">
+                    <span>{$t('reLab.cryptolab.dfa.fields.targetAddr')}</span>
+                    <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.target_addr} placeholder="0x1000" />
+                  </label>
+                {/if}
+                <label class="d-field">
+                  <span>{$t('reLab.cryptolab.dfa.fields.faultHookAddr')}</span>
+                  <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.fault_hook_addr} placeholder="0x12a40" />
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.cryptolab.dfa.fields.stateBufReg')}</span>
+                  <input type="text" class="cap-input mono" bind:value={dfaScriptCfg.state_buf_reg} placeholder="x0" />
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.cryptolab.dfa.fields.faultXor')}</span>
+                  <input type="number" class="cap-input mono" bind:value={dfaScriptCfg.fault_xor} min="1" max="255" />
+                </label>
+                <label class="d-field">
+                  <span>{$t('reLab.cryptolab.dfa.fields.faultsPerByte')}</span>
+                  <input type="number" class="cap-input mono" bind:value={dfaScriptCfg.faults_per_byte} min="1" max="32" />
+                </label>
+              </div>
+
+              <div class="drawer-foot">
+                <div class="strip-spacer"></div>
+                {#if dfaGeneratedScript}
+                  <Button variant="secondary" size="xs" icon="copy" on:click={() => copyToClipboard(dfaGeneratedScript.code, translate('reLab.toast.copied'))}>
+                    {$t('common.actions.copy')}
+                  </Button>
+                  <Button variant="success" size="xs" icon="play" on:click={loadDfaScriptIntoEmulation}>
+                    {$t('reLab.cryptolab.dfa.loadEmuBtn')}
+                  </Button>
+                {/if}
+                <Button variant="primary" size="xs" icon="sparkles" loading={generatingDfaScript} on:click={generateDfaScript}>
+                  {$t('reLab.cryptolab.dfa.generateBtn')}
+                </Button>
+              </div>
+
+              {#if dfaGeneratedScript}
+                <div class="collector-preview">
+                  <div class="cp-head">
+                    <strong class="mono">{dfaGeneratedScript.title}</strong>
+                    <Badge variant={engineVariant(dfaGeneratedScript.engine)} size="xs" mono>{dfaGeneratedScript.engine}</Badge>
+                    <Badge variant="neutral" size="xs" mono>{dfaGeneratedScript.file_name}</Badge>
+                  </div>
+                  <pre class="collector-code mono">{dfaGeneratedScript.code}</pre>
+                  {#if dfaGeneratedScript.notes?.length}
+                    <div class="cp-steps">
+                      {#each dfaGeneratedScript.notes as n, idx (idx)}
+                        <div>• {n}</div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
 </div>
@@ -5342,6 +8875,11 @@
   .seg-btn.active {
     background: var(--bg-elevated);
     color: var(--text-primary);
+  }
+
+  .seg-btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
   }
 
   .code-viewer-scroll {
@@ -6614,5 +10152,221 @@
 
   .mini-icon-btn:hover {
     color: var(--text-primary);
+  }
+
+  /* ==================== Wave C Pro Upgrades ==================== */
+  .inline-action-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .inline-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-xs);
+  }
+
+  .compact-input {
+    width: 190px;
+    height: 24px;
+    font-size: 11px;
+  }
+
+  .compact-table-box {
+    max-height: 180px;
+    overflow-y: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+  }
+
+  .plist-kv-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 14px;
+    font-size: 11.5px;
+  }
+
+  .jadx-src-search {
+    flex: 0 1 240px;
+  }
+
+  .jadx-cls-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .jadx-cls-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .jadx-reg-box {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-panel);
+    flex-shrink: 0;
+  }
+
+  .inline-pills {
+    padding: 0;
+    border-bottom: none;
+  }
+
+  .ja3-box {
+    padding: 6px 8px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .tls-editor-box {
+    height: 230px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .op-catalog-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    text-align: left;
+    font-size: var(--text-xs);
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .op-catalog-row:hover {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+  }
+
+  .op-row-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .step-card {
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .step-card.step-disabled {
+    opacity: 0.58;
+  }
+
+  .step-card-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-xs);
+  }
+
+  .step-params-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 8px;
+  }
+
+  .crypto-out-pre {
+    max-height: 200px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .trace-step-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .trace-step-body {
+    padding-top: 5px;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .proto-tree-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .proto-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    flex-wrap: wrap;
+  }
+
+  .proto-num-lbl {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .proto-num-inp {
+    width: 58px;
+    height: 24px;
+    font-size: 11px;
+    padding: 0 5px;
+  }
+
+  .proto-kind-sel {
+    width: 118px;
+    height: 24px;
+    font-size: 11px;
+  }
+
+  .dfa-key-card {
+    gap: 4px;
+  }
+
+  .dfa-key-val {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    word-break: break-all;
+  }
+
+  .dfa-col-solved {
+    border-color: var(--status-success-border);
+    background: var(--status-success-bg);
   }
 </style>

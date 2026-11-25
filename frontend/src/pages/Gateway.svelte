@@ -20,6 +20,9 @@
 
   const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
   const PROXY_STRATEGIES = ['round_robin', 'random', 'least_latency', 'sticky_device']
+  const ACCOUNT_STRATEGIES = ['round_robin', 'least_used', 'sticky_device']
+  const ACCOUNT_STATUSES = ['active', 'expired', 'challenged', 'disabled']
+  const WORKER_KINDS = ['unidbg_http', 'qiling_http', 'script_http', 'custom']
   const SIGNER_KINDS = ['builtin_hmac', 'script', 'http', 'unidbg_http', 'frida_rpc']
   const HMAC_ALGORITHMS = ['md5', 'sha1', 'sha256', 'sha512', 'hmac-md5', 'hmac-sha1', 'hmac-sha256', 'hmac-sha512']
   const SCRIPT_RUNTIMES = ['python3', 'node', 'sh']
@@ -34,6 +37,19 @@
     '{{timestamp_ms}}',
     '{{nonce}}',
     '{{uuid}}',
+  ]
+  const ACCOUNT_TEMPLATE_VARS = [
+    '{{account.token}}',
+    '{{account.cookie}}',
+    '{{account.username}}',
+  ]
+  const FALLBACK_TLS_PROFILES = [
+    { id: 'go_default', name: 'Go Default (crypto/tls)', platform: 'generic' },
+    { id: 'chrome_131', name: 'Chrome 131 (Desktop)', platform: 'desktop' },
+    { id: 'safari_17', name: 'Safari 17 (macOS / WebKit)', platform: 'desktop' },
+    { id: 'firefox_132', name: 'Firefox 132 (Desktop)', platform: 'desktop' },
+    { id: 'okhttp_android', name: 'OkHttp (Android)', platform: 'android' },
+    { id: 'ios_cfnetwork', name: 'CFNetwork (iOS)', platform: 'ios' },
   ]
 
   const STARTER_SCRIPTS = {
@@ -126,6 +142,13 @@ rpc.exports = {
     signer_total: 0,
     route_total: 0,
     route_enabled: 0,
+    total_accounts: 0,
+    active_accounts: 0,
+    total_workers: 0,
+    healthy_workers: 0,
+    cache_hits: 0,
+    cache_misses: 0,
+    open_circuits: 0,
   }
   let listenAddr = S.listenAddr || '127.0.0.1:9090'
   let gwConfig = {
@@ -138,7 +161,7 @@ rpc.exports = {
   let serverBusy = false
   let refreshingAll = false
 
-  // Config Drawer & OpenAPI Drawer
+  // Config, OpenAPI, Prometheus & Docker Drawers
   let showConfigDrawer = false
   let cfgRequireAuth = false
   let cfgApiKeys = []
@@ -152,8 +175,21 @@ rpc.exports = {
   let openApiSpec = ''
   let loadingOpenApi = false
 
+  let showPromDrawer = false
+  let promMetrics = ''
+  let loadingProm = false
+
+  let showDockerDrawer = false
+  let dockerBundle = null
+  let dockerTab = 'dockerfile' // 'dockerfile' | 'compose'
+  let loadingDocker = false
+
   // ==================== Sub-tab 1: Routes & Live Tester ====================
   let routes = []
+  let tlsProfiles = []
+  let ja3Cache = {}
+  let loadingJa3 = false
+  let circuitStates = {}
   let routeSearch = S.routeSearch || ''
   let selectedRoute = null
   let isNewRoute = false
@@ -179,6 +215,30 @@ rpc.exports = {
   let rRateLimitRps = 0
   let rTimeoutSec = 15
   let rSourceFlowId = ''
+  // Route Production Controls fields
+  let openTlsSection = true
+  let openAccountSection = true
+  let openResilienceSection = true
+  let rTlsProfile = 'go_default'
+  let rMtlsCertPath = ''
+  let rMtlsKeyPath = ''
+  let mtlsValidation = null
+  let validatingMtls = false
+  let mtlsValidateSeq = 0
+  let rAccountTags = ''
+  let rRequireAccount = false
+  let rAutoRefresh = false
+  let rRefreshRouteSlug = ''
+  let rRefreshOnStatuses = ''
+  let rRefreshOnBodySubstr = ''
+  let rChallengeWebhookUrl = ''
+  let rCacheTtlSec = 0
+  let rCacheKeyFields = ''
+  let rCacheMaxEntries = 512
+  let rCircuitFailThreshold = 0
+  let rCircuitCooldownSec = 30
+  let clearingCache = false
+  let resettingCircuit = false
   let templateTarget = 'url' // 'url' | 'body'
   let urlInputEl = null
   let bodyInputEl = null
@@ -201,6 +261,8 @@ rpc.exports = {
   let testExtraHeaders = ''
   let testDeviceId = S.testDeviceId || ''
   let testProxyId = S.testProxyId || ''
+  let testAccountId = S.testAccountId || ''
+  let testBypassCache = Boolean(S.testBypassCache)
   let testRaw = Boolean(S.testRaw)
   let testingRoute = false
   let testResult = S.lastTestResult || null
@@ -301,6 +363,7 @@ rpc.exports = {
   let sRuntime = 'python3'
   let sScriptCode = ''
   let sEndpointUrl = ''
+  let sWorkerPoolId = ''
   let sHttpMethod = 'POST'
   let sTimeoutSec = 10
   let sHeaders = []
@@ -331,6 +394,79 @@ rpc.exports = {
   let expandedLogIds = new Set()
   let loadingLogs = false
 
+  // ==================== Sub-tab 6: Account / Session Pool ====================
+  let accounts = []
+  let accountPoolConfig = {
+    strategy: 'round_robin',
+    refresh: {
+      refresh_route_slug: '',
+      refresh_on_statuses: [],
+      refresh_on_body_substr: '',
+      challenge_webhook_url: '',
+      max_refresh_attempts: 1,
+    },
+  }
+  let savingAccountCfg = false
+  let accountSearch = S.accountSearch || ''
+  let accountStatusFilter = S.accountStatusFilter || 'all'
+  let selectedAccount = null
+  let isNewAccount = false
+  let confirmDeleteAccountId = null
+  let savingAccount = false
+  let markingAccountId = ''
+
+  // Account Editor fields
+  let aId = ''
+  let aName = ''
+  let aUsername = ''
+  let aEnabled = true
+  let aStatus = 'active'
+  let aTags = ''
+  let aStickyDeviceId = ''
+  let aStickyProxyId = ''
+  let aExpiresAt = ''
+  let aNotes = ''
+  let aToken = ''
+  let aRefreshToken = ''
+  let aCookie = ''
+  let aCookies = []
+  let aAuthHeaders = []
+  let aTokens = []
+  let aShowSecrets = false
+
+  // ==================== Sub-tab 7: Managed Signer Workers ====================
+  let workers = []
+  let workerStatuses = []
+  let loadingWorkers = false
+  let workerSearch = S.workerSearch || ''
+  let selectedWorker = null
+  let isNewWorker = false
+  let confirmDeleteWorkerId = null
+  let savingWorker = false
+  let workerActionBusyId = ''
+  let expandedInstanceKeys = new Set()
+  let workerPollTimer = null
+  let workerPollInFlight = false
+  let destroyed = false
+
+  // Worker Pool Editor fields
+  let wId = ''
+  let wName = ''
+  let wKind = 'unidbg_http'
+  let wEnabled = true
+  let wDescription = ''
+  let wCommand = ''
+  let wArgsText = ''
+  let wWorkDir = ''
+  let wEnv = []
+  let wBasePort = 18080
+  let wInstances = 2
+  let wHealthPath = '/health'
+  let wSignPath = '/sign'
+  let wAutoRestart = true
+  let wMaxRestarts = 5
+  let wRestartBackoffMs = 500
+
   let unsubs = []
   let unsubHandoff = null
   let unregisterCmds = null
@@ -342,12 +478,17 @@ rpc.exports = {
     S.selectedRouteId = selectedRoute?.id || ''
     S.selectedDeviceId = selectedDevice?.id || ''
     S.selectedSignerId = selectedSigner?.id || ''
+    S.selectedAccountId = selectedAccount?.id || ''
+    S.selectedWorkerId = selectedWorker?.id || ''
     S.routeSearch = routeSearch
     S.proxySearch = proxySearch
     S.proxyStatusFilter = proxyStatusFilter
     S.deviceSearch = deviceSearch
     S.deviceKindFilter = deviceKindFilter
     S.signerSearch = signerSearch
+    S.accountSearch = accountSearch
+    S.accountStatusFilter = accountStatusFilter
+    S.workerSearch = workerSearch
     S.logRouteFilter = logRouteFilter
     S.logStatusFilter = logStatusFilter
     S.logSearch = logSearch
@@ -355,6 +496,8 @@ rpc.exports = {
     S.testBody = testOverrideBody
     S.testDeviceId = testDeviceId
     S.testProxyId = testProxyId
+    S.testAccountId = testAccountId
+    S.testBypassCache = testBypassCache
     S.testRaw = testRaw
     S.lastTestResult = testResult
   }
@@ -380,6 +523,42 @@ rpc.exports = {
 
   $: signerNameById = Object.fromEntries(signers.map((s) => [s.id, s.name || s.id]))
   $: proxyNameById = Object.fromEntries(proxies.map((p) => [p.id, p.name || redactProxyURL(p.url) || p.id]))
+  $: deviceNameById = Object.fromEntries(devices.map((d) => [d.id, d.name || d.id]))
+  $: workerNameById = Object.fromEntries(workers.map((w) => [w.id, w.name || w.id]))
+  $: workerStatusById = Object.fromEntries(
+    workerStatuses
+      .filter((st) => st?.spec?.id)
+      .map((st) => [st.spec.id, st])
+  )
+
+  $: localActiveAccounts = accounts.filter((a) => {
+    if (!a.enabled || (a.status && a.status !== 'active')) return false
+    if (a.expires_at) {
+      const exp = Date.parse(a.expires_at)
+      if (Number.isFinite(exp) && exp <= Date.now()) return false
+    }
+    return true
+  }).length
+  $: displayTotalAccounts = accounts.length > 0 ? accounts.length : (stats.total_accounts || 0)
+  $: displayActiveAccounts = accounts.length > 0 ? localActiveAccounts : (stats.active_accounts || 0)
+
+  $: localTotalWorkers = workerStatuses.length > 0
+    ? workerStatuses.reduce((acc, st) => acc + (st.total_instances ?? st.total_count ?? st.spec?.instances ?? 0), 0)
+    : workers.reduce((acc, w) => acc + (Number(w.instances) || 1), 0)
+  $: localHealthyWorkers = workerStatuses.reduce((acc, st) => acc + (st.healthy_instances ?? st.healthy_count ?? 0), 0)
+  $: displayTotalWorkers = (workerStatuses.length > 0 || workers.length > 0) ? localTotalWorkers : (stats.total_workers || 0)
+  $: displayHealthyWorkers = workerStatuses.length > 0 ? localHealthyWorkers : (stats.healthy_workers || 0)
+
+  $: localOpenCircuits = Object.values(circuitStates || {}).filter((c) => c?.state === 'open').length
+  $: displayOpenCircuits = Object.keys(circuitStates || {}).length > 0 ? localOpenCircuits : (stats.open_circuits || 0)
+
+  $: effectiveTlsProfiles = tlsProfiles.length > 0 ? tlsProfiles : FALLBACK_TLS_PROFILES
+  $: selectedTlsProfileSpec = effectiveTlsProfiles.find((p) => p.id === rTlsProfile) || effectiveTlsProfiles[0] || null
+  $: currentJa3 = ja3Cache[rTlsProfile] || selectedTlsProfileSpec?.ja3 || null
+  $: activeRouteSlugKey = (selectedRoute?.slug || rSlug || '').trim()
+  $: currentRouteCircuit = activeRouteSlugKey ? (circuitStates[activeRouteSlugKey] || null) : null
+  $: refreshRouteCandidates = routes.filter((r) => r.slug && r.slug !== activeRouteSlugKey)
+  $: selectedWorkerStatus = selectedWorker?.id ? (workerStatusById[selectedWorker.id] || null) : null
 
   $: filteredRoutes = routes.filter((r) => {
     const q = routeSearch.trim().toLowerCase()
@@ -439,7 +618,32 @@ rpc.exports = {
       (s.name || '').toLowerCase().includes(q) ||
       (s.kind || '').toLowerCase().includes(q) ||
       (s.description || '').toLowerCase().includes(q) ||
-      (s.endpoint_url || '').toLowerCase().includes(q)
+      (s.endpoint_url || '').toLowerCase().includes(q) ||
+      (s.worker_pool_id || '').toLowerCase().includes(q)
+    )
+  })
+
+  $: filteredAccounts = accounts.filter((a) => {
+    const st = a.status || (a.enabled ? 'active' : 'disabled')
+    if (accountStatusFilter !== 'all' && st !== accountStatusFilter) return false
+    const q = accountSearch.trim().toLowerCase()
+    if (!q) return true
+    return (
+      (a.name || '').toLowerCase().includes(q) ||
+      (a.username || '').toLowerCase().includes(q) ||
+      (a.notes || '').toLowerCase().includes(q) ||
+      (a.tags || []).some((tg) => tg.toLowerCase().includes(q))
+    )
+  })
+
+  $: filteredWorkers = workers.filter((w) => {
+    const q = workerSearch.trim().toLowerCase()
+    if (!q) return true
+    return (
+      (w.name || '').toLowerCase().includes(q) ||
+      (w.kind || '').toLowerCase().includes(q) ||
+      (w.command || '').toLowerCase().includes(q) ||
+      (w.description || '').toLowerCase().includes(q)
     )
   })
 
@@ -462,6 +666,8 @@ rpc.exports = {
       (l.upstream_url || '').toLowerCase().includes(q) ||
       (l.proxy_name || '').toLowerCase().includes(q) ||
       (l.device_name || '').toLowerCase().includes(q) ||
+      (l.account_name || '').toLowerCase().includes(q) ||
+      (l.tls_profile || '').toLowerCase().includes(q) ||
       (l.error || '').toLowerCase().includes(q) ||
       (l.client_ip || '').toLowerCase().includes(q) ||
       String(l.status_code || '').includes(q)
@@ -496,6 +702,22 @@ rpc.exports = {
           icon: 'file-code',
           keywords: 'gateway openapi swagger spec json',
           run: () => openOpenApiDrawer(),
+        },
+        {
+          id: 'gateway:prometheus',
+          label: `${_t('gateway.topbar.title')}: ${_t('gateway.topbar.prometheus')}`,
+          category: _t('gateway.topbar.title'),
+          icon: 'radar',
+          keywords: 'gateway prometheus metrics telemetry grafana 监控 指标',
+          run: () => openPromDrawer(true),
+        },
+        {
+          id: 'gateway:docker',
+          label: `${_t('gateway.topbar.title')}: ${_t('gateway.topbar.docker')}`,
+          category: _t('gateway.topbar.title'),
+          icon: 'box',
+          keywords: 'gateway docker compose headless container deploy 部署 容器',
+          run: () => openDockerDrawer(true),
         },
         {
           id: 'gateway:check-proxies',
@@ -614,6 +836,72 @@ rpc.exports = {
     return `${s.slice(0, 6)}••••••${s.slice(-4)}`
   }
 
+  function parseStatusCodesInput(raw) {
+    return Array.from(
+      new Set(
+        String(raw || '')
+          .split(/[,，\s]+/)
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isInteger(n) && n >= 100 && n <= 599)
+      )
+    )
+  }
+
+  function formatStatusCodesInput(arr) {
+    return Array.isArray(arr) ? arr.join(', ') : ''
+  }
+
+  function parseArgsLines(raw) {
+    return String(raw || '')
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+  }
+
+  function formatArgsLines(arr) {
+    return Array.isArray(arr) ? arr.join('\n') : ''
+  }
+
+  function accountStatusVariant(status) {
+    switch (status) {
+      case 'active': return 'success'
+      case 'expired': return 'warning'
+      case 'challenged': return 'danger'
+      case 'disabled': return 'neutral'
+      default: return 'neutral'
+    }
+  }
+
+  function workerKindVariant(kind) {
+    switch (kind) {
+      case 'unidbg_http': return 'purple'
+      case 'qiling_http': return 'info'
+      case 'script_http': return 'accent'
+      default: return 'neutral'
+    }
+  }
+
+  function circuitStateVariant(state) {
+    switch (state) {
+      case 'open': return 'danger'
+      case 'half_open': return 'warning'
+      default: return 'success'
+    }
+  }
+
+  function downloadTextFile(filename, content, mime = 'text/plain;charset=utf-8') {
+    if (!content) return
+    const blob = new Blob([content], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   function shellSingleQuote(str) {
     return `'${String(str ?? '').replace(/'/g, `'\\''`)}'`
   }
@@ -624,7 +912,23 @@ rpc.exports = {
     if (!app) return
     refreshingAll = true
     try {
-      const [st, cfg, rList, pList, pCfg, dList, presets, sList, lList] = await Promise.all([
+      const [
+        st,
+        cfg,
+        rList,
+        pList,
+        pCfg,
+        dList,
+        presets,
+        sList,
+        lList,
+        tlsList,
+        cStates,
+        aList,
+        aCfg,
+        wList,
+        wStatuses,
+      ] = await Promise.all([
         app.GetGatewayStatus?.().catch(() => null),
         app.GetGatewayConfig?.().catch(() => null),
         app.ListGatewayRoutes?.().catch(() => []),
@@ -634,7 +938,14 @@ rpc.exports = {
         app.ListGatewayDevicePresets?.().catch(() => []),
         app.ListGatewaySigners?.().catch(() => []),
         app.ListGatewayLogs?.(200).catch(() => []),
+        app.ListTLSProfiles?.().catch(() => []),
+        app.GetGatewayCircuitStates?.().catch(() => ({})),
+        app.ListGatewayAccounts?.().catch(() => []),
+        app.GetAccountPoolConfig?.().catch(() => null),
+        app.ListGatewayWorkers?.().catch(() => []),
+        app.ListGatewayWorkerStatuses?.().catch(() => []),
       ])
+      if (destroyed) return
       if (st) {
         stats = { ...stats, ...st }
         if (st.listen_addr) listenAddr = st.listen_addr
@@ -672,6 +983,24 @@ rpc.exports = {
       }
       signers = Array.isArray(sList) ? sList : []
       logs = Array.isArray(lList) ? lList : []
+      tlsProfiles = Array.isArray(tlsList) ? tlsList : []
+      if (tlsProfiles.length > 0) {
+        const nextJa3 = { ...ja3Cache }
+        for (const p of tlsProfiles) {
+          if (p?.id && p?.ja3) nextJa3[p.id] = p.ja3
+        }
+        ja3Cache = nextJa3
+      }
+      circuitStates = cStates && typeof cStates === 'object' ? cStates : {}
+      accounts = Array.isArray(aList) ? aList : []
+      if (aCfg) {
+        accountPoolConfig = {
+          strategy: aCfg.strategy || 'round_robin',
+          refresh: aCfg.refresh || {},
+        }
+      }
+      workers = Array.isArray(wList) ? wList : []
+      workerStatuses = Array.isArray(wStatuses) ? wStatuses : []
 
       // Restore selections cleanly
       if (!isNewRoute) {
@@ -685,6 +1014,14 @@ rpc.exports = {
       if (!isNewSigner) {
         const targetSigner = signers.find((s) => s.id === (selectedSigner?.id || S.selectedSignerId)) || signers[0]
         if (targetSigner) selectSigner(targetSigner)
+      }
+      if (!isNewAccount) {
+        const targetAcc = accounts.find((a) => a.id === (selectedAccount?.id || S.selectedAccountId)) || accounts[0]
+        if (targetAcc) selectAccount(targetAcc)
+      }
+      if (!isNewWorker) {
+        const targetWorker = workers.find((w) => w.id === (selectedWorker?.id || S.selectedWorkerId)) || workers[0]
+        if (targetWorker) selectWorker(targetWorker)
       }
     } finally {
       refreshingAll = false
@@ -738,6 +1075,8 @@ rpc.exports = {
     showConfigDrawer = !showConfigDrawer
     if (showConfigDrawer) {
       showOpenApiDrawer = false
+      showPromDrawer = false
+      showDockerDrawer = false
       syncConfigDrawerDraft()
     }
   }
@@ -805,6 +1144,8 @@ rpc.exports = {
     }
     showOpenApiDrawer = true
     showConfigDrawer = false
+    showPromDrawer = false
+    showDockerDrawer = false
     await loadOpenApiSpec()
   }
 
@@ -824,16 +1165,84 @@ rpc.exports = {
 
   function downloadOpenApiSpec() {
     if (!openApiSpec) return
-    const blob = new Blob([openApiSpec], { type: 'application/json;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'cap-gateway-openapi.json'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    downloadTextFile('cap-gateway-openapi.json', openApiSpec, 'application/json;charset=utf-8')
     toast.success(translate('gateway.toast.openApiDownloaded'))
+  }
+
+  async function openPromDrawer(forceOpen = true) {
+    if (!forceOpen && showPromDrawer) {
+      showPromDrawer = false
+      return
+    }
+    showPromDrawer = true
+    showConfigDrawer = false
+    showOpenApiDrawer = false
+    showDockerDrawer = false
+    await loadPromMetrics()
+  }
+
+  async function loadPromMetrics() {
+    const app = api()
+    if (!app?.GetGatewayPrometheusMetrics) return
+    loadingProm = true
+    try {
+      const txt = await app.GetGatewayPrometheusMetrics()
+      promMetrics = typeof txt === 'string' ? txt : String(txt ?? '')
+    } catch (e) {
+      toast.error(translate('gateway.toast.promFailed', { err: e?.message || e }))
+    } finally {
+      loadingProm = false
+    }
+  }
+
+  function downloadPromMetrics() {
+    if (!promMetrics) return
+    downloadTextFile('cap-gateway-metrics.prom', promMetrics, 'text/plain;charset=utf-8')
+    toast.success(translate('gateway.toast.promDownloaded'))
+  }
+
+  async function openDockerDrawer(forceOpen = true) {
+    if (!forceOpen && showDockerDrawer) {
+      showDockerDrawer = false
+      return
+    }
+    showDockerDrawer = true
+    showConfigDrawer = false
+    showOpenApiDrawer = false
+    showPromDrawer = false
+    await loadDockerBundle()
+  }
+
+  async function loadDockerBundle() {
+    const app = api()
+    if (!app?.ExportGatewayDockerBundle) return
+    loadingDocker = true
+    try {
+      const addr = (stats.running ? stats.listen_addr : listenAddr) || listenAddr || '127.0.0.1:9090'
+      const bundle = await app.ExportGatewayDockerBundle(addr)
+      dockerBundle = bundle || null
+    } catch (e) {
+      toast.error(translate('gateway.toast.dockerFailed', { err: e?.message || e }))
+    } finally {
+      loadingDocker = false
+    }
+  }
+
+  $: activeDockerFilename = dockerTab === 'compose' ? 'docker-compose.yml' : 'Dockerfile'
+  $: activeDockerContent = !dockerBundle
+    ? ''
+    : (dockerTab === 'compose' ? (dockerBundle.docker_compose || '') : (dockerBundle.dockerfile || ''))
+
+  function copyActiveDockerFile() {
+    if (!activeDockerContent) return
+    copyToClipboard(activeDockerContent, translate('gateway.toast.dockerCopied', { file: activeDockerFilename }))
+  }
+
+  function downloadActiveDockerFile() {
+    if (!activeDockerContent) return
+    const file = activeDockerFilename
+    downloadTextFile(file, activeDockerContent, 'text/plain;charset=utf-8')
+    toast.success(translate('gateway.toast.dockerDownloaded', { file }))
   }
 
   // ==================== Sub-tab 1: Service Routes & Live Tester ====================
@@ -864,6 +1273,28 @@ rpc.exports = {
     rRateLimitRps = Number(r.rate_limit_rps) || 0
     rTimeoutSec = Number(r.timeout_sec) || 15
     rSourceFlowId = r.source_flow_id || ''
+
+    // Pro Controls fields
+    rTlsProfile = r.tls_profile || 'go_default'
+    rMtlsCertPath = r.mtls_cert_path || ''
+    rMtlsKeyPath = r.mtls_key_path || ''
+    mtlsValidateSeq++
+    mtlsValidation = null
+    validatingMtls = false
+    rAccountTags = formatTagsInput(r.account_tags)
+    rRequireAccount = Boolean(r.require_account)
+    rAutoRefresh = Boolean(r.auto_refresh)
+    rRefreshRouteSlug = r.refresh_route_slug || ''
+    rRefreshOnStatuses = formatStatusCodesInput(r.refresh_on_statuses)
+    rRefreshOnBodySubstr = r.refresh_on_body_substr || ''
+    rChallengeWebhookUrl = r.challenge_webhook_url || ''
+    rCacheTtlSec = Number(r.cache_ttl_sec) || 0
+    rCacheKeyFields = formatTagsInput(r.cache_key_fields)
+    rCacheMaxEntries = Number(r.cache_max_entries) || 512
+    rCircuitFailThreshold = Number(r.circuit_fail_threshold) || 0
+    rCircuitCooldownSec = Number(r.circuit_cooldown_sec) || 30
+
+    loadJa3ForProfile(rTlsProfile)
   }
 
   function createNewRoute() {
@@ -888,7 +1319,114 @@ rpc.exports = {
     rRateLimitRps = 0
     rTimeoutSec = 15
     rSourceFlowId = ''
+
+    rTlsProfile = 'go_default'
+    rMtlsCertPath = ''
+    rMtlsKeyPath = ''
+    mtlsValidateSeq++
+    mtlsValidation = null
+    validatingMtls = false
+    rAccountTags = ''
+    rRequireAccount = false
+    rAutoRefresh = false
+    rRefreshRouteSlug = ''
+    rRefreshOnStatuses = '401, 403'
+    rRefreshOnBodySubstr = ''
+    rChallengeWebhookUrl = ''
+    rCacheTtlSec = 0
+    rCacheKeyFields = ''
+    rCacheMaxEntries = 512
+    rCircuitFailThreshold = 0
+    rCircuitCooldownSec = 30
     testResult = null
+
+    loadJa3ForProfile(rTlsProfile)
+  }
+
+  async function loadJa3ForProfile(profileId) {
+    const id = String(profileId || 'go_default').trim() || 'go_default'
+    if (ja3Cache[id]) return
+    const app = api()
+    if (!app?.ComputeTLSProfileJA3) return
+    loadingJa3 = true
+    try {
+      const summary = await app.ComputeTLSProfileJA3(id)
+      if (summary) {
+        ja3Cache = { ...ja3Cache, [id]: summary }
+      }
+    } catch (_) {
+    } finally {
+      loadingJa3 = false
+    }
+  }
+
+  async function handleValidateMtlsPair() {
+    const app = api()
+    if (!app?.ValidateMTLSKeyPair || validatingMtls) return
+    const seq = ++mtlsValidateSeq
+    const certPath = rMtlsCertPath.trim()
+    const keyPath = rMtlsKeyPath.trim()
+    validatingMtls = true
+    mtlsValidation = null
+    try {
+      const res = await app.ValidateMTLSKeyPair(certPath, keyPath)
+      if (destroyed || seq !== mtlsValidateSeq) return
+      mtlsValidation = res || null
+      if (res?.valid) {
+        toast.success(translate('gateway.toast.mtlsValidated'))
+      } else if (res?.error) {
+        toast.warning(translate('gateway.toast.mtlsValidationFailed', { err: res.error }))
+      }
+    } catch (e) {
+      if (destroyed || seq !== mtlsValidateSeq) return
+      mtlsValidation = { valid: false, error: e?.message || String(e) }
+      toast.error(translate('gateway.toast.mtlsValidationFailed', { err: e?.message || e }))
+    } finally {
+      if (seq === mtlsValidateSeq) {
+        validatingMtls = false
+      }
+    }
+  }
+
+  async function refreshCircuitStates() {
+    const app = api()
+    if (!app?.GetGatewayCircuitStates) return
+    try {
+      const map = await app.GetGatewayCircuitStates()
+      circuitStates = map && typeof map === 'object' ? map : {}
+    } catch (_) {}
+  }
+
+  async function handleClearRouteCache() {
+    const app = api()
+    const slug = (selectedRoute?.slug || rSlug || '').trim()
+    if (!app?.ClearGatewayRouteCache || !slug || clearingCache) return
+    clearingCache = true
+    try {
+      await app.ClearGatewayRouteCache(slug)
+      toast.success(translate('gateway.toast.cacheCleared', { slug }))
+      await refreshStatus()
+    } catch (e) {
+      toast.error(translate('gateway.toast.actionFailed', { err: e?.message || e }))
+    } finally {
+      clearingCache = false
+    }
+  }
+
+  async function handleResetRouteCircuit() {
+    const app = api()
+    const slug = (selectedRoute?.slug || rSlug || '').trim()
+    if (!app?.ResetGatewayCircuit || !slug || resettingCircuit) return
+    resettingCircuit = true
+    try {
+      await app.ResetGatewayCircuit(slug)
+      toast.success(translate('gateway.toast.circuitReset', { slug }))
+      await Promise.all([refreshCircuitStates(), refreshStatus()])
+    } catch (e) {
+      toast.error(translate('gateway.toast.actionFailed', { err: e?.message || e }))
+    } finally {
+      resettingCircuit = false
+    }
   }
 
   function insertTemplateVar(token) {
@@ -950,6 +1488,21 @@ rpc.exports = {
         proxy_tags: parseTagsInput(rProxyTags),
         require_device: rRequireDevice,
         require_proxy: rRequireProxy,
+        account_tags: parseTagsInput(rAccountTags),
+        require_account: rRequireAccount,
+        auto_refresh: rAutoRefresh,
+        refresh_route_slug: rRefreshRouteSlug.trim(),
+        refresh_on_statuses: parseStatusCodesInput(rRefreshOnStatuses),
+        refresh_on_body_substr: rRefreshOnBodySubstr.trim(),
+        challenge_webhook_url: rChallengeWebhookUrl.trim(),
+        tls_profile: rTlsProfile || 'go_default',
+        mtls_cert_path: rMtlsCertPath.trim(),
+        mtls_key_path: rMtlsKeyPath.trim(),
+        cache_ttl_sec: Math.max(0, Number(rCacheTtlSec) || 0),
+        cache_key_fields: parseTagsInput(rCacheKeyFields),
+        cache_max_entries: Math.max(0, Number(rCacheMaxEntries) || 0),
+        circuit_fail_threshold: Math.max(0, Number(rCircuitFailThreshold) || 0),
+        circuit_cooldown_sec: Math.max(0, Number(rCircuitCooldownSec) || 0),
         rate_limit_rps: Number(rRateLimitRps) || 0,
         timeout_sec: Math.max(1, Number(rTimeoutSec) || 15),
         source_flow_id: rSourceFlowId || '',
@@ -961,7 +1514,7 @@ rpc.exports = {
         selectRoute(routes.find((x) => x.id === saved.id) || saved)
         toast.success(translate('gateway.toast.routeSaved', { slug: saved.slug }))
       }
-      await refreshStatus()
+      await Promise.all([refreshCircuitStates(), refreshStatus()])
     } catch (e) {
       toast.error(translate('gateway.toast.routeSaveFailed', { err: e?.message || e }))
     } finally {
@@ -1089,6 +1642,8 @@ rpc.exports = {
       body: testOverrideBody || '',
       device_id: testDeviceId || '',
       proxy_id: testProxyId || '',
+      account_id: testAccountId || '',
+      bypass_cache: testBypassCache,
       raw: testRaw,
     }
 
@@ -1105,7 +1660,7 @@ rpc.exports = {
         })
         testPreviewCache = testPreviewCache
       }
-      await refreshStatus()
+      await Promise.all([refreshCircuitStates(), refreshStatus()])
     } catch (e) {
       testResult = {
         ok: false,
@@ -1152,6 +1707,12 @@ rpc.exports = {
     }
     if (testProxyId) {
       parts.push(`-H ${shellSingleQuote(`X-Cap-Proxy-ID: ${testProxyId}`)}`)
+    }
+    if (testAccountId) {
+      parts.push(`-H ${shellSingleQuote(`X-Cap-Account-ID: ${testAccountId}`)}`)
+    }
+    if (testBypassCache) {
+      parts.push(`-H 'Cache-Control: no-cache'`)
     }
     const extra = parseHeadersTextarea(testExtraHeaders)
     for (const [k, v] of Object.entries(extra)) {
@@ -1541,6 +2102,7 @@ rpc.exports = {
     sRuntime = sg.runtime || 'python3'
     sScriptCode = sg.script_code || ''
     sEndpointUrl = sg.endpoint_url || ''
+    sWorkerPoolId = sg.worker_pool_id || ''
     sHttpMethod = sg.http_method || 'POST'
     sTimeoutSec = Number(sg.timeout_sec) || 10
     sHeaders = mapToRows(sg.headers)
@@ -1572,6 +2134,7 @@ rpc.exports = {
     sRuntime = 'python3'
     sScriptCode = ''
     sEndpointUrl = 'http://127.0.0.1:8899/sign'
+    sWorkerPoolId = ''
     sHttpMethod = 'POST'
     sTimeoutSec = 10
     sHeaders = []
@@ -1637,6 +2200,7 @@ rpc.exports = {
       base.output_mapping = rowsToMap(sOutputMapping)
     } else if (sKind === 'http' || sKind === 'unidbg_http') {
       base.endpoint_url = sEndpointUrl.trim()
+      base.worker_pool_id = sWorkerPoolId || ''
       base.http_method = sHttpMethod || 'POST'
       base.headers = rowsToMap(sHeaders)
       base.output_mapping = rowsToMap(sOutputMapping)
@@ -1793,6 +2357,347 @@ rpc.exports = {
     return null
   }
 
+  // ==================== Sub-tab 6: Account / Session Pool ====================
+  function selectAccount(acc) {
+    if (!acc) return
+    selectedAccount = acc
+    isNewAccount = false
+    confirmDeleteAccountId = null
+    aShowSecrets = false
+    aId = acc.id || ''
+    aName = acc.name || ''
+    aUsername = acc.username || ''
+    aEnabled = Boolean(acc.enabled)
+    aStatus = acc.status || (acc.enabled ? 'active' : 'disabled')
+    aTags = formatTagsInput(acc.tags)
+    aStickyDeviceId = acc.sticky_device_id || ''
+    aStickyProxyId = acc.sticky_proxy_id || ''
+    aExpiresAt = acc.expires_at || ''
+    aNotes = acc.notes || ''
+    aToken = acc.token || ''
+    aRefreshToken = acc.refresh_token || ''
+    aCookie = acc.cookie || ''
+    aCookies = mapToRows(acc.cookies)
+    aAuthHeaders = mapToRows(acc.auth_headers)
+    aTokens = mapToRows(acc.tokens)
+  }
+
+  function createNewAccount() {
+    selectedAccount = null
+    isNewAccount = true
+    confirmDeleteAccountId = null
+    aShowSecrets = false
+    aId = ''
+    aName = 'Account #1'
+    aUsername = ''
+    aEnabled = true
+    aStatus = 'active'
+    aTags = ''
+    aStickyDeviceId = ''
+    aStickyProxyId = ''
+    aExpiresAt = ''
+    aNotes = ''
+    aToken = ''
+    aRefreshToken = ''
+    aCookie = ''
+    aCookies = []
+    aAuthHeaders = []
+    aTokens = []
+  }
+
+  function setAccountExpiryPreset(hours) {
+    if (!hours) {
+      aExpiresAt = ''
+      return
+    }
+    const target = new Date(Date.now() + hours * 3600 * 1000)
+    aExpiresAt = target.toISOString().replace(/\.\d{3}Z$/, 'Z')
+  }
+
+  async function saveAccountPoolConfig() {
+    const app = api()
+    if (!app?.UpdateAccountPoolConfig || savingAccountCfg) return
+    savingAccountCfg = true
+    try {
+      await app.UpdateAccountPoolConfig({
+        strategy: accountPoolConfig.strategy || 'round_robin',
+        refresh: accountPoolConfig.refresh || {},
+      })
+      toast.success(translate('gateway.toast.accountConfigSaved'))
+    } catch (e) {
+      toast.error(translate('gateway.toast.accountOpFailed', { err: e?.message || e }))
+      try {
+        const fresh = await app.GetAccountPoolConfig?.()
+        if (fresh && !destroyed) {
+          accountPoolConfig = {
+            strategy: fresh.strategy || 'round_robin',
+            refresh: fresh.refresh || {},
+          }
+        }
+      } catch (_) {}
+    } finally {
+      savingAccountCfg = false
+    }
+  }
+
+  async function saveCurrentAccount() {
+    const app = api()
+    if (!app?.SaveGatewayAccount || savingAccount) return
+    savingAccount = true
+    try {
+      const payload = {
+        ...(selectedAccount && !isNewAccount ? selectedAccount : {}),
+        id: isNewAccount ? '' : aId,
+        name: aName.trim(),
+        username: aUsername.trim(),
+        enabled: aEnabled,
+        status: aStatus || (aEnabled ? 'active' : 'disabled'),
+        tags: parseTagsInput(aTags),
+        sticky_device_id: aStickyDeviceId || '',
+        sticky_proxy_id: aStickyProxyId || '',
+        expires_at: aExpiresAt.trim(),
+        notes: aNotes.trim(),
+        token: aToken,
+        refresh_token: aRefreshToken,
+        cookie: aCookie,
+        cookies: rowsToMap(aCookies),
+        auth_headers: rowsToMap(aAuthHeaders),
+        tokens: rowsToMap(aTokens),
+      }
+      const saved = await app.SaveGatewayAccount(payload)
+      const list = await app.ListGatewayAccounts?.()
+      accounts = Array.isArray(list) ? list : accounts
+      if (saved) {
+        selectAccount(accounts.find((x) => x.id === saved.id) || saved)
+        toast.success(translate('gateway.toast.accountSaved', { name: saved.name || saved.username || saved.id }))
+      }
+      await refreshStatus()
+    } catch (e) {
+      toast.error(translate('gateway.toast.accountOpFailed', { err: e?.message || e }))
+    } finally {
+      savingAccount = false
+    }
+  }
+
+  async function deleteCurrentAccount(id) {
+    const app = api()
+    if (!app?.DeleteGatewayAccount || !id) return
+    try {
+      await app.DeleteGatewayAccount(id)
+      confirmDeleteAccountId = null
+      const list = await app.ListGatewayAccounts?.()
+      accounts = Array.isArray(list) ? list : []
+      if (selectedAccount?.id === id) {
+        selectedAccount = null
+        isNewAccount = false
+        if (accounts.length > 0) selectAccount(accounts[0])
+      }
+      toast.info(translate('gateway.toast.accountDeleted'))
+      await refreshStatus()
+    } catch (e) {
+      toast.error(translate('gateway.toast.accountOpFailed', { err: e?.message || e }))
+    }
+  }
+
+  async function handleMarkAccountHealthy(id) {
+    const app = api()
+    if (!app?.MarkGatewayAccountHealthy || !id || markingAccountId) return
+    markingAccountId = id
+    try {
+      await app.MarkGatewayAccountHealthy(id)
+      const list = await app.ListGatewayAccounts?.()
+      accounts = Array.isArray(list) ? list : accounts
+      if (selectedAccount?.id === id) {
+        const refreshed = accounts.find((x) => x.id === id)
+        if (refreshed) selectAccount(refreshed)
+      }
+      toast.success(translate('gateway.toast.accountMarkedHealthy'))
+      await refreshStatus()
+    } catch (e) {
+      toast.error(translate('gateway.toast.accountOpFailed', { err: e?.message || e }))
+    } finally {
+      markingAccountId = ''
+    }
+  }
+
+  // ==================== Sub-tab 7: Managed Signer Workers ====================
+  async function loadWorkersAndStatuses(quiet = false) {
+    const app = api()
+    if (!app || destroyed) return
+    if (quiet && workerPollInFlight) return
+    if (quiet) workerPollInFlight = true
+    else loadingWorkers = true
+    try {
+      const [wList, wStatuses] = await Promise.all([
+        app.ListGatewayWorkers?.().catch(() => null),
+        app.ListGatewayWorkerStatuses?.().catch(() => null),
+      ])
+      if (destroyed) return
+      if (Array.isArray(wList)) workers = wList
+      if (Array.isArray(wStatuses)) workerStatuses = wStatuses
+      if (!isNewWorker && selectedWorker?.id) {
+        const updated = workers.find((x) => x.id === selectedWorker.id)
+        if (updated) selectedWorker = updated
+      }
+      if (!quiet) await refreshStatus()
+    } finally {
+      if (quiet) workerPollInFlight = false
+      else loadingWorkers = false
+    }
+  }
+
+  function selectWorker(w) {
+    if (!w) return
+    selectedWorker = w
+    isNewWorker = false
+    confirmDeleteWorkerId = null
+    wId = w.id || ''
+    wName = w.name || ''
+    wKind = w.kind || 'unidbg_http'
+    wEnabled = Boolean(w.enabled)
+    wDescription = w.description || ''
+    wCommand = w.command || ''
+    wArgsText = formatArgsLines(w.args)
+    wWorkDir = w.work_dir || ''
+    wEnv = mapToRows(w.env)
+    wBasePort = Number(w.base_port) || 18080
+    wInstances = Math.min(8, Math.max(1, Number(w.instances) || 1))
+    wHealthPath = w.health_path || '/health'
+    wSignPath = w.sign_path || '/sign'
+    wAutoRestart = Boolean(w.auto_restart)
+    wMaxRestarts = Number(w.max_restarts) || 5
+    wRestartBackoffMs = Number(w.restart_backoff_ms) || 500
+  }
+
+  function createNewWorker() {
+    selectedWorker = null
+    isNewWorker = true
+    confirmDeleteWorkerId = null
+    wId = ''
+    wName = 'Unidbg Signer Pool'
+    wKind = 'unidbg_http'
+    wEnabled = true
+    wDescription = ''
+    wCommand = 'java'
+    wArgsText = '-jar\nunidbg-signer.jar'
+    wWorkDir = ''
+    wEnv = []
+    wBasePort = 18080
+    wInstances = 2
+    wHealthPath = '/health'
+    wSignPath = '/sign'
+    wAutoRestart = true
+    wMaxRestarts = 5
+    wRestartBackoffMs = 500
+  }
+
+  async function saveCurrentWorker() {
+    const app = api()
+    if (!app?.SaveGatewayWorker || savingWorker) return
+    savingWorker = true
+    try {
+      const payload = {
+        id: isNewWorker ? '' : wId,
+        name: wName.trim(),
+        kind: wKind || 'custom',
+        enabled: wEnabled,
+        description: wDescription.trim(),
+        command: wCommand.trim(),
+        args: parseArgsLines(wArgsText),
+        work_dir: wWorkDir.trim(),
+        env: rowsToMap(wEnv),
+        base_port: Math.min(65535, Math.max(1, Number(wBasePort) || 18080)),
+        instances: Math.min(8, Math.max(1, Number(wInstances) || 1)),
+        health_path: wHealthPath.trim() || '/health',
+        sign_path: wSignPath.trim() || '/sign',
+        auto_restart: wAutoRestart,
+        max_restarts: Math.max(0, Number(wMaxRestarts) || 0),
+        restart_backoff_ms: Math.max(50, Number(wRestartBackoffMs) || 500),
+      }
+      const saved = await app.SaveGatewayWorker(payload)
+      await loadWorkersAndStatuses()
+      if (saved) {
+        selectWorker(workers.find((x) => x.id === saved.id) || saved)
+        toast.success(translate('gateway.toast.workerSaved', { name: saved.name }))
+      }
+    } catch (e) {
+      toast.error(translate('gateway.toast.workerOpFailed', { err: e?.message || e }))
+    } finally {
+      savingWorker = false
+    }
+  }
+
+  async function deleteCurrentWorker(id) {
+    const app = api()
+    if (!app?.DeleteGatewayWorker || !id) return
+    try {
+      await app.DeleteGatewayWorker(id)
+      confirmDeleteWorkerId = null
+      await loadWorkersAndStatuses()
+      if (selectedWorker?.id === id) {
+        selectedWorker = null
+        isNewWorker = false
+        if (workers.length > 0) selectWorker(workers[0])
+      }
+      toast.info(translate('gateway.toast.workerDeleted'))
+    } catch (e) {
+      toast.error(translate('gateway.toast.workerOpFailed', { err: e?.message || e }))
+    }
+  }
+
+  async function handleStartWorker(id) {
+    const app = api()
+    if (!app?.StartGatewayWorker || !id || workerActionBusyId) return
+    workerActionBusyId = id
+    try {
+      await app.StartGatewayWorker(id)
+      toast.success(translate('gateway.toast.workerStarted'))
+      await loadWorkersAndStatuses()
+    } catch (e) {
+      toast.error(translate('gateway.toast.workerOpFailed', { err: e?.message || e }))
+    } finally {
+      workerActionBusyId = ''
+    }
+  }
+
+  async function handleStopWorker(id) {
+    const app = api()
+    if (!app?.StopGatewayWorker || !id || workerActionBusyId) return
+    workerActionBusyId = id
+    try {
+      await app.StopGatewayWorker(id)
+      toast.info(translate('gateway.toast.workerStopped'))
+      await loadWorkersAndStatuses()
+    } catch (e) {
+      toast.error(translate('gateway.toast.workerOpFailed', { err: e?.message || e }))
+    } finally {
+      workerActionBusyId = ''
+    }
+  }
+
+  async function handleRestartWorker(id) {
+    const app = api()
+    if (!app?.RestartGatewayWorker || !id || workerActionBusyId) return
+    workerActionBusyId = id
+    try {
+      await app.RestartGatewayWorker(id)
+      toast.success(translate('gateway.toast.workerRestarted'))
+      await loadWorkersAndStatuses()
+    } catch (e) {
+      toast.error(translate('gateway.toast.workerOpFailed', { err: e?.message || e }))
+    } finally {
+      workerActionBusyId = ''
+    }
+  }
+
+  function toggleInstanceExpand(workerId, idx) {
+    const key = `${workerId}:${idx}`
+    const next = new Set(expandedInstanceKeys)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    expandedInstanceKeys = next
+  }
+
   // ==================== Events, Handoff & Shortcuts ====================
   function applyHandoff(h) {
     if (!h) return
@@ -1827,7 +2732,11 @@ rpc.exports = {
           total_requests: nextTotal,
           success_requests: (Number(stats.success_requests) || 0) + (rec.ok ? 1 : 0),
           error_requests: (Number(stats.error_requests) || 0) + (rec.ok ? 0 : 1),
+          cache_hits: (Number(stats.cache_hits) || 0) + (rec.cache_hit ? 1 : 0),
           avg_latency_ms: nextAvg,
+        }
+        if (rec.circuit_tripped) {
+          refreshCircuitStates()
         }
       }
     })
@@ -1860,6 +2769,12 @@ rpc.exports = {
       } else if (activeTab === 'signers' && (selectedSigner || isNewSigner)) {
         e.preventDefault()
         saveCurrentSigner()
+      } else if (activeTab === 'accounts' && (selectedAccount || isNewAccount)) {
+        e.preventDefault()
+        saveCurrentAccount()
+      } else if (activeTab === 'workers' && (selectedWorker || isNewWorker)) {
+        e.preventDefault()
+        saveCurrentWorker()
       }
     }
   }
@@ -1867,21 +2782,38 @@ rpc.exports = {
   onMount(async () => {
     subscribeEvents()
     await loadAllData()
+    if (destroyed) return
+    workerPollTimer = setInterval(() => {
+      if (!destroyed && activeTab === 'workers') {
+        loadWorkersAndStatuses(true)
+      }
+    }, 3000)
     let consumedInitialHandoff = false
     unsubHandoff = gatewayHandoff.subscribe((h) => {
-      if (h) {
+      if (h && !destroyed) {
         consumedInitialHandoff = true
         applyHandoff(h)
       }
     })
-    if (!consumedInitialHandoff && S.pendingPublishFlow) {
+    if (!destroyed && !consumedInitialHandoff && S.pendingPublishFlow) {
       applyHandoff(S.pendingPublishFlow)
     }
   })
 
   onDestroy(() => {
-    if (unsubHandoff) unsubHandoff()
-    if (unregisterCmds) unregisterCmds()
+    destroyed = true
+    if (workerPollTimer) {
+      clearInterval(workerPollTimer)
+      workerPollTimer = null
+    }
+    if (unsubHandoff) {
+      unsubHandoff()
+      unsubHandoff = null
+    }
+    if (unregisterCmds) {
+      unregisterCmds()
+      unregisterCmds = null
+    }
     for (const off of unsubs) {
       try { off() } catch (_) {}
     }
@@ -1961,6 +2893,26 @@ rpc.exports = {
         on:click={() => openOpenApiDrawer(false)}
       >
         {$t('gateway.topbar.openApi')}
+      </Button>
+
+      <Button
+        variant="secondary"
+        size="sm"
+        icon="radar"
+        active={showPromDrawer}
+        on:click={() => openPromDrawer(false)}
+      >
+        {$t('gateway.topbar.prometheus')}
+      </Button>
+
+      <Button
+        variant="secondary"
+        size="sm"
+        icon="box"
+        active={showDockerDrawer}
+        on:click={() => openDockerDrawer(false)}
+      >
+        {$t('gateway.topbar.docker')}
       </Button>
 
       <Button
@@ -2103,7 +3055,82 @@ rpc.exports = {
     </section>
   {/if}
 
-  <!-- 2. 5-KPI Telemetry Strip -->
+  <!-- Collapsible Drawer: Prometheus Metrics -->
+  {#if showPromDrawer}
+    <section class="top-drawer cap-card">
+      <div class="drawer-head">
+        <div>
+          <div class="drawer-title">{$t('gateway.promDrawer.title')}</div>
+          <div class="drawer-sub">{$t('gateway.promDrawer.subtitle')}</div>
+        </div>
+        <div class="inline-actions">
+          <Button variant="ghost" size="xs" icon="refresh" loading={loadingProm} on:click={loadPromMetrics}>
+            {$t('gateway.promDrawer.refresh')}
+          </Button>
+          <Button variant="secondary" size="xs" icon="copy" disabled={!promMetrics} on:click={() => copyToClipboard(promMetrics, translate('gateway.toast.promCopied'))}>
+            {$t('gateway.promDrawer.copy')}
+          </Button>
+          <Button variant="primary" size="xs" icon="download" disabled={!promMetrics} on:click={downloadPromMetrics}>
+            {$t('gateway.promDrawer.download')}
+          </Button>
+          <Button variant="ghost" size="xs" icon="x" iconOnly on:click={() => (showPromDrawer = false)} />
+        </div>
+      </div>
+
+      <div class="openapi-meta mono">
+        <span>{$t('gateway.promDrawer.liveEndpoint')}</span>
+        <span class="accent-text">{activeBaseUrl}/metrics/prometheus</span>
+      </div>
+
+      <pre class="openapi-pre mono">{loadingProm ? $t('gateway.promDrawer.loading') : (promMetrics || $t('gateway.promDrawer.empty'))}</pre>
+    </section>
+  {/if}
+
+  <!-- Collapsible Drawer: Docker / Headless Deployment Bundle -->
+  {#if showDockerDrawer}
+    <section class="top-drawer cap-card">
+      <div class="drawer-head">
+        <div>
+          <div class="drawer-title">{$t('gateway.dockerDrawer.title')}</div>
+          <div class="drawer-sub">{$t('gateway.dockerDrawer.subtitle')}</div>
+        </div>
+        <div class="inline-actions">
+          <Button variant="ghost" size="xs" icon="refresh" loading={loadingDocker} on:click={loadDockerBundle}>
+            {$t('gateway.dockerDrawer.regenerate')}
+          </Button>
+          <Button variant="secondary" size="xs" icon="copy" disabled={!activeDockerContent} on:click={copyActiveDockerFile}>
+            {$t('gateway.dockerDrawer.copyFile', { file: activeDockerFilename })}
+          </Button>
+          <Button variant="primary" size="xs" icon="download" disabled={!activeDockerContent} on:click={downloadActiveDockerFile}>
+            {$t('gateway.dockerDrawer.downloadFile', { file: activeDockerFilename })}
+          </Button>
+          <Button variant="ghost" size="xs" icon="x" iconOnly on:click={() => (showDockerDrawer = false)} />
+        </div>
+      </div>
+
+      <div class="docker-bar">
+        <div class="seg-mini">
+          <button type="button" class="seg-mini-btn mono" class:active={dockerTab === 'dockerfile'} on:click={() => (dockerTab = 'dockerfile')}>
+            {$t('gateway.dockerDrawer.dockerfileTab')}
+          </button>
+          <button type="button" class="seg-mini-btn mono" class:active={dockerTab === 'compose'} on:click={() => (dockerTab = 'compose')}>
+            {$t('gateway.dockerDrawer.composeTab')}
+          </button>
+        </div>
+        <div class="openapi-meta mono">
+          <span>{$t('gateway.dockerDrawer.listenMeta')}</span>
+          <span class="accent-text">{dockerBundle?.listen_addr || listenAddr}</span>
+          <span class="kpi-sep">·</span>
+          <span>{$t('gateway.dockerDrawer.headlessHint')}</span>
+          <span class="accent-text">cap gateway serve --addr {dockerBundle?.listen_addr || listenAddr}</span>
+        </div>
+      </div>
+
+      <pre class="openapi-pre mono">{loadingDocker ? $t('gateway.dockerDrawer.loading') : (activeDockerContent || $t('gateway.dockerDrawer.empty'))}</pre>
+    </section>
+  {/if}
+
+  <!-- 2. 5-KPI Telemetry Strip + Pro Telemetry Badges -->
   <section class="kpi-strip">
     <div class="kpi-card">
       <div class="kpi-head">
@@ -2171,6 +3198,41 @@ rpc.exports = {
     </div>
   </section>
 
+  <!-- Compact Pro Live Badges Strip -->
+  <section class="pro-kpi-strip">
+    <button type="button" class="pro-kpi-pill" on:click={() => (activeTab = 'accounts')}>
+      <Icon name="shield" size={12} />
+      <span class="pk-label">{$t('gateway.kpi.activeAccounts')}</span>
+      <Badge variant={displayActiveAccounts > 0 ? 'success' : 'neutral'} size="xs" mono>
+        {displayActiveAccounts}/{displayTotalAccounts}
+      </Badge>
+    </button>
+
+    <button type="button" class="pro-kpi-pill" on:click={() => { activeTab = 'workers'; loadWorkersAndStatuses() }}>
+      <Icon name="cpu" size={12} />
+      <span class="pk-label">{$t('gateway.kpi.healthyWorkers')}</span>
+      <Badge variant={displayHealthyWorkers > 0 ? 'success' : (displayTotalWorkers > 0 ? 'warning' : 'neutral')} size="xs" mono>
+        {displayHealthyWorkers}/{displayTotalWorkers}
+      </Badge>
+    </button>
+
+    <div class="pro-kpi-pill static">
+      <Icon name="database" size={12} />
+      <span class="pk-label">{$t('gateway.kpi.cacheHits')}</span>
+      <Badge variant={(stats.cache_hits || 0) > 0 ? 'info' : 'neutral'} size="xs" mono>
+        {$t('gateway.kpi.cacheRatio', { hits: stats.cache_hits || 0, misses: stats.cache_misses || 0 })}
+      </Badge>
+    </div>
+
+    <div class="pro-kpi-pill static">
+      <Icon name="alert-triangle" size={12} />
+      <span class="pk-label">{$t('gateway.kpi.openCircuits')}</span>
+      <Badge variant={displayOpenCircuits > 0 ? 'danger' : 'success'} size="xs" dot={displayOpenCircuits > 0} mono>
+        {displayOpenCircuits}
+      </Badge>
+    </div>
+  </section>
+
   <!-- 3. Sub-tab Switcher Bar -->
   <div class="subtab-bar" role="tablist">
     <button type="button" role="tab" aria-selected={activeTab === 'routes'} class="subtab-btn" class:active={activeTab === 'routes'} on:click={() => (activeTab = 'routes')}>
@@ -2200,6 +3262,16 @@ rpc.exports = {
       {#if logErrorCount > 0}
         <span class="tab-err-dot"></span>
       {/if}
+    </button>
+    <button type="button" role="tab" aria-selected={activeTab === 'accounts'} class="subtab-btn" class:active={activeTab === 'accounts'} on:click={() => (activeTab = 'accounts')}>
+      <Icon name="shield" size={13} />
+      <span>{$t('gateway.tabs.accounts')}</span>
+      <span class="tab-cnt mono tabular-nums">{displayActiveAccounts}/{accounts.length}</span>
+    </button>
+    <button type="button" role="tab" aria-selected={activeTab === 'workers'} class="subtab-btn" class:active={activeTab === 'workers'} on:click={() => { activeTab = 'workers'; loadWorkersAndStatuses() }}>
+      <Icon name="cpu" size={13} />
+      <span>{$t('gateway.tabs.workers')}</span>
+      <span class="tab-cnt mono tabular-nums">{displayHealthyWorkers}/{displayTotalWorkers}</span>
     </button>
   </div>
 
@@ -2360,6 +3432,24 @@ rpc.exports = {
                       <Badge variant="accent" size="xs">
                         {$t('gateway.routes.badges.device')}{r.device_tags?.length ? ` (${r.device_tags.join(',')})` : ''}
                       </Badge>
+                    {/if}
+                    {#if r.require_account || r.account_tags?.length}
+                      <Badge variant="success" size="xs">
+                        {$t('gateway.routes.badges.account')}{r.account_tags?.length ? ` (${r.account_tags.join(',')})` : ''}
+                      </Badge>
+                    {/if}
+                    {#if r.tls_profile && r.tls_profile !== 'go_default'}
+                      <Badge variant="neutral" size="xs" mono>{r.tls_profile}</Badge>
+                    {/if}
+                    {#if r.cache_ttl_sec > 0}
+                      <Badge variant="info" size="xs" mono>
+                        {$t('gateway.routes.badges.cache', { sec: r.cache_ttl_sec })}
+                      </Badge>
+                    {/if}
+                    {#if circuitStates[r.slug]?.state === 'open'}
+                      <Badge variant="danger" size="xs" dot mono>{$t('gateway.routes.badges.circuitOpen')}</Badge>
+                    {:else if circuitStates[r.slug]?.state === 'half_open'}
+                      <Badge variant="warning" size="xs" dot mono>{$t('gateway.routes.badges.circuitHalfOpen')}</Badge>
                     {/if}
                     {#if r.rate_limit_rps > 0}
                       <Badge variant="warning" size="xs" mono>
@@ -2601,6 +3691,364 @@ rpc.exports = {
                       </div>
                     </div>
                   </div>
+
+                  <!-- Production Controls: TLS Fingerprint & mTLS -->
+                  <div class="form-card cap-card prod-card">
+                    <button type="button" class="prod-head-btn" on:click={() => (openTlsSection = !openTlsSection)}>
+                      <span class="prod-head-left">
+                        <Icon name={openTlsSection ? 'chevron-down' : 'chevron-right'} size={13} />
+                        <Icon name="shield-check" size={13} />
+                        <span class="card-title">{$t('gateway.routes.editor.tlsSection')}</span>
+                      </span>
+                      <span class="prod-head-badges">
+                        <Badge variant={rTlsProfile && rTlsProfile !== 'go_default' ? 'accent' : 'neutral'} size="xs" mono>
+                          {rTlsProfile || 'go_default'}
+                        </Badge>
+                        {#if rMtlsCertPath.trim() && rMtlsKeyPath.trim()}
+                          <Badge variant="info" size="xs" mono>mTLS</Badge>
+                        {/if}
+                      </span>
+                    </button>
+
+                    {#if openTlsSection}
+                      <div class="prod-body">
+                        <div class="grid-2">
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.tlsProfile')}</span>
+                            <select
+                              class="cap-input mono"
+                              bind:value={rTlsProfile}
+                              on:change={() => loadJa3ForProfile(rTlsProfile)}
+                            >
+                              {#each effectiveTlsProfiles as tp (tp.id)}
+                                <option value={tp.id}>{tp.name} ({tp.id})</option>
+                              {/each}
+                            </select>
+                          </label>
+
+                          <div class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.ja3Summary')}</span>
+                            <div class="ja3-bar mono">
+                              {#if loadingJa3 && !currentJa3}
+                                <span class="muted">…</span>
+                              {:else if currentJa3}
+                                <Badge variant="purple" size="xs" mono>JA3</Badge>
+                                <span class="ja3-hash truncate" title={currentJa3.ja3_string || currentJa3.ja3_hash}>
+                                  {currentJa3.ja3_hash || '—'}
+                                </span>
+                                <span class="ja3-meta">
+                                  {$t('gateway.routes.editor.ja3CiphersCurves', {
+                                    ciphers: currentJa3.cipher_count || 0,
+                                    curves: currentJa3.curve_count || 0,
+                                  })}
+                                </span>
+                                {#if currentJa3.ja3_hash}
+                                  <button
+                                    type="button"
+                                    class="chip-icon-btn"
+                                    title={$t('gateway.routes.editor.copyJa3')}
+                                    on:click={() => copyToClipboard(currentJa3.ja3_hash)}
+                                  >
+                                    <Icon name="copy" size={11} />
+                                  </button>
+                                {/if}
+                              {:else}
+                                <span class="muted">—</span>
+                              {/if}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="mtls-row">
+                          <label class="f-block flex-1">
+                            <span class="f-label">{$t('gateway.routes.editor.mtlsCertPath')}</span>
+                            <input
+                              type="text"
+                              class="cap-input mono"
+                              bind:value={rMtlsCertPath}
+                              on:input={() => { mtlsValidateSeq++; mtlsValidation = null; validatingMtls = false }}
+                              placeholder={$t('gateway.routes.editor.mtlsCertPlaceholder')}
+                            />
+                          </label>
+                          <label class="f-block flex-1">
+                            <span class="f-label">{$t('gateway.routes.editor.mtlsKeyPath')}</span>
+                            <input
+                              type="text"
+                              class="cap-input mono"
+                              bind:value={rMtlsKeyPath}
+                              on:input={() => { mtlsValidateSeq++; mtlsValidation = null; validatingMtls = false }}
+                              placeholder={$t('gateway.routes.editor.mtlsKeyPlaceholder')}
+                            />
+                          </label>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            icon="shield-check"
+                            loading={validatingMtls}
+                            disabled={!rMtlsCertPath.trim() || !rMtlsKeyPath.trim()}
+                            on:click={handleValidateMtlsPair}
+                          >
+                            {validatingMtls ? $t('gateway.routes.editor.validatingPair') : $t('gateway.routes.editor.validatePair')}
+                          </Button>
+                        </div>
+
+                        {#if mtlsValidation}
+                          <div class="mtls-result" class:ok={mtlsValidation.valid} class:fail={!mtlsValidation.valid}>
+                            <div class="mtls-res-head">
+                              <Badge variant={mtlsValidation.valid ? 'success' : 'danger'} size="xs" dot>
+                                {mtlsValidation.valid ? $t('gateway.routes.editor.mtlsValid') : $t('gateway.routes.editor.mtlsInvalid')}
+                              </Badge>
+                              <Badge variant={mtlsValidation.key_pair_match ? 'success' : 'danger'} size="xs">
+                                {mtlsValidation.key_pair_match ? $t('gateway.routes.editor.mtlsMatchOk') : $t('gateway.routes.editor.mtlsMatchFail')}
+                              </Badge>
+                              {#if mtlsValidation.leaf}
+                                <span class="mono truncate">{mtlsValidation.leaf.common_name || mtlsValidation.leaf.subject}</span>
+                              {/if}
+                              {#if mtlsValidation.expired}
+                                <Badge variant="danger" size="xs">{$t('gateway.routes.editor.mtlsExpired')}</Badge>
+                              {:else if mtlsValidation.valid && Number.isFinite(mtlsValidation.expires_in_days)}
+                                <Badge variant="neutral" size="xs" mono>
+                                  {$t('gateway.routes.editor.mtlsExpiresDays', { days: mtlsValidation.expires_in_days })}
+                                </Badge>
+                              {/if}
+                              {#if mtlsValidation.has_client_auth_eku}
+                                <Badge variant="info" size="xs">{$t('gateway.routes.editor.mtlsClientAuthEku')}</Badge>
+                              {/if}
+                              {#if mtlsValidation.chain_length > 0}
+                                <Badge variant="neutral" size="xs" mono>
+                                  {$t('gateway.routes.editor.mtlsChainLen', { len: mtlsValidation.chain_length })}
+                                </Badge>
+                              {/if}
+                            </div>
+                            {#if mtlsValidation.error}
+                              <div class="mtls-msg mono">{mtlsValidation.error}</div>
+                            {/if}
+                            {#if mtlsValidation.warnings?.length}
+                              <div class="mtls-warn mono">{mtlsValidation.warnings.join(' · ')}</div>
+                            {/if}
+                          </div>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+
+                  <!-- Production Controls: Account Pool & Auto-Refresh -->
+                  <div class="form-card cap-card prod-card">
+                    <button type="button" class="prod-head-btn" on:click={() => (openAccountSection = !openAccountSection)}>
+                      <span class="prod-head-left">
+                        <Icon name={openAccountSection ? 'chevron-down' : 'chevron-right'} size={13} />
+                        <Icon name="repeat" size={13} />
+                        <span class="card-title">{$t('gateway.routes.editor.accountSection')}</span>
+                      </span>
+                      <span class="prod-head-badges">
+                        {#if rRequireAccount}
+                          <Badge variant="success" size="xs">{$t('gateway.routes.badges.account')}</Badge>
+                        {/if}
+                        {#if rAutoRefresh}
+                          <Badge variant="warning" size="xs">AUTO-REFRESH</Badge>
+                        {/if}
+                      </span>
+                    </button>
+
+                    {#if openAccountSection}
+                      <div class="prod-body">
+                        <div class="grid-2">
+                          <div class="pool-bind-box">
+                            <label class="f-block">
+                              <span class="f-label">{$t('gateway.routes.editor.accountTags')}</span>
+                              <input type="text" class="cap-input mono" bind:value={rAccountTags} placeholder={$t('gateway.routes.editor.accountTagsPlaceholder')} />
+                            </label>
+                            <label class="check-opt">
+                              <input type="checkbox" bind:checked={rRequireAccount} />
+                              <span>{$t('gateway.routes.editor.requireAccount')}</span>
+                            </label>
+                          </div>
+
+                          <div class="pool-bind-box">
+                            <label class="f-block">
+                              <span class="f-label">{$t('gateway.routes.editor.refreshRouteSlug')}</span>
+                              <select class="cap-input mono" bind:value={rRefreshRouteSlug}>
+                                <option value="">{$t('gateway.routes.editor.refreshRouteNone')}</option>
+                                {#each refreshRouteCandidates as cand (cand.id)}
+                                  <option value={cand.slug}>/gw/{cand.slug} — {cand.name || cand.slug}</option>
+                                {/each}
+                              </select>
+                            </label>
+                            <label class="check-opt">
+                              <input type="checkbox" bind:checked={rAutoRefresh} />
+                              <span>{$t('gateway.routes.editor.autoRefresh')}</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        <!-- Clickable Account Template Variable Chips -->
+                        <div class="tpl-bar">
+                          <span class="tpl-label">{$t('gateway.routes.editor.accountVars')}</span>
+                          <div class="seg-mini">
+                            <button type="button" class="seg-mini-btn" class:active={templateTarget === 'url'} on:click={() => (templateTarget = 'url')}>
+                              {$t('gateway.routes.editor.targetUrl')}
+                            </button>
+                            <button type="button" class="seg-mini-btn" class:active={templateTarget === 'body'} on:click={() => (templateTarget = 'body')}>
+                              {$t('gateway.routes.editor.targetBody')}
+                            </button>
+                          </div>
+                          <div class="tpl-chips">
+                            {#each ACCOUNT_TEMPLATE_VARS as av}
+                              <button type="button" class="tpl-chip mono" on:click={() => insertTemplateVar(av)}>
+                                {av}
+                              </button>
+                            {/each}
+                          </div>
+                        </div>
+
+                        <div class="grid-3">
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.refreshOnStatuses')}</span>
+                            <input
+                              type="text"
+                              class="cap-input mono"
+                              bind:value={rRefreshOnStatuses}
+                              placeholder={$t('gateway.routes.editor.refreshOnStatusesPlaceholder')}
+                            />
+                          </label>
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.refreshOnBodySubstr')}</span>
+                            <input
+                              type="text"
+                              class="cap-input mono"
+                              bind:value={rRefreshOnBodySubstr}
+                              placeholder={$t('gateway.routes.editor.refreshOnBodyPlaceholder')}
+                            />
+                          </label>
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.challengeWebhookUrl')}</span>
+                            <input
+                              type="text"
+                              class="cap-input mono"
+                              bind:value={rChallengeWebhookUrl}
+                              placeholder={$t('gateway.routes.editor.challengeWebhookPlaceholder')}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+
+                  <!-- Production Controls: TTL Cache & Circuit Breaker -->
+                  <div class="form-card cap-card prod-card">
+                    <button type="button" class="prod-head-btn" on:click={() => (openResilienceSection = !openResilienceSection)}>
+                      <span class="prod-head-left">
+                        <Icon name={openResilienceSection ? 'chevron-down' : 'chevron-right'} size={13} />
+                        <Icon name="database" size={13} />
+                        <span class="card-title">{$t('gateway.routes.editor.resilienceSection')}</span>
+                      </span>
+                      <span class="prod-head-badges">
+                        {#if rCacheTtlSec > 0}
+                          <Badge variant="info" size="xs" mono>
+                            {$t('gateway.routes.badges.cache', { sec: rCacheTtlSec })}
+                          </Badge>
+                        {/if}
+                        {#if currentRouteCircuit}
+                          <Badge variant={circuitStateVariant(currentRouteCircuit.state)} size="xs" dot mono>
+                            {$t(`gateway.routes.editor.circuitStates.${currentRouteCircuit.state || 'closed'}`)}
+                          </Badge>
+                        {/if}
+                      </span>
+                    </button>
+
+                    {#if openResilienceSection}
+                      <div class="prod-body">
+                        <div class="grid-3">
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.cacheTtlSec')}</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="86400"
+                              class="cap-input mono tabular-nums"
+                              bind:value={rCacheTtlSec}
+                              title={$t('gateway.routes.editor.cacheTtlHint')}
+                            />
+                          </label>
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.cacheKeyFields')}</span>
+                            <input
+                              type="text"
+                              class="cap-input mono"
+                              bind:value={rCacheKeyFields}
+                              placeholder={$t('gateway.routes.editor.cacheKeyFieldsPlaceholder')}
+                            />
+                          </label>
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.cacheMaxEntries')}</span>
+                            <input type="number" min="0" max="100000" class="cap-input mono tabular-nums" bind:value={rCacheMaxEntries} />
+                          </label>
+                        </div>
+
+                        <div class="grid-3">
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.circuitFailThreshold')}</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              class="cap-input mono tabular-nums"
+                              bind:value={rCircuitFailThreshold}
+                              title={$t('gateway.routes.editor.circuitFailHint')}
+                            />
+                          </label>
+                          <label class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.circuitCooldownSec')}</span>
+                            <input type="number" min="1" max="3600" class="cap-input mono tabular-nums" bind:value={rCircuitCooldownSec} />
+                          </label>
+                          <div class="f-block">
+                            <span class="f-label">{$t('gateway.routes.editor.circuitStateLabel')}</span>
+                            <div class="circuit-bar">
+                              <Badge
+                                variant={circuitStateVariant(currentRouteCircuit?.state || 'closed')}
+                                size="xs"
+                                dot
+                                mono
+                              >
+                                {$t(`gateway.routes.editor.circuitStates.${currentRouteCircuit?.state || 'closed'}`)}
+                              </Badge>
+                              {#if currentRouteCircuit}
+                                <span class="circuit-meta mono tabular-nums">
+                                  {$t('gateway.routes.editor.circuitMeta', {
+                                    fails: currentRouteCircuit.consecutive_failures || 0,
+                                    trips: currentRouteCircuit.trip_count || 0,
+                                  })}
+                                </span>
+                              {/if}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="resilience-actions">
+                          <Button
+                            variant="secondary"
+                            size="xs"
+                            icon="trash"
+                            loading={clearingCache}
+                            disabled={isNewRoute || !activeRouteSlugKey}
+                            on:click={handleClearRouteCache}
+                          >
+                            {$t('gateway.routes.editor.clearCache')}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="xs"
+                            icon="refresh"
+                            loading={resettingCircuit}
+                            disabled={isNewRoute || !activeRouteSlugKey}
+                            on:click={handleResetRouteCircuit}
+                          >
+                            {$t('gateway.routes.editor.resetCircuit')}
+                          </Button>
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
                 </div>
               </div>
 
@@ -2622,6 +4070,16 @@ rpc.exports = {
                         <option value={p.id}>{p.name}{p.region ? ` [${p.region}]` : ''}</option>
                       {/each}
                     </select>
+                    <select class="cap-input mini-select" bind:value={testAccountId}>
+                      <option value="">{$t('gateway.routes.tester.accountOverride')}</option>
+                      {#each accounts as acc (acc.id)}
+                        <option value={acc.id}>{acc.name}{acc.username ? ` (${acc.username})` : ''}</option>
+                      {/each}
+                    </select>
+                    <label class="check-opt compact">
+                      <input type="checkbox" bind:checked={testBypassCache} />
+                      <span>{$t('gateway.routes.tester.bypassCache')}</span>
+                    </label>
                     <label class="check-opt compact">
                       <input type="checkbox" bind:checked={testRaw} />
                       <span>{$t('gateway.routes.tester.rawToggle')}</span>
@@ -2704,6 +4162,21 @@ rpc.exports = {
                         {/if}
                         <span>{$t('gateway.routes.tester.proxyUsed')}: <strong>{testResult.proxy || $t('gateway.routes.tester.direct')}</strong></span>
                         <span>{$t('gateway.routes.tester.deviceUsed')}: <strong>{testResult.device || $t('gateway.routes.tester.none')}</strong></span>
+                        {#if testResult.account}
+                          <span>{$t('gateway.routes.tester.accountUsed')}: <strong>{testResult.account}</strong></span>
+                        {/if}
+                        {#if testResult.tls_profile}
+                          <span>{$t('gateway.routes.tester.tlsUsed')}: <strong>{testResult.tls_profile}</strong></span>
+                        {/if}
+                        {#if testResult.cache_hit}
+                          <Badge variant="info" size="xs" mono>{$t('gateway.logs.badges.hit')}</Badge>
+                        {/if}
+                        {#if testResult.circuit_tripped}
+                          <Badge variant="danger" size="xs" mono>{$t('gateway.logs.badges.circuit')}</Badge>
+                        {/if}
+                        {#if testResult.refresh_triggered}
+                          <Badge variant="warning" size="xs" mono>{$t('gateway.logs.badges.refresh')}</Badge>
+                        {/if}
                         {#if testResult.retries > 0}
                           <Badge variant="warning" size="xs">{$t('gateway.routes.tester.retries', { count: testResult.retries })}</Badge>
                         {/if}
@@ -3484,6 +4957,13 @@ rpc.exports = {
                   {#if sg.description}
                     <div class="ec-sub truncate">{sg.description}</div>
                   {/if}
+                  {#if sg.worker_pool_id}
+                    <div class="ec-chips">
+                      <Badge variant="accent" size="xs" mono>
+                        {$t('gateway.signers.editor.workerPoolBadge', { name: workerNameById[sg.worker_pool_id] || sg.worker_pool_id })}
+                      </Badge>
+                    </div>
+                  {/if}
                 </button>
               {/each}
             {/if}
@@ -3614,6 +5094,25 @@ rpc.exports = {
                     </div>
 
                   {:else if sKind === 'http' || sKind === 'unidbg_http'}
+                    <div class="pool-bind-box">
+                      <div class="label-row">
+                        <span class="f-label">{$t('gateway.signers.editor.workerPool')}</span>
+                        <button type="button" class="mini-link" on:click={() => { activeTab = 'workers'; loadWorkersAndStatuses() }}>
+                          {$t('gateway.signers.editor.manageWorkers')} →
+                        </button>
+                      </div>
+                      <select class="cap-input mono" bind:value={sWorkerPoolId}>
+                        <option value="">{$t('gateway.signers.editor.workerPoolNone')}</option>
+                        {#each workers as w (w.id)}
+                          {@const ws = workerStatusById[w.id]}
+                          <option value={w.id}>
+                            [{w.kind}] {w.name} ({ws?.healthy_instances ?? ws?.healthy_count ?? 0}/{ws?.total_instances ?? ws?.total_count ?? w.instances ?? 1})
+                          </option>
+                        {/each}
+                      </select>
+                      <div class="f-hint">{$t('gateway.signers.editor.workerPoolHint')}</div>
+                    </div>
+
                     <div class="method-url-row">
                       <label class="f-block method-col">
                         <span class="f-label">{$t('gateway.signers.editor.httpMethod')}</span>
@@ -3910,6 +5409,7 @@ rpc.exports = {
                 <span>{$t('gateway.logs.cols.latency')}</span>
                 <span>{$t('gateway.logs.cols.proxy')}</span>
                 <span>{$t('gateway.logs.cols.device')}</span>
+                <span>{$t('gateway.logs.cols.account')}</span>
                 <span>{$t('gateway.logs.cols.result')}</span>
               </div>
 
@@ -3925,6 +5425,9 @@ rpc.exports = {
                     <span class="log-route-cell">
                       <Badge variant="method" method={rec.method || 'GET'} size="xs" />
                       <span class="mono truncate">/gw/{rec.route_slug}</span>
+                      {#if rec.tls_profile}
+                        <Badge variant="neutral" size="xs" mono>{rec.tls_profile}</Badge>
+                      {/if}
                     </span>
                     <span>
                       <Badge status={rec.status_code || 0} size="xs">{rec.status_code || 'ERR'}</Badge>
@@ -3937,9 +5440,19 @@ rpc.exports = {
                     </span>
                     <span class="mono truncate muted">{rec.proxy_name || $t('gateway.logs.direct')}</span>
                     <span class="mono truncate muted">{rec.device_name || '—'}</span>
+                    <span class="mono truncate muted">{rec.account_name || '—'}</span>
                     <span class="log-res-cell">
+                      {#if rec.cache_hit}
+                        <Badge variant="info" size="xs" mono>{$t('gateway.logs.badges.hit')}</Badge>
+                      {/if}
+                      {#if rec.circuit_tripped}
+                        <Badge variant="danger" size="xs" mono>{$t('gateway.logs.badges.circuit')}</Badge>
+                      {/if}
+                      {#if rec.refresh_triggered}
+                        <Badge variant="warning" size="xs" mono>{$t('gateway.logs.badges.refresh')}</Badge>
+                      {/if}
                       {#if rec.error}
-                        <Badge variant="danger" size="xs">{rec.error.slice(0, 34)}</Badge>
+                        <Badge variant="danger" size="xs">{rec.error.slice(0, 28)}</Badge>
                       {:else if !rec.ok}
                         <Badge variant="warning" size="xs">HTTP {rec.status_code}</Badge>
                       {:else}
@@ -3985,6 +5498,31 @@ rpc.exports = {
                           <span class="kv-rk">{$t('gateway.logs.detail.device')}</span>
                           <span class="kv-rv">{rec.device_name || '—'} {rec.device_id ? `(${rec.device_id})` : ''}</span>
                         </div>
+                        <div class="kv-line">
+                          <span class="kv-rk">{$t('gateway.logs.detail.account')}</span>
+                          <span class="kv-rv">{rec.account_name || '—'} {rec.account_id ? `(${rec.account_id})` : ''}</span>
+                        </div>
+                        <div class="kv-line">
+                          <span class="kv-rk">{$t('gateway.logs.detail.tlsProfile')}</span>
+                          <span class="kv-rv">{rec.tls_profile || 'go_default'}</span>
+                        </div>
+                        <div class="kv-line">
+                          <span class="kv-rk">{$t('gateway.logs.detail.signals')}</span>
+                          <span class="kv-rv log-signals-row">
+                            {#if rec.cache_hit}
+                              <Badge variant="info" size="xs" mono>{$t('gateway.logs.badges.hit')}</Badge>
+                            {/if}
+                            {#if rec.circuit_tripped}
+                              <Badge variant="danger" size="xs" mono>{$t('gateway.logs.badges.circuit')}</Badge>
+                            {/if}
+                            {#if rec.refresh_triggered}
+                              <Badge variant="warning" size="xs" mono>{$t('gateway.logs.badges.refresh')}</Badge>
+                            {/if}
+                            {#if !rec.cache_hit && !rec.circuit_tripped && !rec.refresh_triggered}
+                              <span class="muted">{$t('gateway.logs.detail.noSignals')}</span>
+                            {/if}
+                          </span>
+                        </div>
                       </div>
 
                       {#if rec.error}
@@ -4017,6 +5555,814 @@ rpc.exports = {
               {/each}
             </div>
           {/if}
+        </div>
+      </div>
+
+    <!-- ==================== SUB-TAB 6: ACCOUNT / SESSION POOL ==================== -->
+    {:else if activeTab === 'accounts'}
+      <div class="full-tab-shell">
+        <div class="pool-bar-row device-topbar">
+          <div class="search-box">
+            <Icon name="search" size={12} />
+            <input type="text" class="search-input" bind:value={accountSearch} placeholder={$t('gateway.accounts.searchPlaceholder')} />
+          </div>
+
+          <div class="filter-pills">
+            <button type="button" class="pill-btn" class:active={accountStatusFilter === 'all'} on:click={() => (accountStatusFilter = 'all')}>
+              {$t('gateway.accounts.filterAll')}
+            </button>
+            {#each ACCOUNT_STATUSES as st}
+              <button type="button" class="pill-btn" class:active={accountStatusFilter === st} on:click={() => (accountStatusFilter = st)}>
+                {$t(`gateway.accounts.statuses.${st}`)}
+              </button>
+            {/each}
+          </div>
+
+          <div class="ctrl-spacer"></div>
+
+          <label class="inline-field">
+            <span>{$t('gateway.accounts.strategy')}</span>
+            <select class="cap-input" bind:value={accountPoolConfig.strategy} disabled={savingAccountCfg} on:change={saveAccountPoolConfig}>
+              {#each ACCOUNT_STRATEGIES as st}
+                <option value={st}>{$t(`gateway.accounts.strategies.${st}`)}</option>
+              {/each}
+            </select>
+          </label>
+
+          <Button variant="primary" size="sm" icon="plus" on:click={createNewAccount}>
+            + {$t('gateway.accounts.newAccount')}
+          </Button>
+        </div>
+
+        <div class="split-fill">
+          <SplitPane direction="horizontal" initialSize={32} minPrimary={22} minSecondary={50} storageKey="cap.gateway.accounts.hsplit">
+            <!-- Left: Accounts List -->
+            <div slot="primary" class="list-pane">
+              <div class="list-scroll">
+                {#if filteredAccounts.length === 0}
+                  <EmptyState
+                    icon="shield"
+                    title={$t('gateway.accounts.emptyTitle')}
+                    description={$t('gateway.accounts.emptyDesc')}
+                    compact
+                  >
+                    <Button variant="primary" size="xs" icon="plus" on:click={createNewAccount}>
+                      + {$t('gateway.accounts.newAccount')}
+                    </Button>
+                  </EmptyState>
+                {:else}
+                  {#each filteredAccounts as acc (acc.id)}
+                    {@const accStatus = acc.status || (acc.enabled ? 'active' : 'disabled')}
+                    <div
+                      class="entity-card-wrap"
+                      class:active={selectedAccount?.id === acc.id && !isNewAccount}
+                      class:disabled-card={!acc.enabled || accStatus === 'disabled'}
+                    >
+                      <button type="button" class="entity-card-main" on:click={() => selectAccount(acc)}>
+                        <div class="ec-top">
+                          <span class="status-dot" class:on={acc.enabled && accStatus === 'active'}></span>
+                          <Badge variant={accountStatusVariant(accStatus)} size="xs" dot>
+                            {$t(`gateway.accounts.statuses.${accStatus}`)}
+                          </Badge>
+                          <span class="ec-usage mono tabular-nums">
+                            {$t('gateway.accounts.usageMeta', { uses: acc.use_count || 0, fails: acc.fail_count || 0 })}
+                          </span>
+                        </div>
+                        <div class="ec-name truncate">{acc.name || acc.username || acc.id}</div>
+                        {#if acc.username && acc.username !== acc.name}
+                          <div class="ec-sub mono truncate">{acc.username}</div>
+                        {/if}
+                        <div class="ec-chips">
+                          {#if acc.sticky_device_id}
+                            <Badge variant="accent" size="xs" mono>
+                              {$t('gateway.accounts.stickyDeviceBadge', { name: deviceNameById[acc.sticky_device_id] || acc.sticky_device_id })}
+                            </Badge>
+                          {/if}
+                          {#each acc.tags || [] as tg}
+                            <Badge variant="neutral" size="xs" mono>{tg}</Badge>
+                          {/each}
+                        </div>
+                      </button>
+
+                      <div class="entity-card-actions">
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          icon="check-circle"
+                          loading={markingAccountId === acc.id}
+                          on:click={() => handleMarkAccountHealthy(acc.id)}
+                        >
+                          {$t('gateway.accounts.markHealthy')}
+                        </Button>
+                      </div>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+            </div>
+
+            <!-- Right: Account Editor -->
+            <div slot="secondary" class="detail-pane">
+              {#if selectedAccount || isNewAccount}
+                <div class="editor-shell">
+                  <div class="editor-topbar">
+                    <div class="editor-head-left">
+                      <Badge variant={accountStatusVariant(aStatus)} size="sm" dot>
+                        {$t(`gateway.accounts.statuses.${aStatus}`)}
+                      </Badge>
+                      <span class="editor-title truncate">
+                        {isNewAccount ? $t('gateway.accounts.editor.newTitle') : (aName || aUsername || selectedAccount?.id)}
+                      </span>
+                    </div>
+                    <div class="editor-head-actions">
+                      {#if selectedAccount && !isNewAccount}
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          icon="check-circle"
+                          loading={markingAccountId === selectedAccount.id}
+                          on:click={() => handleMarkAccountHealthy(selectedAccount.id)}
+                        >
+                          {$t('gateway.accounts.markHealthy')}
+                        </Button>
+                      {/if}
+                      <label class="inline-switch">
+                        <span>{aEnabled ? $t('gateway.routes.editor.enabled') : $t('gateway.routes.editor.disabled')}</span>
+                        <span class="switch">
+                          <input type="checkbox" bind:checked={aEnabled} />
+                          <span class="switch-track"></span>
+                        </span>
+                      </label>
+                      {#if selectedAccount && !isNewAccount}
+                        {#if confirmDeleteAccountId === selectedAccount.id}
+                          <Button variant="danger" size="xs" icon="trash" on:click={() => deleteCurrentAccount(selectedAccount.id)}>
+                            {$t('gateway.accounts.editor.confirmDelete')}
+                          </Button>
+                          <Button variant="ghost" size="xs" on:click={() => (confirmDeleteAccountId = null)}>
+                            <Icon name="x" size={12} />
+                          </Button>
+                        {:else}
+                          <Button variant="ghost" size="xs" icon="trash" on:click={() => (confirmDeleteAccountId = selectedAccount.id)}>
+                            {$t('gateway.accounts.editor.delete')}
+                          </Button>
+                        {/if}
+                      {/if}
+                      <Button variant="primary" size="xs" icon="save" loading={savingAccount} on:click={saveCurrentAccount}>
+                        {$t('gateway.accounts.editor.save')}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div class="editor-scroll">
+                    <!-- Account Identity & Lifecycle -->
+                    <div class="form-card cap-card">
+                      <div class="card-head">
+                        <span class="card-title">{$t('gateway.accounts.editor.sectionIdentity')}</span>
+                        {#if selectedAccount && !isNewAccount}
+                          <span class="card-hint mono tabular-nums">
+                            {$t('gateway.accounts.editor.metaTelemetry', {
+                              uses: selectedAccount.use_count || 0,
+                              fails: selectedAccount.fail_count || 0,
+                              refreshes: selectedAccount.refresh_count || 0,
+                              last: selectedAccount.last_used_at ? formatTime(selectedAccount.last_used_at) : '—',
+                            })}
+                          </span>
+                        {/if}
+                      </div>
+
+                      <div class="grid-3">
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.name')}</span>
+                          <input type="text" class="cap-input" bind:value={aName} placeholder={$t('gateway.accounts.editor.namePlaceholder')} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.username')}</span>
+                          <input type="text" class="cap-input mono" bind:value={aUsername} placeholder={$t('gateway.accounts.editor.usernamePlaceholder')} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.status')}</span>
+                          <select class="cap-input" bind:value={aStatus}>
+                            {#each ACCOUNT_STATUSES as st}
+                              <option value={st}>{$t(`gateway.accounts.statuses.${st}`)}</option>
+                            {/each}
+                          </select>
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.tags')}</span>
+                          <input type="text" class="cap-input mono" bind:value={aTags} placeholder={$t('gateway.accounts.editor.tagsPlaceholder')} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.stickyDevice')}</span>
+                          <select class="cap-input" bind:value={aStickyDeviceId}>
+                            <option value="">{$t('gateway.accounts.editor.stickyDeviceNone')}</option>
+                            {#each devices as dev (dev.id)}
+                              <option value={dev.id}>{dev.name} ({dev.kind})</option>
+                            {/each}
+                          </select>
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.stickyProxy')}</span>
+                          <select class="cap-input mono" bind:value={aStickyProxyId}>
+                            <option value="">{$t('gateway.accounts.editor.stickyProxyNone')}</option>
+                            {#each proxies as p (p.id)}
+                              <option value={p.id}>{p.name}{p.region ? ` [${p.region}]` : ''}</option>
+                            {/each}
+                          </select>
+                        </label>
+                      </div>
+
+                      <div class="grid-2">
+                        <div class="f-block">
+                          <div class="label-row">
+                            <span class="f-label">{$t('gateway.accounts.editor.expiresAt')}</span>
+                            <div class="expiry-presets">
+                              <button type="button" class="mini-link mono" on:click={() => setAccountExpiryPreset(24)}>
+                                {$t('gateway.accounts.editor.preset24h')}
+                              </button>
+                              <button type="button" class="mini-link mono" on:click={() => setAccountExpiryPreset(24 * 7)}>
+                                {$t('gateway.accounts.editor.preset7d')}
+                              </button>
+                              <button type="button" class="mini-link" on:click={() => setAccountExpiryPreset(0)}>
+                                {$t('gateway.accounts.editor.clearExpiry')}
+                              </button>
+                            </div>
+                          </div>
+                          <input
+                            type="text"
+                            class="cap-input mono"
+                            bind:value={aExpiresAt}
+                            placeholder={$t('gateway.accounts.editor.expiresPlaceholder')}
+                          />
+                        </div>
+
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.notes')}</span>
+                          <input type="text" class="cap-input" bind:value={aNotes} placeholder={$t('gateway.accounts.editor.notesPlaceholder')} />
+                        </label>
+                      </div>
+
+                      {#if selectedAccount?.last_error && !isNewAccount}
+                        <div class="error-banner mono">
+                          <Icon name="alert-circle" size={12} />
+                          <span>{selectedAccount.last_error}</span>
+                        </div>
+                      {/if}
+                    </div>
+
+                    <!-- Credentials & Session KV Editors (with safe secret toggles) -->
+                    <div class="form-card cap-card">
+                      <div class="card-head">
+                        <span class="card-title">{$t('gateway.accounts.editor.sectionCredentials')}</span>
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          icon={aShowSecrets ? 'eye-off' : 'eye'}
+                          on:click={() => (aShowSecrets = !aShowSecrets)}
+                        >
+                          {aShowSecrets ? $t('gateway.accounts.editor.hideSecrets') : $t('gateway.accounts.editor.revealSecrets')}
+                        </Button>
+                      </div>
+
+                      <div class="grid-2">
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.primaryToken')}</span>
+                          {#if aShowSecrets}
+                            <input type="text" class="cap-input mono" bind:value={aToken} placeholder={$t('gateway.accounts.editor.primaryTokenPlaceholder')} />
+                          {:else}
+                            <input type="password" class="cap-input mono" bind:value={aToken} placeholder={$t('gateway.accounts.editor.primaryTokenPlaceholder')} />
+                          {/if}
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.accounts.editor.refreshToken')}</span>
+                          {#if aShowSecrets}
+                            <input type="text" class="cap-input mono" bind:value={aRefreshToken} placeholder={$t('gateway.accounts.editor.refreshTokenPlaceholder')} />
+                          {:else}
+                            <input type="password" class="cap-input mono" bind:value={aRefreshToken} placeholder={$t('gateway.accounts.editor.refreshTokenPlaceholder')} />
+                          {/if}
+                        </label>
+                      </div>
+
+                      <label class="f-block">
+                        <span class="f-label">{$t('gateway.accounts.editor.primaryCookie')}</span>
+                        {#if aShowSecrets}
+                          <input type="text" class="cap-input mono" bind:value={aCookie} placeholder={$t('gateway.accounts.editor.primaryCookiePlaceholder')} />
+                        {:else}
+                          <input type="password" class="cap-input mono" bind:value={aCookie} placeholder={$t('gateway.accounts.editor.primaryCookiePlaceholder')} />
+                        {/if}
+                      </label>
+
+                      <div class="grid-3-stack">
+                        <div class="kv-section">
+                          <div class="label-row">
+                            <span class="f-label">{$t('gateway.accounts.editor.cookies')}</span>
+                            <button type="button" class="mini-link" on:click={() => (aCookies = [...aCookies, { key: '', value: '' }])}>
+                              + {$t('gateway.routes.editor.addPair')}
+                            </button>
+                          </div>
+                          {#each aCookies as row, idx (idx)}
+                            <div class="kv-edit-row">
+                              <input type="text" class="cap-input mono kv-key" bind:value={row.key} placeholder="sessionid" />
+                              {#if aShowSecrets}
+                                <input type="text" class="cap-input mono flex-1" bind:value={row.value} placeholder="value" />
+                              {:else}
+                                <input type="password" class="cap-input mono flex-1" bind:value={row.value} placeholder="••••••" />
+                              {/if}
+                              <button type="button" class="row-del" on:click={() => (aCookies = aCookies.filter((_, i) => i !== idx))}>
+                                <Icon name="x" size={12} />
+                              </button>
+                            </div>
+                          {/each}
+                        </div>
+
+                        <div class="kv-section">
+                          <div class="label-row">
+                            <span class="f-label">{$t('gateway.accounts.editor.authHeaders')}</span>
+                            <button type="button" class="mini-link" on:click={() => (aAuthHeaders = [...aAuthHeaders, { key: '', value: '' }])}>
+                              + {$t('gateway.routes.editor.addPair')}
+                            </button>
+                          </div>
+                          {#each aAuthHeaders as row, idx (idx)}
+                            <div class="kv-edit-row">
+                              <input type="text" class="cap-input mono kv-key" bind:value={row.key} placeholder="Authorization" />
+                              {#if aShowSecrets}
+                                <input type="text" class="cap-input mono flex-1" bind:value={row.value} placeholder="Bearer ..." />
+                              {:else}
+                                <input type="password" class="cap-input mono flex-1" bind:value={row.value} placeholder="••••••" />
+                              {/if}
+                              <button type="button" class="row-del" on:click={() => (aAuthHeaders = aAuthHeaders.filter((_, i) => i !== idx))}>
+                                <Icon name="x" size={12} />
+                              </button>
+                            </div>
+                          {/each}
+                        </div>
+
+                        <div class="kv-section">
+                          <div class="label-row">
+                            <span class="f-label">{$t('gateway.accounts.editor.tokens')}</span>
+                            <button type="button" class="mini-link" on:click={() => (aTokens = [...aTokens, { key: '', value: '' }])}>
+                              + {$t('gateway.routes.editor.addPair')}
+                            </button>
+                          </div>
+                          {#each aTokens as row, idx (idx)}
+                            <div class="kv-edit-row">
+                              <input type="text" class="cap-input mono kv-key" bind:value={row.key} placeholder="access_token" />
+                              {#if aShowSecrets}
+                                <input type="text" class="cap-input mono flex-1" bind:value={row.value} placeholder="token" />
+                              {:else}
+                                <input type="password" class="cap-input mono flex-1" bind:value={row.value} placeholder="••••••" />
+                              {/if}
+                              <button type="button" class="row-del" on:click={() => (aTokens = aTokens.filter((_, i) => i !== idx))}>
+                                <Icon name="x" size={12} />
+                              </button>
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {:else}
+                <EmptyState
+                  icon="shield"
+                  title={$t('gateway.accounts.noSelectionTitle')}
+                  description={$t('gateway.accounts.noSelectionDesc')}
+                >
+                  <Button variant="primary" size="sm" icon="plus" on:click={createNewAccount}>
+                    + {$t('gateway.accounts.newAccount')}
+                  </Button>
+                </EmptyState>
+              {/if}
+            </div>
+          </SplitPane>
+        </div>
+      </div>
+
+    <!-- ==================== SUB-TAB 7: MANAGED SIGNER WORKERS ==================== -->
+    {:else if activeTab === 'workers'}
+      <div class="full-tab-shell">
+        <div class="pool-bar-row device-topbar">
+          <div class="search-box">
+            <Icon name="search" size={12} />
+            <input type="text" class="search-input" bind:value={workerSearch} placeholder={$t('gateway.workers.searchPlaceholder')} />
+          </div>
+
+          <div class="ctrl-spacer"></div>
+
+          <Button variant="secondary" size="sm" icon="refresh" loading={loadingWorkers} on:click={() => loadWorkersAndStatuses(false)}>
+            {$t('gateway.workers.refreshStatus')}
+          </Button>
+
+          <Button variant="primary" size="sm" icon="plus" on:click={createNewWorker}>
+            + {$t('gateway.workers.newWorker')}
+          </Button>
+        </div>
+
+        <div class="split-fill">
+          <SplitPane direction="horizontal" initialSize={32} minPrimary={22} minSecondary={50} storageKey="cap.gateway.workers.hsplit">
+            <!-- Left: Worker Specs List -->
+            <div slot="primary" class="list-pane">
+              <div class="list-scroll">
+                {#if filteredWorkers.length === 0}
+                  <EmptyState
+                    icon="cpu"
+                    title={$t('gateway.workers.emptyTitle')}
+                    description={$t('gateway.workers.emptyDesc')}
+                    compact
+                  >
+                    <Button variant="primary" size="xs" icon="plus" on:click={createNewWorker}>
+                      + {$t('gateway.workers.newWorker')}
+                    </Button>
+                  </EmptyState>
+                {:else}
+                  {#each filteredWorkers as w (w.id)}
+                    {@const ws = workerStatusById[w.id]}
+                    {@const healthyCnt = ws?.healthy_instances ?? ws?.healthy_count ?? 0}
+                    {@const totalCnt = ws?.total_instances ?? ws?.total_count ?? w.instances ?? 1}
+                    {@const wRunning = Boolean(ws?.running)}
+                    <div
+                      class="entity-card-wrap"
+                      class:active={selectedWorker?.id === w.id && !isNewWorker}
+                      class:disabled-card={!w.enabled}
+                    >
+                      <button type="button" class="entity-card-main" on:click={() => selectWorker(w)}>
+                        <div class="ec-top">
+                          <span class="status-dot" class:on={wRunning && healthyCnt > 0}></span>
+                          <Badge variant={workerKindVariant(w.kind)} size="xs" mono>{w.kind}</Badge>
+                          <Badge
+                            variant={healthyCnt > 0 && healthyCnt === totalCnt ? 'success' : (wRunning ? 'warning' : 'neutral')}
+                            size="xs"
+                            mono
+                          >
+                            {healthyCnt}/{totalCnt}
+                          </Badge>
+                        </div>
+                        <div class="ec-name truncate">{w.name}</div>
+                        <div class="ec-sub mono truncate">
+                          {w.command} · :{w.base_port}{w.instances > 1 ? `–${w.base_port + w.instances - 1}` : ''}
+                        </div>
+                      </button>
+
+                      <div class="entity-card-actions">
+                        {#if !wRunning}
+                          <Button
+                            variant="success"
+                            size="xs"
+                            icon="play"
+                            iconOnly
+                            title={$t('gateway.workers.start')}
+                            loading={workerActionBusyId === w.id}
+                            on:click={() => handleStartWorker(w.id)}
+                          />
+                        {:else}
+                          <Button
+                            variant="danger"
+                            size="xs"
+                            icon="square"
+                            iconOnly
+                            title={$t('gateway.workers.stop')}
+                            loading={workerActionBusyId === w.id}
+                            on:click={() => handleStopWorker(w.id)}
+                          />
+                        {/if}
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          icon="refresh"
+                          iconOnly
+                          title={$t('gateway.workers.restart')}
+                          disabled={workerActionBusyId === w.id}
+                          on:click={() => handleRestartWorker(w.id)}
+                        />
+                      </div>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+            </div>
+
+            <!-- Right: Worker Pool Editor + Live Instance Health Table -->
+            <div slot="secondary" class="detail-pane">
+              {#if selectedWorker || isNewWorker}
+                <div class="editor-shell">
+                  <div class="editor-topbar">
+                    <div class="editor-head-left">
+                      <Badge variant={workerKindVariant(wKind)} size="sm" mono>{wKind}</Badge>
+                      <span class="editor-title truncate">
+                        {isNewWorker ? $t('gateway.workers.editor.newTitle') : (wName || selectedWorker?.id)}
+                      </span>
+                      {#if selectedWorker && !isNewWorker}
+                        <Badge
+                          variant={selectedWorkerStatus?.running ? 'success' : 'neutral'}
+                          size="xs"
+                          dot
+                          pulse={Boolean(selectedWorkerStatus?.running)}
+                        >
+                          {selectedWorkerStatus?.running ? $t('gateway.workers.running') : $t('gateway.workers.stopped')}
+                        </Badge>
+                      {/if}
+                    </div>
+                    <div class="editor-head-actions">
+                      {#if selectedWorker && !isNewWorker}
+                        {#if !selectedWorkerStatus?.running}
+                          <Button
+                            variant="success"
+                            size="xs"
+                            icon="play"
+                            loading={workerActionBusyId === selectedWorker.id}
+                            on:click={() => handleStartWorker(selectedWorker.id)}
+                          >
+                            {$t('gateway.workers.start')}
+                          </Button>
+                        {:else}
+                          <Button
+                            variant="danger"
+                            size="xs"
+                            icon="square"
+                            loading={workerActionBusyId === selectedWorker.id}
+                            on:click={() => handleStopWorker(selectedWorker.id)}
+                          >
+                            {$t('gateway.workers.stop')}
+                          </Button>
+                        {/if}
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          icon="refresh"
+                          disabled={workerActionBusyId === selectedWorker.id}
+                          on:click={() => handleRestartWorker(selectedWorker.id)}
+                        >
+                          {$t('gateway.workers.restart')}
+                        </Button>
+                      {/if}
+                      <label class="inline-switch">
+                        <span>{wEnabled ? $t('gateway.routes.editor.enabled') : $t('gateway.routes.editor.disabled')}</span>
+                        <span class="switch">
+                          <input type="checkbox" bind:checked={wEnabled} />
+                          <span class="switch-track"></span>
+                        </span>
+                      </label>
+                      {#if selectedWorker && !isNewWorker}
+                        {#if confirmDeleteWorkerId === selectedWorker.id}
+                          <Button variant="danger" size="xs" icon="trash" on:click={() => deleteCurrentWorker(selectedWorker.id)}>
+                            {$t('gateway.workers.editor.confirmDelete')}
+                          </Button>
+                          <Button variant="ghost" size="xs" on:click={() => (confirmDeleteWorkerId = null)}>
+                            <Icon name="x" size={12} />
+                          </Button>
+                        {:else}
+                          <Button variant="ghost" size="xs" icon="trash" on:click={() => (confirmDeleteWorkerId = selectedWorker.id)}>
+                            {$t('gateway.workers.editor.delete')}
+                          </Button>
+                        {/if}
+                      {/if}
+                      <Button variant="primary" size="xs" icon="save" loading={savingWorker} on:click={saveCurrentWorker}>
+                        {$t('gateway.workers.editor.save')}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div class="editor-scroll">
+                    <!-- Worker Spec Card -->
+                    <div class="form-card cap-card">
+                      <div class="card-head">
+                        <span class="card-title">{$t('gateway.workers.editor.sectionSpec')}</span>
+                        <span class="card-hint mono">127.0.0.1:{wBasePort}–{Number(wBasePort) + Math.max(1, Number(wInstances) || 1) - 1}</span>
+                      </div>
+
+                      <div class="grid-3">
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.name')}</span>
+                          <input type="text" class="cap-input" bind:value={wName} placeholder={$t('gateway.workers.editor.namePlaceholder')} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.kind')}</span>
+                          <select class="cap-input mono" bind:value={wKind}>
+                            {#each WORKER_KINDS as wk}
+                              <option value={wk}>{$t(`gateway.workers.kinds.${wk}`)} ({wk})</option>
+                            {/each}
+                          </select>
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.description')}</span>
+                          <input type="text" class="cap-input" bind:value={wDescription} placeholder={$t('gateway.workers.editor.descriptionPlaceholder')} />
+                        </label>
+                      </div>
+
+                      <div class="grid-2">
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.command')}</span>
+                          <input type="text" class="cap-input mono" bind:value={wCommand} placeholder={$t('gateway.workers.editor.commandPlaceholder')} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.workDir')}</span>
+                          <input type="text" class="cap-input mono" bind:value={wWorkDir} placeholder={$t('gateway.workers.editor.workDirPlaceholder')} />
+                        </label>
+                      </div>
+
+                      <label class="f-block">
+                        <span class="f-label">{$t('gateway.workers.editor.args')}</span>
+                        <textarea
+                          class="cap-textarea mono"
+                          rows="2"
+                          bind:value={wArgsText}
+                          placeholder={$t('gateway.workers.editor.argsPlaceholder')}
+                        ></textarea>
+                      </label>
+
+                      <div class="grid-4">
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.basePort')}</span>
+                          <input type="number" min="1" max="65535" class="cap-input mono tabular-nums" bind:value={wBasePort} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.instances')}</span>
+                          <input type="number" min="1" max="8" class="cap-input mono tabular-nums" bind:value={wInstances} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.healthPath')}</span>
+                          <input type="text" class="cap-input mono" bind:value={wHealthPath} placeholder="/health" />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.signPath')}</span>
+                          <input type="text" class="cap-input mono" bind:value={wSignPath} placeholder="/sign" />
+                        </label>
+                      </div>
+
+                      <div class="grid-3">
+                        <div class="pool-bind-box">
+                          <label class="check-opt">
+                            <input type="checkbox" bind:checked={wAutoRestart} />
+                            <span>{$t('gateway.workers.editor.autoRestart')}</span>
+                          </label>
+                        </div>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.maxRestarts')}</span>
+                          <input type="number" min="0" max="100" class="cap-input mono tabular-nums" bind:value={wMaxRestarts} />
+                        </label>
+                        <label class="f-block">
+                          <span class="f-label">{$t('gateway.workers.editor.backoffMs')}</span>
+                          <input type="number" min="50" max="30000" step="50" class="cap-input mono tabular-nums" bind:value={wRestartBackoffMs} />
+                        </label>
+                      </div>
+
+                      <div class="kv-section">
+                        <div class="label-row">
+                          <div>
+                            <span class="f-label">{$t('gateway.workers.editor.envVars')}</span>
+                            <span class="f-hint inline-hint">{$t('gateway.workers.editor.envHint')}</span>
+                          </div>
+                          <button type="button" class="mini-link" on:click={() => (wEnv = [...wEnv, { key: '', value: '' }])}>
+                            + {$t('gateway.routes.editor.addPair')}
+                          </button>
+                        </div>
+                        {#each wEnv as row, idx (idx)}
+                          <div class="kv-edit-row">
+                            <input type="text" class="cap-input mono kv-key" bind:value={row.key} placeholder="JAVA_OPTS" />
+                            <input type="text" class="cap-input mono flex-1" bind:value={row.value} placeholder="-Xmx512m" />
+                            <button type="button" class="row-del" on:click={() => (wEnv = wEnv.filter((_, i) => i !== idx))}>
+                              <Icon name="x" size={12} />
+                            </button>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+
+                    <!-- Live Instance Health Table -->
+                    <div class="form-card cap-card">
+                      <div class="card-head">
+                        <div class="inline-actions">
+                          <span class="card-title">{$t('gateway.workers.health.title')}</span>
+                          {#if selectedWorkerStatus}
+                            {@const hCnt = selectedWorkerStatus.healthy_instances ?? selectedWorkerStatus.healthy_count ?? 0}
+                            {@const tCnt = selectedWorkerStatus.total_instances ?? selectedWorkerStatus.total_count ?? 0}
+                            <Badge variant={hCnt > 0 && hCnt === tCnt ? 'success' : (selectedWorkerStatus.running ? 'warning' : 'neutral')} size="xs" mono>
+                              {$t('gateway.workers.healthyRatio', { healthy: hCnt, total: tCnt })}
+                            </Badge>
+                          {/if}
+                        </div>
+                        {#if selectedWorker && !isNewWorker}
+                          <Button variant="ghost" size="xs" icon="refresh" loading={loadingWorkers} on:click={() => loadWorkersAndStatuses(false)}>
+                            {$t('gateway.workers.refreshStatus')}
+                          </Button>
+                        {/if}
+                      </div>
+
+                      {#if isNewWorker || !selectedWorker}
+                        <div class="empty-inline">{$t('gateway.workers.health.saveFirst')}</div>
+                      {:else}
+                        <div class="worker-table-wrap">
+                          <table class="data-table worker-health-table">
+                            <thead>
+                              <tr>
+                                <th class="col-chev"></th>
+                                <th>{$t('gateway.workers.health.cols.index')}</th>
+                                <th>{$t('gateway.workers.health.cols.port')}</th>
+                                <th class="num">{$t('gateway.workers.health.cols.pid')}</th>
+                                <th>{$t('gateway.workers.health.cols.state')}</th>
+                                <th>{$t('gateway.workers.health.cols.healthy')}</th>
+                                <th class="num">{$t('gateway.workers.health.cols.latency')}</th>
+                                <th class="num">{$t('gateway.workers.health.cols.restarts')}</th>
+                                <th>{$t('gateway.workers.health.cols.lastError')}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {#each selectedWorkerStatus?.instances || [] as inst (inst.index)}
+                                {@const instKey = `${selectedWorker.id}:${inst.index}`}
+                                {@const instOpen = expandedInstanceKeys.has(instKey)}
+                                <tr>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      class="chip-icon-btn"
+                                      title={$t('gateway.workers.health.stderrTitle')}
+                                      on:click={() => toggleInstanceExpand(selectedWorker.id, inst.index)}
+                                    >
+                                      <Icon name={instOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                                    </button>
+                                  </td>
+                                  <td class="mono tabular-nums">#{inst.index}</td>
+                                  <td class="mono tabular-nums" title={inst.sign_url || inst.endpoint}>:{inst.port}</td>
+                                  <td class="num mono tabular-nums">{inst.pid || '—'}</td>
+                                  <td>
+                                    <Badge variant={inst.running ? 'info' : 'neutral'} size="xs" dot>
+                                      {inst.running ? $t('gateway.workers.health.stateRunning') : $t('gateway.workers.health.stateStopped')}
+                                    </Badge>
+                                  </td>
+                                  <td>
+                                    {#if !inst.running}
+                                      <Badge variant="neutral" size="xs">{$t('gateway.workers.health.healthIdle')}</Badge>
+                                    {:else if inst.healthy}
+                                      <Badge variant="success" size="xs" dot>{$t('gateway.workers.health.healthOk')}</Badge>
+                                    {:else}
+                                      <Badge variant="danger" size="xs" dot>{$t('gateway.workers.health.healthFail')}</Badge>
+                                    {/if}
+                                  </td>
+                                  <td class="num mono tabular-nums">
+                                    {inst.latency_ms > 0 ? `${inst.latency_ms}ms` : '—'}
+                                  </td>
+                                  <td class="num mono tabular-nums">{inst.restarts || 0}</td>
+                                  <td>
+                                    {#if inst.last_error}
+                                      <span class="err-text mono truncate" title={inst.last_error}>{inst.last_error}</span>
+                                    {:else}
+                                      <span class="muted">—</span>
+                                    {/if}
+                                  </td>
+                                </tr>
+                                {#if instOpen}
+                                  <tr class="stderr-row">
+                                    <td colspan="9">
+                                      <div class="stderr-panel">
+                                        <div class="stderr-meta mono">
+                                          <span>{$t('gateway.workers.health.signUrlLabel')}: <strong class="accent-text">{inst.sign_url || inst.endpoint}</strong></span>
+                                          <span>{$t('gateway.workers.health.inFlightLabel')}: <strong>{inst.in_flight || 0}</strong></span>
+                                          {#if inst.last_probe}
+                                            <span>{$t('gateway.workers.health.lastProbeLabel')}: <strong>{formatTime(inst.last_probe)}</strong></span>
+                                          {/if}
+                                          <div class="ctrl-spacer"></div>
+                                          {#if inst.stderr_tail}
+                                            <Button variant="ghost" size="xs" icon="copy" on:click={() => copyToClipboard(inst.stderr_tail)}>
+                                              {$t('gateway.workers.health.copyStderr')}
+                                            </Button>
+                                          {/if}
+                                        </div>
+                                        {#if inst.last_error}
+                                          <div class="error-banner mono">
+                                            <Icon name="alert-circle" size={12} />
+                                            <span>{inst.last_error}</span>
+                                          </div>
+                                        {/if}
+                                        <div class="pb-title">{$t('gateway.workers.health.stderrTitle')}</div>
+                                        {#if inst.stderr_tail}
+                                          <pre class="stderr-pre mono">{inst.stderr_tail}</pre>
+                                        {:else}
+                                          <div class="empty-inline">{$t('gateway.workers.health.stderrEmpty')}</div>
+                                        {/if}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                {/if}
+                              {/each}
+                            </tbody>
+                          </table>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                </div>
+              {:else}
+                <EmptyState
+                  icon="cpu"
+                  title={$t('gateway.workers.noSelectionTitle')}
+                  description={$t('gateway.workers.noSelectionDesc')}
+                >
+                  <Button variant="primary" size="sm" icon="plus" on:click={createNewWorker}>
+                    + {$t('gateway.workers.newWorker')}
+                  </Button>
+                </EmptyState>
+              {/if}
+            </div>
+          </SplitPane>
         </div>
       </div>
     {/if}
@@ -5349,7 +7695,7 @@ rpc.exports = {
   .log-head-row,
   .log-row {
     display: grid;
-    grid-template-columns: 22px 76px minmax(160px, 1.4fr) 68px 135px minmax(100px, 0.9fr) minmax(100px, 0.9fr) minmax(110px, 1fr);
+    grid-template-columns: 20px 72px minmax(165px, 1.35fr) 62px 124px minmax(84px, 0.78fr) minmax(84px, 0.78fr) minmax(84px, 0.78fr) minmax(135px, 1.15fr);
     gap: 8px;
     align-items: center;
     padding: 6px 12px;
@@ -5639,5 +7985,303 @@ rpc.exports = {
 
   .muted {
     color: var(--text-muted);
+  }
+
+  /* ==================== Wave C Pro Controls & Pools ==================== */
+  .docker-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .pro-kpi-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 5px 14px;
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+
+  .pro-kpi-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .pro-kpi-pill:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-hover);
+  }
+
+  .pro-kpi-pill.static {
+    cursor: default;
+  }
+
+  .pro-kpi-pill.static:hover {
+    border-color: var(--border-subtle);
+    background: var(--bg-elevated);
+  }
+
+  .pk-label {
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  .prod-card {
+    gap: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .prod-head-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 9px 12px;
+    border: none;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .prod-head-btn:hover {
+    background: var(--bg-hover);
+  }
+
+  .prod-head-left,
+  .prod-head-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .prod-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px 12px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .ja3-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    font-size: 11px;
+    min-width: 0;
+  }
+
+  .ja3-hash {
+    color: var(--text-primary);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ja3-meta {
+    color: var(--text-muted);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .mtls-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .mtls-result {
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+  }
+
+  .mtls-result.ok {
+    background: var(--status-success-bg);
+    border-color: var(--status-success-border);
+  }
+
+  .mtls-result.fail {
+    background: var(--status-danger-bg);
+    border-color: var(--status-danger-border);
+  }
+
+  .mtls-res-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .mtls-msg {
+    color: var(--status-danger);
+    word-break: break-word;
+  }
+
+  .mtls-warn {
+    color: var(--status-warning);
+    word-break: break-word;
+  }
+
+  .circuit-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+  }
+
+  .circuit-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .resilience-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .log-signals-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+
+  /* Entity cards with inline action buttons (valid HTML, no nested buttons) */
+  .entity-card-wrap {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .entity-card-wrap:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-hover);
+  }
+
+  .entity-card-wrap.active {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+  }
+
+  .entity-card-wrap.disabled-card {
+    opacity: 0.62;
+  }
+
+  .entity-card-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 2px;
+    border: none;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    color: inherit;
+  }
+
+  .entity-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+  }
+
+  .expiry-presets {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .worker-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+  }
+
+  .worker-health-table .col-chev {
+    width: 28px;
+    padding-right: 2px;
+  }
+
+  .stderr-row td {
+    padding: 0;
+    background: var(--bg-surface);
+  }
+
+  .stderr-row:hover td {
+    background: var(--bg-surface);
+  }
+
+  .stderr-panel {
+    padding: 8px 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .stderr-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .stderr-pre {
+    margin: 0;
+    max-height: 180px;
+    overflow: auto;
+    padding: 8px 10px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 </style>

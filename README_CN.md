@@ -371,7 +371,7 @@ cap repro ios-stealth --bundle-id com.acme.ios -o ios_stealth.js
 ```bash
 cap crypto ops --json                                      # 列出全部可编排编解码、哈希、加解密与 Protobuf 算子
 cap crypto identify "SGVsbG8gV29ybGQ=" --json              # 自动识别编码格式、魔数头、JWT 声明、信息熵并推荐配方
-cap crypto run --op sm4_ecb_encrypt -p key=<32-hex> -i "hello" --output-format hex
+cap crypto run --op sm4_encrypt -p mode=ecb -p key=<32-hex> -i "hello" --output-format hex
 cap crypto protobuf --decode "08 96 01 12 05 68 65 6c 6c 6f"
 cap crypto dfa --valid <32-hex> --fault-file ./faults.txt --plaintext <32-hex>
 cap crypto dfa-script -e unidbg --binary ./libwb.so --hook-addr 0x12a40 -o WhiteboxDFA.java

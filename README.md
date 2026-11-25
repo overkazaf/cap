@@ -382,7 +382,7 @@ Built-in CyberChef-style cryptographic workbench, schema-less Protobuf inspector
 ```bash
 cap crypto ops --json                                      # List all composable codec, hash, cipher & protobuf operations
 cap crypto identify "SGVsbG8gV29ybGQ=" --json              # Auto-detect encoding, magic bytes, JWT claims, entropy & recipes
-cap crypto run --op sm4_ecb_encrypt -p key=<32-hex> -i "hello" --output-format hex
+cap crypto run --op sm4_encrypt -p mode=ecb -p key=<32-hex> -i "hello" --output-format hex
 cap crypto protobuf --decode "08 96 01 12 05 68 65 6c 6c 6f"
 cap crypto dfa --valid <32-hex> --fault-file ./faults.txt --plaintext <32-hex>
 cap crypto dfa-script -e unidbg --binary ./libwb.so --hook-addr 0x12a40 -o WhiteboxDFA.java

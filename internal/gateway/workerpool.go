@@ -20,13 +20,13 @@ import (
 )
 
 const (
-	fileWorkers                 = "workers.json"
-	minWorkerInstances          = 1
-	maxWorkerInstances          = 8
-	defaultWorkerProbeInterval  = 2 * time.Second
-	defaultWorkerProbeTimeout   = 2 * time.Second
-	maxWorkerStderrTailBytes    = 4096
-	maxWorkerRestartBackoff     = 30 * time.Second
+	fileWorkers                = "workers.json"
+	minWorkerInstances         = 1
+	maxWorkerInstances         = 8
+	defaultWorkerProbeInterval = 2 * time.Second
+	defaultWorkerProbeTimeout  = 2 * time.Second
+	maxWorkerStderrTailBytes   = 4096
+	maxWorkerRestartBackoff    = 30 * time.Second
 )
 
 // tailBuffer is a thread-safe rolling byte buffer that retains the last `limit`

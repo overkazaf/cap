@@ -22,10 +22,10 @@ const (
 )
 
 var (
-	semverRe          = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?(?:[_.-]\d+)?`)
-	javaQuotedRe      = regexp.MustCompile(`version\s+"([^"]+)"`)
-	pomVersionRe      = regexp.MustCompile(`<version>\s*([^<\s]+)\s*</version>`)
-	pythonBinNameRe   = regexp.MustCompile(`^python3(\.\d+)?(\.exe)?$`)
+	semverRe         = regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?(?:[_.-]\d+)?`)
+	javaQuotedRe     = regexp.MustCompile(`version\s+"([^"]+)"`)
+	pomVersionRe     = regexp.MustCompile(`<version>\s*([^<\s]+)\s*</version>`)
+	pythonBinNameRe  = regexp.MustCompile(`^python3(\.\d+)?(\.exe)?$`)
 	defaultJavaGlobs = []string{
 		"/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java",
 		"/opt/homebrew/opt/openjdk*/bin/java",

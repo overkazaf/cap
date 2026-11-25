@@ -37,7 +37,7 @@ Examples:
   cap crypto run --pipeline-json ./recipe.json --input "68656c6c6f" --input-format hex
   cap crypto protobuf --decode "08 96 01 12 05 68 65 6c 6c 6f"
   cap crypto dfa --valid <32-hex> --fault <32-hex> --fault <32-hex> --json
-  cap crypto dfa-script --engine unidbg --so libwb.so -o WhiteboxDFA.java`,
+  cap crypto dfa-script --engine unidbg --binary libwb.so -o WhiteboxDFA.java`,
 	}
 
 	cmd.AddCommand(
@@ -510,11 +510,11 @@ func newCryptoDFACmd() *cobra.Command {
 
 func newCryptoDFAScriptCmd() *cobra.Command {
 	var (
-		engine   string
-		cfg      cryptolab.DFAScriptConfig
-		xorHex   string
-		outFile  string
-		jsonOut  bool
+		engine  string
+		cfg     cryptolab.DFAScriptConfig
+		xorHex  string
+		outFile string
+		jsonOut bool
 	)
 
 	cmd := &cobra.Command{

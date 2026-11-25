@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	maxGatewayReqBodyBytes  = 4 * 1024 * 1024
-	maxUpstreamRespBytes    = 10 * 1024 * 1024
-	gatewayShutdownTimeout  = 5 * time.Second
+	maxGatewayReqBodyBytes = 4 * 1024 * 1024
+	maxUpstreamRespBytes   = 10 * 1024 * 1024
+	gatewayShutdownTimeout = 5 * time.Second
 )
 
 // routeRateLimiter implements a lightweight thread-safe token bucket per route.

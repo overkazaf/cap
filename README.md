@@ -80,10 +80,12 @@ Most HTTP proxies (Burp Suite, mitmproxy, HTTP Toolkit) are designed for web sec
 | Sign algorithm inference | ✗ | ✗ | ✗ | **✓ MD5/SHA/HMAC** |
 | Static analysis & DeepTrace | ✗ | ✗ | ✗ | **✓ 8-stage live jadx / DEX / Call Graph** |
 | Frida Studio & live hooking | ✗ | ✗ | ✗ | **✓ Server deploy / live hot-reload / Trace→Hook** |
-| Native RE & Emulation (r2/Unidbg/Qiling/angr) | ✗ | ✗ | ✗ | **✓ Static r2 + pure-Go ELF / Emulation / Symbolic** |
+| Native RE & Emulation (r2/Unidbg/Qiling/angr) | ✗ | ✗ | ✗ | **✓ Static r2/ELF/iOS Mach-O / Auto-Stub / JADX↔JNI / Symbol Bridge** |
 | Anti-Obfuscation, Anti-Debug & VMP | ✗ | ✗ | ✗ | **✓ 13 packers / OLLVM / Inline SVC / VMP trace** |
 | Execution Trace & Taint Analysis | ✗ | ✗ | ✗ | **✓ Multi-format / Reg+Mem Taint / ASLR Diff / Tenet** |
-| Service Gateway (Open API + Pools) | ✗ | ✗ | ✗ | **✓ HTTP API / Proxy Pool / Device Pool / Signers** |
+| CryptoLab & White-Box AES DFA | ✗ | ✗ | ✗ | **✓ Codec/Cipher Pipeline (SM4/AES/ChaCha20) / Protobuf / R9 DFA** |
+| Modern TLS / mTLS & Cert Diagnostics | ✗ | △ basic | △ basic | **✓ 6 TLS/JA3 Profiles / APK Cert+Pin Scan / mTLS / Flutter & Cronet** |
+| Service Gateway (Production Open API) | ✗ | ✗ | ✗ | **✓ Proxy/Device/Account Pools / Managed Workers / Cache / Circuit / Prom & Docker** |
 | One-cmd Android setup | ✗ | ✗ | △ app-based | **✓ ADB direct + Guard APK** |
 | Auto network restore on disconnect | ✗ | ✗ | △ app-based | **✓ Companion Watchdog (rootless)** |
 | Cert inject (Android 7–15) | ✗ manual | ✗ manual | ✓ | **✓ APEX Conscrypt / mount --bind / Magisk / KeyChain** |
@@ -96,7 +98,7 @@ Most HTTP proxies (Burp Suite, mitmproxy, HTTP Toolkit) are designed for web sec
 | HAR / Charles import | ✓ | ✓ | ✓ | **✓** |
 | WebSocket capture | ✓ | ✓ | ✓ | **⧗ experimental** |
 | SSE stream capture | ✗ | △ | ✗ | **⧗ experimental** |
-| Protobuf auto-decode | ✗ addon | △ addon | ✗ | **⧗ experimental (schema-less)** |
+| Protobuf auto-decode | ✗ addon | △ addon | ✗ | **✓ Schema-less AST decode & lossless re-encode** |
 | Plugin system | ✓ BApp | ✓ addon | ✗ | **✓ single-page Python/Node/Sh workbench** |
 | Single binary | ✗ JVM | ✗ Python | ✗ Electron | **✓ Go single binary** |
 | Open source | ✗ ($449/yr) | ✓ | △ core only | **✓ MIT** |
@@ -133,15 +135,17 @@ flowchart TB
         SIGN["Sign Inference<br/>(MD5/SHA/HMAC)"]
         TRACE["DeepTrace & Source Mapper<br/>(jadx / DEX / Call Graph)"]
         DETECT["Param Detector<br/>(sign / ts / nonce)"]
-        RELAB["RE Lab Engine<br/>(r2 / Unidbg / Qiling / angr)"]
+        RELAB["RE Lab & Pro Suite<br/>(r2 / Unidbg / Qiling / angr / JADX↔JNI / iOS)"]
+        CRYPTOLAB["CryptoLab & DFA<br/>(Codecs / SM4 / Protobuf / AES-128 DFA)"]
+        TLSKIT["TLS / mTLS Kit<br/>(6 JA3 Profiles / APK Certs / Flutter / Cronet)"]
         DEOBF["Deobf & VMP Engine<br/>(Packer / OLLVM / SVC / VMP)"]
         EXECTRACE["ExecTrace & Taint<br/>(Multi-format / Taint / Diff)"]
     end
 
     subgraph Service["Service Gateway & Integration Hub"]
-        GW["Open API HTTP Gateway<br/>(:9090 / Auth / OpenAPI 3.0.3)"]
-        POOLS["Proxy IP Pool &<br/>Device Fingerprint Pool"]
-        SIGNERS["Pluggable Signers<br/>(HMAC / Script / HTTP / Unidbg / Frida)"]
+        GW["Open API HTTP Gateway<br/>(:9090 / Cache / Circuit / Prom / Docker)"]
+        POOLS["Proxy, Device & Account Pools<br/>(Singleflight 401/403 Refresh / TLS+mTLS)"]
+        SIGNERS["Pluggable Signers & Managed Workers<br/>(HMAC / Script / HTTP / 1-8 Worker Pool / Frida)"]
     end
 
     subgraph Export["Export Layer"]
@@ -185,9 +189,12 @@ flowchart TB
     TRACE --> RELAB
     TRACE --> DEOBF
     RELAB --> EXECTRACE
+    RELAB --> CRYPTOLAB
     DEOBF --> FRIDA
+    DEOBF --> TLSKIT
     GW --> POOLS
     GW --> SIGNERS
+    GW --> TLSKIT
     SIGNERS --> RELAB
     SIGNERS --> FRIDA
     DETECT --> STORE
@@ -253,11 +260,11 @@ Native Wails v2 + Svelte 4 desktop workbench compiled into a single binary (no E
   3. **Rules (`⌘3`)**: Split-pane intercept rules engine + live **Held Breakpoints** queue (Forward Edited / Mock / Drop 403), 6 action types, priority ordering, and regex/substring path validation.
   4. **DeepTrace (`⌘4`)**: Live 8-stage cancellable trace pipeline with real-time progress events, pure-Go DEX bytecode XRefs, 3-perspective interactive SVG Call Graph, and APK/JADX caching — plus 1-click **Hook in Frida**, **Emulate in RE Lab**, and **Scan Protection** handoffs from the Executive Report, module cards, and Native `.so` findings.
   5. **Frida (`⌘5`)**: Dedicated **Frida Studio** workbench with full `frida-server` lifecycle (ABI auto-detect, GitHub Release auto-download or local `.xz` push, stealth binary rename, custom port + `adb forward`, host vs device version-match diagnostics), zero-CGO Python Frida Bridge (with automatic `frida-cli` fallback), searchable process/app picker, `Spawn (-f)` / `Attach`, **live script hot-reload (`⌘R`)** without restarting the app, structured `send()` JSON event cards & JSONL export, 7 built-in RE templates + `~/.cap/frida-scripts/` disk hot-reload, CodeShare & app fingerprint browser, and **From Trace** auto-hook generator.
-  6. **RE Lab (`⌘6`)**: Unified 4-tab Native Reverse Engineering workbench combining **Native / radare2** static & pseudo-C inspection (with pure-Go ELF fallback), **Unidbg · Qiling · angr** emulation & symbolic execution with live job streaming (`~/.cap/re-projects/*.json`), **Deobf · Anti-Debug · VMP** protection scanner & script generator (1-click handoff to Frida or Emulation), and **ExecTrace · Taint** dynamic trace analyzer with forward/backward taint slicing, crypto detection, ASLR-normalized trace diff, and Tenet/JSONL/Markdown export.
+  6. **RE Lab (`⌘6`)**: Unified 6-tab Native Reverse Engineering workbench combining **Native / radare2 + iOS Mach-O/IPA** static inspection (pure-Go ELF fallback, FairPlay `cryptid` audit, ObjC classes/selectors, Unidbg iOS harness, iOS Stealth, and **IDA Pro / Ghidra / JSON Symbol Bridge**), **Unidbg · Qiling · angr** emulation & symbolic execution with **Unidbg Auto-Stub Assistant**, **Frida Env Snapshot**, live job streaming (`~/.cap/re-projects/*.json`), and JDK-first / Maven-cached / per-engine Python virtualenv auto-discovery, **JADX & Java↔JNI Cross-Linker**, **Deobf · Anti-Debug · VMP + Modern TLS / APK Certs / mTLS / Flutter & Cronet** diagnostics, **ExecTrace · Taint** dynamic trace analysis, and **CryptoLab** (CyberChef-style codec/cipher pipeline, schema-less Protobuf AST editor, and White-Box AES-128 Round-9 DFA solver).
   7. **Plugins (`⌘7`)**: Scriptable analyzer workbench & unified single-page debugger (`~/.cap/plugins/*.json` with disk hot-reload) supporting `python3`, `node`, `sh`, and `builtin` runtimes, live parsed `query_params` & flow variable inspector with click-to-insert snippets, live `stdin JSON` preview, real-time `Matches flow` indicator (supporting query strings & glob `*`), instant unsaved draft execution (`⌘Enter`), auto-run hooks on live traffic, and a real-time Execution Log drawer.
-  8. **Service Gateway (`⌘8`)**: Embedded Open API HTTP Gateway (`:9090`) turning reverse-engineered mobile endpoints into production-ready REST APIs — featuring 1-click Flow-to-Service route publishing, live Route Tester, API Key auth & per-route rate limiting, OpenAPI 3.0.3 export, **Proxy IP Pool** (HTTP/HTTPS/SOCKS5, dynamic provider fetch, health checks, rotation/sticky-device), **Device Pool** (virtual fingerprint presets + ADB sync), **Pluggable Signer Providers** (Built-in HMAC, Script, HTTP, Unidbg HTTP, Frida RPC), and real-time Invocation Logs.
+  8. **Service Gateway (`⌘8`)**: Production Open API HTTP Gateway (`:9090`) turning reverse-engineered mobile endpoints into resilient REST APIs — featuring 1-click Flow-to-Service route publishing, live Route Tester, API Key auth, per-route rate limiting, **Per-Route TTL Cache**, **Circuit Breaker**, **6 TLS/HTTP2 Fingerprint Profiles + JA3 + mTLS validation**, OpenAPI 3.0.3 export, **Proxy IP Pool**, **Device Pool** (virtual presets + ADB sync), **Multi-Account / Session Pool** with singleflight 401/403 auto-refresh, **Managed Signer Worker Pools** (`1..8` instances with health probes & auto-restart), **Pluggable Signer Providers**, **Prometheus `/metrics/prometheus`** telemetry drawer, **Docker / Compose** headless deployment export, and real-time Invocation Logs.
   9. **Terminal (`⌘9`)**: Multi-tab embedded PTY console (`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`) with quick diagnostic presets for `adb`, `frida`, and `curl`.
-  10. **Settings (`⌘,`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android / Frida Runtime Paths, RE Toolchain (`r2`, `java`, `mvn`, `unidbg`, `python3`, `qiling rootfs`) & Default Gateway Address, Export & Storage, Shortcuts, and About & Diagnostics.
+  10. **Settings (`⌘,`)**: Sectioned preferences for Appearance & Display Language (`English` / `简体中文`), Proxy & Certs, Android / Frida Runtime Paths, RE Toolchain (`r2`, `java`, `mvn`, `unidbg`, `python3`, dedicated `qiling` / `angr` Python virtualenvs, `qiling rootfs`) & Default Gateway Address, Export & Storage, Shortcuts, and About & Diagnostics.
 
 ### Full-Screen Interactive TUI (`cap tui` & `cap start --tui`)
 
@@ -331,21 +338,78 @@ cap frida run --pkg com.example.app --spawn \
 - **Built-in Script Library & CodeShare**: Ships 7 curated scripts (14+ Universal SSL Unpin, Anti-Root & Anti-Frida Stealth, OkHttp3/URLConnection Tracer, Crypto/Sign Tracer for MD5/SHA/HMAC/AES, JNI `RegisterNatives` & `dlopen` Tracer, SharedPreferences/SQLite Watcher, Dynamic Class Explorer), persistent custom scripts (`~/.cap/frida-scripts/*.json` with disk hot-reload), and integrated CodeShare search + app fingerprinting.
 - **DeepTrace → Frida Closed Loop**: Generate runnable Java, DEX XRef, and delayed `dlopen` Native `.so` hooks directly from any DeepTrace report, module card, or native export in one click.
 
-### RE Lab — Native Binary Analysis & Algorithm Emulation (`cap re` & GUI `⌘6`)
+### RE Lab — Native Binary Analysis, Host Toolchain & Algorithm Emulation (`cap re` & GUI `⌘6`)
 
 Full native `.so`/ELF/Mach-O reverse-engineering and algorithm emulation pipeline without leaving `cap`:
 
 ```bash
-cap re status                                              # Probe radare2, JDK/Maven/Unidbg, Python/Qiling/angr
+cap re status                                              # Probe r2, JDK/Maven/Unidbg, independent Qiling/angr venvs
+cap re run -e unidbg -f ./SignerHarness.java --apk app.apk # Run Unidbg/Qiling/angr/r2 job directly from CLI
 cap re analyze ./libsign.so --func Java_com_app_sign       # Static ELF/r2 analysis + disassembly/pseudo-C/xrefs
 cap re r2 ./libsign.so "iI;iEj"                            # Sanitized read-only radare2 command execution
 cap re gen -e unidbg --apk app.apk --so libsign.so \
   --class com/app/Signer --method sign --http-server       # Synthesize Unidbg harness (with optional HTTP signer mode)
 ```
 
+- **Host Toolchain Auto-Discovery & Caching**: Automatically co-matches `java` + `javac` + `JAVA_HOME` (JDK-first discovery across Homebrew/JVM paths), caches resolved Unidbg Maven classpaths (with offline `~/.m2` repository fallback for fast repeat launches), and resolves independent Python virtualenvs for `qiling` (`--qiling-python`) and `angr` (`--angr-python`) so conflicting dependencies never collide.
 - **radare2 + Pure-Go ELF Fallback**: Extracts architecture, mitigations (`PIE`, `NX`, `Canary`, `RELRO`), functions, dynamic exports/imports, strings, xrefs, disassembly, and pseudo-C (`pdg`/`pdc`), falling back seamlessly to a pure-Go `debug/elf` analyzer when `r2` is absent.
-- **Unidbg · Qiling · angr Emulation & Symbolic Execution**: Ships curated starter templates and parameterized harness generators for Android JNI `.so` emulation (Unidbg, including embedded HTTP signer server mode), ARM64/ARM Linux/Android emulation (Qiling with RootFS & syscall hooks), and symbolic constraint solving (angr with `claripy` concrete solution extraction).
-- **DeepTrace → RE Lab Closed Loop**: Click **Emulate in RE Lab** from any DeepTrace report or Native `.so` finding to synthesize a tailored Unidbg/Qiling/angr harness pre-filled with APK, `.so`, JNI symbols, and captured request inputs, with live cancellable job streaming and `~/.cap/re-projects/*.json` persistence.
+- **Unidbg · Qiling · angr Emulation & Symbolic Execution**: Ships curated starter templates, parameterized harness generators, and `cap re run` CLI/GUI job execution with live cancellable streaming and `~/.cap/re-projects/*.json` persistence.
+- **DeepTrace → RE Lab Closed Loop**: Click **Emulate in RE Lab** from any DeepTrace report or Native `.so` finding to synthesize a tailored Unidbg/Qiling/angr harness pre-filled with APK, `.so`, JNI symbols, and captured request inputs.
+
+### RE Pro Suite — Auto-Stub, JADX↔JNI, Symbol Bridge & iOS (`cap repro` & GUI `⌘6`)
+
+Commercial-grade productivity extensions for Android & iOS native reverse engineering:
+
+```bash
+cap repro autostub --file ./unidbg.log -o AutoStubs.java   # Diagnose Unidbg logs → Java AbstractJni/IOResolver/SysProp stubs
+cap repro env-snapshot --pkg com.acme.app -o snapshot.js   # Generate Frida Android runtime env snapshot for Unidbg
+cap repro jadx ./target.apk --link-so ./libsign.so --json  # Decompile APK/DEX workspace & cross-link Java <-> JNI symbols
+cap repro symbols --in ./symbols.json -f ida -o apply.py   # Export SymbolBundle to IDAPython, Ghidra Python, or JSON
+cap repro ios ./Target.ipa --json                          # Static Mach-O / Fat Mach-O / IPA inspector & FairPlay audit
+cap repro ios-harness --binary ./Target --objc-class Signer --objc-selector sign:
+cap repro ios-stealth --bundle-id com.acme.ios -o ios_stealth.js
+```
+
+- **Unidbg Auto-Stub Assistant & Frida Env Snapshot**: Parses Unidbg runtime exceptions for missing JNI callbacks, classes, files, system properties, and libraries, synthesizing paste-ready Java `AbstractJni` / `IOResolver` / `SystemPropertyHook` stubs alongside a Frida environment snapshot collector.
+- **JADX Decompiler & Java↔JNI Cross-Linker**: Caches decompiled APK/DEX workspaces (`~/.cap/jadx-cache`), supports fast class listing, source viewing, case-insensitive full-text search, and automated static + Frida `RegisterNatives` dynamic Java↔JNI native symbol resolution.
+- **IDA Pro / Ghidra / JSON Symbol Bridge**: Imports/validates `SymbolBundle` JSON annotations (function names, comments, struct tags) and exports deterministic IDAPython or Ghidra Python scripts.
+- **iOS Mach-O / IPA Static Inspector & Harnesses**: Pure-Go parser for thin/universal Mach-O and `.ipa` archives covering `Info.plist`/ATS audit, FairPlay encryption (`cryptid`), PIE/NX/ARC/Canary mitigations, linked dylibs/frameworks, Objective-C classes & selectors, plus Unidbg `DarwinEmulatorBuilder` iOS harness and Frida iOS stealth generators.
+
+### CryptoLab & White-Box AES-128 DFA (`cap crypto` & GUI `⌘6`)
+
+Built-in CyberChef-style cryptographic workbench, schema-less Protobuf inspector, and White-Box AES-128 Round-9 Differential Fault Analysis (DFA) solver:
+
+```bash
+cap crypto ops --json                                      # List all composable codec, hash, cipher & protobuf operations
+cap crypto identify "SGVsbG8gV29ybGQ=" --json              # Auto-detect encoding, magic bytes, JWT claims, entropy & recipes
+cap crypto run --op sm4_ecb_encrypt -p key=<32-hex> -i "hello" --output-format hex
+cap crypto protobuf --decode "08 96 01 12 05 68 65 6c 6c 6f"
+cap crypto dfa --valid <32-hex> --fault-file ./faults.txt --plaintext <32-hex>
+cap crypto dfa-script -e unidbg --binary ./libwb.so --hook-addr 0x12a40 -o WhiteboxDFA.java
+```
+
+- **Composable Crypto/Codec Pipeline**: Chains Base64 (including custom 64-char alphabets), Base32, Hex, URL, Gzip/Zlib/Deflate, XOR & single-byte XOR bruteforce, custom-IV MD5/SHA-256, HMAC, and pure-Go **SM4**, **AES** (ECB/CBC/CTR/GCM), **ChaCha20**, and **RC4** with step-by-step intermediate inspection and automatic payload identification.
+- **Schema-less Protobuf Wire Inspector**: Decodes raw hex/Base64 Protobuf wire payloads into an editable nested AST without `.proto` definitions and losslessly re-encodes modified fields back to hex/Base64.
+- **White-Box AES-128 Round-9 DFA Solver**: Recovers the Round-10 subkey and inverted AES-128 Master Key directly from Round-9 single-byte faulty ciphertexts (with optional plaintext verification), and generates Unidbg (Java) or Qiling (Python) fault-injection scripts.
+
+### Modern TLS / mTLS & Proxy Compatibility Diagnostics (`cap tls` & GUI `⌘6` / `⌘8`)
+
+Pure-Go TLS fingerprint profiling, APK certificate auditing, mTLS validation, and local-proxy compatibility templates:
+
+```bash
+cap tls profiles                                           # List 6 curated TLS/HTTP2 profiles + JA3 hashes
+cap tls ja3 chrome_131 --json                              # Compute deterministic JA3 fingerprint summary
+cap tls scan-apk ./target.apk --json                       # Scan APK for X.509 certs, BKS/JKS/PKCS12 keystores & pins
+cap tls validate-mtls --cert ./client.pem --key ./client.key
+cap tls flutter --offset 0x5a1230 --proxy 127.0.0.1:8080 -o flutter_debug.js
+cap tls cronet --pkg com.acme.app -o cronet_h2.js          # Cronet QUIC→HTTP/2 & OkHttp local-proxy compat script
+cap tls mtls-observer --pkg com.acme.app -o mtls_obs.js    # Read-only KeyStore/SSLContext metadata observer
+cap tls curl-impersonate --json                            # Detect host curl-impersonate binaries on PATH
+```
+
+- **6 Curated TLS / HTTP2 Fingerprint Profiles**: `go_default`, `chrome_131`, `safari_17`, `firefox_132`, `okhttp_android`, and `ios_cfnetwork` with deterministic JA3 hashes, `curl-impersonate` host discovery, and direct integration into Service Gateway routes.
+- **APK Certificate / Pin Scanner & mTLS Validator**: Scans APKs (including binary AXML & plain `network_security_config.xml`) for embedded PEM/DER certificates, keystores, and public-key pins, and validates PEM client cert/key pairs (key match, chain length, ClientAuth EKU, expiry).
+- **Local-Proxy Diagnostic Templates**: Generates sanitized Frida scripts for Flutter local-proxy debugging, Cronet QUIC-to-HTTP/2 fallback, and strictly read-only mTLS KeyStore/SSLContext observation.
 
 ### Anti-Obfuscation, Anti-Debug & VMP Analysis (`cap deobf` & GUI `⌘6`)
 
@@ -382,21 +446,26 @@ cap exectrace export <sessionID> -f tenet -o trace.tenet.txt
 
 ### Service Gateway & Integration Hub (`cap gateway` & GUI `⌘8`)
 
-Turn reverse-engineered mobile APIs into reliable, authenticated HTTP endpoints backed by proxy, device, and signer pools:
+Turn reverse-engineered mobile APIs into production-grade, observable, authenticated HTTP endpoints backed by proxy, device, account, and supervised signer worker pools:
 
 ```bash
 cap gateway publish --flow f1 --slug search-feed           # Publish a captured flow as an Open API route
 cap gateway proxies --add socks5://user:pass@1.2.3.4:1080 --check
 cap gateway devices --from-preset pixel-8-pro              # Create virtual fingerprint (or --sync-adb)
+cap gateway accounts --add "VIP-1" --token "tok_abc" --tags vip
+cap gateway workers --add "Unidbg-Pool" --kind unidbg_http --cmd java --base-port 18900 --instances 4
 cap gateway signers --test <signerID> --url https://api.example.com/v1/feed
-cap gateway start -a 127.0.0.1:9090 --require-auth --api-key sk-live-demo
+cap gateway circuits --reset search-feed --clear-cache all
+cap gateway serve -a 0.0.0.0:9090 --require-auth --api-key sk-live-demo
+cap gateway prometheus -o metrics.prom                     # Export Prometheus exposition metrics
+cap gateway export-docker -a 0.0.0.0:9090 -o ./deploy      # Generate Dockerfile + docker-compose.yml
 cap gateway openapi -o openapi.json                        # Export OpenAPI 3.0.3 spec
 ```
 
-- **Open API HTTP Gateway (`:9090`)**: Publishes captured flows into reusable `POST /gw/<slug>` routes with template substitution (`{{input.*}}`, `{{device.*}}`, `{{timestamp}}`, `{{nonce}}`), API Key auth (`X-API-Key` / `Bearer`), per-route rate limiting, retries/failover, raw passthrough mode, live Route Tester, real-time invocation telemetry, and **OpenAPI 3.0.3** spec export.
-- **Proxy IP Pool**: Manages `HTTP` / `HTTPS` / `SOCKS5` nodes with bulk import, dynamic provider fetch (`lines` or `json` path extraction), concurrent health/latency probing, and `round_robin`, `random`, `least_latency`, or `sticky_device` rotation policies.
-- **Device Pool & Virtual Fingerprints**: Ships realistic Android fingerprint presets (UA, OAID, Android ID, build props, screen metrics, cookies/tokens) alongside 1-click **ADB physical device sync**.
-- **Pluggable Signer Providers**: Computes fresh request signatures per invocation via **Built-in HMAC/Hash** (MD5/SHA/HMAC), **Local Script** (`python3`/`node`/`sh`), **External HTTP**, **Unidbg HTTP Signer**, or **Frida RPC** (`rpc.exports`).
+- **Open API HTTP Gateway (`:9090`) & Headless `serve` Mode**: Publishes captured flows into reusable `POST /gw/<slug>` routes with template substitution (`{{input.*}}`, `{{device.*}}`, `{{account.*}}`, `{{timestamp}}`, `{{nonce}}`), API Key auth (`X-API-Key` / `Bearer`), per-route rate limiting, retries/failover, raw passthrough, **Per-Route TTL Cache** (LRU + `X-Cap-No-Cache` bypass), **Circuit Breaker** (closed/open/half-open fast-fail & manual reset), per-route **TLS/HTTP2 Fingerprint Profiles + mTLS**, **Prometheus `/metrics/prometheus`** telemetry, **OpenAPI 3.0.3** export, and headless **`cap gateway serve`** (`CAP_GW_LISTEN_ADDR` + auto-started Managed Workers) with **Dockerfile & `docker-compose.yml` export**.
+- **Multi-Account / Session Pool & Singleflight Auto-Refresh**: Manages multi-account tokens, cookies, tags, sticky-device bindings, and `round_robin` / `least_used` / `sticky_device` policies, with singleflight 401/403/body-match auto-refresh (recursion-guarded) and challenge webhook notifications.
+- **Managed Signer Worker Pools (`1..8` Instances)**: Supervises local `unidbg_http`, `qiling_http`, `script_http`, or `custom` signer processes across sequential loopback ports with periodic `/health` probing, round-robin load balancing, stderr tail capture, auto-restart backoff, and clean process-group teardown.
+- **Proxy IP Pool, Device Pool & Pluggable Signers**: Manages `HTTP`/`HTTPS`/`SOCKS5` proxies (bulk import, dynamic provider fetch, health/latency checks, rotation/sticky-device), realistic Android fingerprint presets + ADB sync, and pluggable **Built-in HMAC/Hash**, **Local Script**, **External HTTP**, **Unidbg HTTP / Managed Worker**, and **Frida RPC** signers.
 
 ### SSL Unpinning
 
@@ -528,11 +597,33 @@ ANDROID_HOME=~/Library/Android/sdk ./android-companion/build.sh
 | `cap unpin magisk` | Deploy system-wide Magisk CA cert promotion module |
 | `cap unpin codeshare [--pkg <pkg>\|--query <q>]` | Fingerprint APK & search Frida CodeShare scripts |
 | `cap unpin script` | Print raw Frida unpinning script to stdout |
-| `cap re status [--r2\|--java\|--unidbg-dir\|--python\|--rootfs] [--json]` | Probe host RE toolchain (`r2`, JDK/Maven/Unidbg, Python/Qiling/angr) |
-| `cap re analyze <file> [--func <name\|addr>] [--json]` | Static ELF/Mach-O analysis & function disassembly/pseudo-C/xrefs |
-| `cap re r2 <file> <cmd> [--json]` | Run a sanitized read-only radare2 command on a binary |
+| `cap re status [--r2\|--java\|--mvn\|--unidbg-dir\|--python\|--qiling-python\|--angr-python\|--rootfs] [--json]` | Probe host RE toolchain (`r2`, JDK/Maven/Unidbg, independent Qiling/angr venvs) |
+| `cap re run [-e unidbg\|qiling\|angr\|radare2] (-f <file>\|-p <id>) [--binary\|--apk\|--rootfs] [--timeout n] [--arg a] [--json]` | Execute a Unidbg, Qiling, angr, or radare2 harness with live output & `[CAP_RE]` results |
+| `cap re analyze <file> [--r2 path] [--func <name\|addr>] [--json]` | Static ELF/Mach-O analysis & function disassembly/pseudo-C/xrefs |
+| `cap re r2 <file> <cmd> [--r2 path] [--json]` | Run a sanitized read-only radare2 command on a binary |
 | `cap re projects [-e engine] [--show <id>] [--json]` | List built-in & saved RE projects or print harness source |
-| `cap re gen -e <unidbg\|qiling\|angr\|radare2> [--apk\|--so\|--http-server]` | Synthesize an emulation, symbolic execution, or r2 harness |
+| `cap re gen -e <unidbg\|qiling\|angr\|radare2> [--apk\|--so\|--binary\|--http-server] [-o file]` | Synthesize an emulation, symbolic execution, or r2 harness |
+| `cap repro autostub [file] [-f <log>\|--stdin] [-o stub.java] [--json]` | Diagnose Unidbg logs & generate Java `AbstractJni`/`IOResolver`/SysProp stubs |
+| `cap repro env-snapshot [--pkg <pkg>] [-o snapshot.js] [--json]` | Generate Frida Android runtime environment snapshot script for Unidbg |
+| `cap repro jadx [apk] [--detect\|--filter q\|--search q\|--class c\|--link-so .so\|--register-natives json] [--json]` | Decompile APK/DEX workspace, search/read Java classes & cross-link Java↔JNI |
+| `cap repro symbols --in <bundle.json\|-> [-f ida\|ghidra\|json] [-o file]` | Validate & export `SymbolBundle` JSON to IDAPython, Ghidra Python, or JSON |
+| `cap repro ios <macho-or-ipa> [--json]` | Static Mach-O / Universal Fat Mach-O / `.ipa` inspection & FairPlay audit |
+| `cap repro ios-harness [--binary\|--ipa] [--bundle-id id] [--symbol\|--objc-class --objc-selector\|--offset] [-o file]` | Generate Unidbg `DarwinEmulatorBuilder` iOS Java emulation harness |
+| `cap repro ios-stealth [--bundle-id id] [--binary name] [--ptrace\|--sysctl\|--getppid\|--dyld\|--jailbreak] [-o file]` | Generate Frida iOS anti-debug & jailbreak-check diagnostic script |
+| `cap crypto ops [--category codec\|compression\|xor\|hash\|hmac\|cipher\|protobuf] [--json]` | List composable CryptoLab pipeline operations & parameters |
+| `cap crypto identify [input\|-] [-f file] [--json]` | Auto-identify payload encodings, magic bytes, JWT claims, entropy & recipes |
+| `cap crypto run (--op <name> [-p k=v]\|--pipeline-json <json\|file>) (-i <in>\|-f <file>) [--input-format\|--output-format] [--json]` | Execute single operation or multi-step CryptoLab pipeline |
+| `cap crypto protobuf (--decode <hex\|b64\|->\|--encode-json <json\|file\|->) [--json]` | Schema-less Protobuf wire decoder and lossless JSON AST re-encoder |
+| `cap crypto dfa --valid <hex> (--fault <hex>\|--fault-file <file>) [--plaintext <hex>] [--json]` | Recover AES-128 Round-10 subkey & Master Key via Round-9 DFA |
+| `cap crypto dfa-script [-e unidbg\|qiling] [--binary path] [--apk path] [--hook-addr hex] [--reg r\|--state-addr hex] [--xor 0x01] [-o file]` | Generate Unidbg (Java) or Qiling (Python) Round-9 DFA fault-injection script |
+| `cap tls profiles [--json]` | List 6 curated TLS / HTTP2 client fingerprint profiles & JA3 hashes |
+| `cap tls ja3 [profile] [--json]` | Compute deterministic JA3 fingerprint summary for a TLS profile |
+| `cap tls scan-apk <apk> [--json]` | Pure-Go APK scan for X.509 certs, keystores & `network_security_config` pins |
+| `cap tls validate-mtls --cert <pem> --key <key> [--json]` | Validate PEM client certificate & private key pair for mutual TLS |
+| `cap tls flutter [--offset hex] [--proxy host:port] [--platform android\|ios] [--pkg id] [-o file]` | Generate local-proxy Flutter diagnostic Frida script |
+| `cap tls cronet [--pkg id] [--disable-quic] [--okhttp] [--log-alt-svc] [--proxy-hint addr] [-o file]` | Generate Cronet QUIC→HTTP/2 & OkHttp local-proxy compat Frida script |
+| `cap tls mtls-observer [--pkg id] [--keystore\|--keymanager\|--sslcontext\|--certs] [-o file]` | Generate read-only mTLS KeyStore/SSLContext observer Frida script |
+| `cap tls curl-impersonate [--json]` | Detect optional `curl-impersonate` binaries installed on `PATH` |
 | `cap deobf scan <apk\|so> [--json]` | Audit APK/ELF for 13 packers, OLLVM, VMP, anti-debug & inline `SVC #0` |
 | `cap deobf stealth [--scan <path>] [--pkg <pkg>] [--patch-svc] [-o file]` | Generate composable Frida Anti-Debug / Anti-Frida stealth script |
 | `cap deobf unpack [--pkg <pkg>] [-o file]` | Generate Frida in-memory DEX unpacker script |
@@ -546,12 +637,18 @@ ANDROID_HOME=~/Library/Android/sdk ./android-companion/build.sh
 | `cap exectrace collect --kind <stalker\|java_call\|unidbg\|qiling> [-o file]` | Generate ready-to-run execution trace collector script |
 | `cap exectrace export <sessionID> [-f tenet\|jsonl\|markdown] [-o file]` | Export trace session to Tenet, JSONL, or Markdown |
 | `cap gateway start [-a 127.0.0.1:9090] [--require-auth] [--api-key <k>]` | Start embedded Open API HTTP Service Gateway |
-| `cap gateway status [--json]` | Inspect gateway listener status, routes & pool counts |
+| `cap gateway serve [-a 0.0.0.0:9090] [--require-auth] [--api-key <k>] [--start-workers]` | Run headless production Gateway server (`CAP_GW_LISTEN_ADDR` + Managed Workers) |
+| `cap gateway status [--json]` | Inspect gateway listener status, routes, cache/circuits & pool counts |
 | `cap gateway publish --flow <id> [--slug <slug>] [--name <name>]` | Publish a captured flow as an Open API Gateway route |
-| `cap gateway routes [--test <slug> --input k=v] [--delete <id>] [--json]` | List, test-invoke, or delete published service routes |
+| `cap gateway routes [--test <slug> --input k=v] [--body s] [--raw] [--delete <id>] [--json]` | List, test-invoke, or delete published service routes |
 | `cap gateway proxies [--add <url>\|--import <file>\|--fetch <url>\|--check]` | Manage Proxy IP Pool (HTTP/HTTPS/SOCKS5, dynamic fetch, health check) |
 | `cap gateway devices [--presets\|--from-preset <id>\|--sync-adb]` | Manage virtual Android device fingerprints & ADB device sync |
 | `cap gateway signers [--test <id> --url <url>] [--delete <id>] [--json]` | List, test, or delete pluggable Signer Providers |
+| `cap gateway accounts [--add <name> --token <t> --cookie <c>\|--strategy <s>\|--mark-healthy <id>\|--delete <id>] [--json]` | Manage multi-account / session pool & rotation strategy |
+| `cap gateway workers [--add <name> --kind <k> --cmd <bin> --base-port <p> --instances <1..8>\|--start\|--stop\|--restart\|--status\|--delete <id>] [--json]` | Manage supervised local Signer Worker Process Pools |
+| `cap gateway circuits [--reset <slug\|all>] [--clear-cache <slug\|all>] [--json]` | Inspect/reset per-route circuit breakers & clear route TTL caches |
+| `cap gateway prometheus [-o metrics.prom]` | Export live gateway telemetry in Prometheus text exposition format |
+| `cap gateway export-docker [-a 0.0.0.0:9090] [-o ./deploy] [--json]` | Export production `Dockerfile` & `docker-compose.yml` for `cap gateway serve` |
 | `cap gateway openapi [-o openapi.json]` | Export OpenAPI 3.0.3 JSON specification for enabled routes |
 
 **Global Flag**: `--lang en|zh` (auto-detected from `CAP_LANG` > `LC_ALL` > `LC_MESSAGES` > `LANG`).
@@ -572,23 +669,25 @@ internal/
 ├── android/            ADB helpers, 3-strategy cert install/verify, companion.go, bin/cap-companion.apk
 ├── buildinfo/          Version injection metadata
 ├── capture/            WebSocket frame parser, SSE stream parser (experimental)
-├── cli/                Cobra commands (start, tui, gui, flows, export, android, frida, unpin, re, deobf, exectrace, gateway)
+├── cli/                Cobra commands (start, tui, gui, flows, export, android, frida, unpin, re, repro, crypto, tls, deobf, exectrace, gateway)
 ├── compare/            Side-by-side flow comparison with structured diff
 ├── config/             Shared path defaults (~/.cap)
 ├── context/            jadx scanner, Retrofit/OkHttp parser, URL-to-source mapper
+├── cryptolab/          CyberChef-style codec/cipher pipeline (SM4/AES/ChaCha20/RC4), schema-less Protobuf AST & AES-128 Round-9 DFA solver
 ├── deobf/              APK/ELF protection scanner (13 packers, OLLVM, VMP, inline SVC), stealth/unpack/deobf generators & VMP analyzer
 ├── exectrace/          Multi-format execution trace parser, forward/backward taint slicer, crypto/loop detector, ASLR diff & Tenet export
 ├── export/             codegen/ (5 languages) & agent/ (compact JSONL)
 ├── frida/              Frida toolchain probe, server deploy/lifecycle, Python Bridge, script store & Trace→Hook codegen
-├── gateway/            Open API HTTP gateway, Proxy IP Pool, Device Fingerprint Pool, Pluggable Signer Providers & OpenAPI 3.0.3
+├── gateway/            Open API HTTP gateway, Proxy/Device/Account pools, singleflight refresh, Managed Workers, TTL cache, circuit breaker, Prometheus & Docker export
 ├── grouping/           API auto-grouping by host + path prefix
 ├── i18n/               Zero-dependency EN / zh-CN localization catalog for TUI & CLI
 ├── importer/           HAR and Charles proxy XML import
 ├── plugin/             Built-in analyzer plugin engine (experimental)
-├── proto/              Schema-less protobuf wire format decoder (experimental)
+├── proto/              Schema-less protobuf wire format decoder
 ├── proxy/              goproxy MITM core, ECDSA CA cert gen, stream capture
 ├── replay/             HTTP replay, request modification, response diff
-├── retools/            Native RE & emulation engine (radare2 + pure-Go ELF, Unidbg, Qiling, angr, DeepTrace harness codegen & job runner)
+├── repro/              RE Pro extensions: Unidbg Auto-Stub, Frida Env Snapshot, JADX↔JNI Cross-Linker, IDA/Ghidra Symbol Bridge & iOS Mach-O/IPA
+├── retools/            Native RE & emulation engine (JDK-first/Maven-cached Unidbg, per-engine Python venvs for Qiling/angr, r2 + pure-Go ELF & job runner)
 ├── rules/              Intercept rules, mocks, and held breakpoints persistence & engine
 ├── screen/             Android device screen mirror (screencap + scrcpy)
 ├── sequence/           Request sequence record/replay with variable propagation
@@ -596,6 +695,7 @@ internal/
 ├── stats/              Traffic telemetry (P95 latency, error rate, timeline)
 ├── store/sqlite/       SQLite WAL persistence, filtering, JSON codec
 ├── terminal/           Multi-tab PTY backend for GUI Terminal
+├── tlskit/             Curated TLS/HTTP2 profiles + JA3, APK cert/pin scanner, mTLS validator, curl-impersonate probe & Flutter/Cronet compat scripts
 ├── trace/              DeepTrace: DEX search, jadx, call-graph & native analysis
 ├── tui/                Flicker-free double-buffered ANSI full-screen TUI
 ├── types/              Flow, WSFrame, SSEEvent models

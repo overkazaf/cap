@@ -71,10 +71,12 @@
 | 签名算法推理 | ✗ | ✗ | ✗ | **✓ MD5/SHA/HMAC** |
 | 静态分析与 DeepTrace | ✗ | ✗ | ✗ | **✓ 8 阶段实时 jadx / DEX / 调用图** |
 | Frida 工作室与实时 Hook | ✗ | ✗ | ✗ | **✓ 服务端一键部署 / 在线热重载 / 追踪生成 Hook** |
-| 原生逆向与算法仿真 (r2/Unidbg/Qiling/angr) | ✗ | ✗ | ✗ | **✓ r2 + 纯 Go ELF / 算法仿真 / 符号执行** |
+| 原生逆向与算法仿真 (r2/Unidbg/Qiling/angr) | ✗ | ✗ | ✗ | **✓ r2/ELF/iOS Mach-O / 自动补环境 / JADX↔JNI / 符号桥接** |
 | 反混淆、反调试与 VMP 逆向 | ✗ | ✗ | ✗ | **✓ 13 种加固 / OLLVM / 内联 SVC / VMP 追踪** |
 | 执行追踪与污点分析 | ✗ | ✗ | ✗ | **✓ 多格式解析 / 寄存器+内存污点 / ASLR Diff / Tenet** |
-| 服务化网关 (Open API + 资源池) | ✗ | ✗ | ✗ | **✓ HTTP API / 代理池 / 设备指纹池 / 签名器** |
+| 密码学工坊与白盒 AES DFA | ✗ | ✗ | ✗ | **✓ 编解码与加密流水线 (SM4/AES/ChaCha20) / Protobuf / 第 9 轮 DFA** |
+| 现代 TLS / mTLS 与证书诊断 | ✗ | △ 基础 | △ 基础 | **✓ 6 套 TLS/JA3 指纹 / APK 证书与 Pin 扫描 / mTLS / Flutter & Cronet** |
+| 生产级服务化网关 (Open API) | ✗ | ✗ | ✗ | **✓ 代理/设备/账号池 / 托管 Worker 池 / 缓存 / 熔断 / Prom 与 Docker** |
 | 一键连接 Android | ✗ | ✗ | △ 需装 App | **✓ ADB 直连 + 守护 APK** |
 | 拔线/断网自动恢复代理 | ✗ | ✗ | △ 依赖 App | **✓ Companion 看门狗（免 Root）** |
 | 证书注入 (Android 7–15) | ✗ 手动 | ✗ 手动 | ✓ | **✓ APEX Conscrypt / mount --bind / Magisk / KeyChain** |
@@ -87,7 +89,7 @@
 | HAR / Charles 导入 | ✓ | ✓ | ✓ | **✓** |
 | WebSocket 抓取 | ✓ | ✓ | ✓ | **⧗ 实验性** |
 | SSE 流抓取 | ✗ | △ | ✗ | **⧗ 实验性** |
-| Protobuf 无 Schema 解码 | ✗ 插件 | △ 插件 | ✗ | **⧗ 实验性** |
+| Protobuf 无 Schema 解码 | ✗ 插件 | △ 插件 | ✗ | **✓ 无 Schema AST 解码与无损重编码** |
 | 插件系统 | ✓ BApp | ✓ addon | ✗ | **✓ 单页联调 Python/Node/Sh 工作台** |
 | 单文件分发 | ✗ JVM | ✗ Python | ✗ Electron | **✓ Go 单二进制** |
 | 开源免费 | ✗ ($449/年) | ✓ | △ 核心开源 | **✓ MIT** |
@@ -124,15 +126,17 @@ flowchart TB
         SIGN["签名推理<br/>(MD5/SHA/HMAC)"]
         TRACE["DeepTrace 与源码映射<br/>(jadx / DEX / 调用图)"]
         DETECT["参数检测<br/>(sign / ts / nonce)"]
-        RELAB["逆向实验室引擎<br/>(r2 / Unidbg / Qiling / angr)"]
+        RELAB["逆向实验室与 Pro 套件<br/>(r2 / Unidbg / Qiling / angr / JADX↔JNI / iOS)"]
+        CRYPTOLAB["CryptoLab 与 DFA<br/>(编解码 / SM4 / Protobuf / AES-128 DFA)"]
+        TLSKIT["TLS / mTLS 诊断套件<br/>(6 套 JA3 / APK 证书 / Flutter / Cronet)"]
         DEOBF["反混淆与 VMP 引擎<br/>(加固 / OLLVM / SVC / VMP)"]
         EXECTRACE["执行追踪与污点<br/>(多格式 / 污点切片 / Diff)"]
     end
 
     subgraph 服务层["服务化网关与集成中心"]
-        GW["Open API HTTP 网关<br/>(:9090 / 鉴权 / OpenAPI 3.0.3)"]
-        POOLS["代理 IP 池与<br/>虚拟设备指纹池"]
-        SIGNERS["可插拔签名器<br/>(HMAC / 脚本 / HTTP / Unidbg / Frida)"]
+        GW["Open API HTTP 网关<br/>(:9090 / 缓存 / 熔断 / Prom / Docker)"]
+        POOLS["代理 / 设备 / 账号池<br/>(单飞自动续期 / TLS+mTLS)"]
+        SIGNERS["可插拔签名器与托管 Worker 池<br/>(HMAC / 脚本 / HTTP / 1-8 托管实例 / Frida)"]
     end
 
     subgraph 导出层["导出层"]
@@ -176,9 +180,12 @@ flowchart TB
     TRACE --> RELAB
     TRACE --> DEOBF
     RELAB --> EXECTRACE
+    RELAB --> CRYPTOLAB
     DEOBF --> FRIDA
+    DEOBF --> TLSKIT
     GW --> POOLS
     GW --> SIGNERS
+    GW --> TLSKIT
     SIGNERS --> RELAB
     SIGNERS --> FRIDA
     DETECT --> STORE
@@ -244,11 +251,11 @@ sequenceDiagram
   3. **Rules 拦截规则与断点（`⌘3`）**：分屏规则管理 + 实时**挂起断点队列**（支持编辑后放行 / Mock 返回 / 丢弃 403），涵盖 6 类动作、优先级排序及正则/路径校验。
   4. **DeepTrace 深度追踪（`⌘4`）**：8 阶段实时可取消追踪流水线，支持纯 Go DEX 字节码交叉引用（XRefs）、3 视角交互式 SVG 调用图与 APK/JADX 缓存复用，并支持从综合报告、模块卡片与 Native `.so` 符号**一键跳转 Frida Hook、逆向实验室仿真或保护审计**。
   5. **Frida 动态工作室（`⌘5`）**：全流程 Frida 逆向工作台，覆盖 `frida-server` 全生命周期（自动识别设备 ABI、GitHub Release 一键下载或本地 `.xz` 推送、防检测重命名、自定义端口与 `adb forward`、宿主与设备版本一致性校验）、零额外 CGO 的内置 Python Frida Bridge（自动降级 `frida-cli`）、可搜索进程/应用选择器、`Spawn (-f)` / `Attach` 注入、**无需重启 App 的在线脚本热重载（`⌘R`）**、结构化 `send()` JSON 事件卡片与 JSONL 导出、7 套内置实战模板 + `~/.cap/frida-scripts/` 磁盘热重载、CodeShare 与应用指纹检索，以及 **DeepTrace 一键合成 Hook**。
-  6. **RE Lab 逆向实验室（`⌘6`）**：四合一原生逆向工作台，集成 **Native / radare2** 静态与伪 C 分析（无 `r2` 时纯 Go ELF 自动兜底）、**Unidbg · Qiling · angr** 算法仿真与符号执行（支持实时日志流与 `~/.cap/re-projects/*.json` 持久化）、**反混淆 · 反调试 · VMP** 保护审计与脚本生成（一键推送 Frida 或仿真执行），以及 **ExecTrace · 污点分析**（多格式指令追踪、前向/后向寄存器+内存污点切片、加密常量/S-Box/热循环识别、ASLR 归一化 Diff 与 Tenet/JSONL/Markdown 导出）。
+  6. **RE Lab 逆向实验室（`⌘6`）**：六合一原生逆向工作台，集成 **Native / radare2 + iOS Mach-O/IPA** 静态与伪 C 分析（纯 Go ELF 兜底、FairPlay `cryptid` 审计、ObjC 类/选择器、Unidbg iOS 仿真模板、iOS Stealth 及 **IDA Pro / Ghidra / JSON 符号桥接**）、**Unidbg · Qiling · angr** 算法仿真与符号执行（内置 **Unidbg 自动补环境助手**、**Frida 环境快照**、实时日志流、JDK 优先匹配 / Maven Classpath 缓存与 Qiling/angr 独立 Python 虚拟环境）、**JADX 反编译与 Java↔JNI 交叉关联**、**反混淆 · 反调试 · VMP + 现代 TLS / APK 证书 / mTLS / Flutter & Cronet** 诊断、**ExecTrace · 污点分析**，以及 **CryptoLab 密码学工坊**（CyberChef 风格编解码与加密流水线、无 Schema Protobuf AST 编辑器、白盒 AES-128 第 9 轮 DFA 求解器）。
   7. **Plugins 插件工坊（`⌘7`）**：可脚本化分析插件工作台与单页联调器（本地 `~/.cap/plugins/*.json` 自动热重载），支持 `python3` / `node` / `sh` / `builtin` 运行时、实时解析 `query_params` 与流变量检查器（点击即插代码片段）、实时 `stdin JSON` 预览、`命中当前请求` 实时匹配指示（支持查询字符串与通配符 `*`）、`⌘Enter` 免保存即刻运行草稿、实时流量自动触发及实时执行日志面板。
-  8. **Service Gateway 服务网关（`⌘8`）**：内置 Open API HTTP 服务化网关（默认 `:9090`），将抓包并逆向完成的移动端接口一键封装为标准化 REST 服务 —— 支持抓包流量一键发布、实时路由测试器、API Key 鉴权与路由级限流、OpenAPI 3.0.3 导出、**代理 IP 池**（HTTP/HTTPS/SOCKS5、动态提取源、健康检测与轮询/设备粘性策略）、**设备指纹池**（内置虚拟 Android 机型预设 + 实体 ADB 同步）、**可插拔签名器**（内置 HMAC、本地脚本、HTTP、Unidbg HTTP、Frida RPC）及实时调用日志。
+  8. **Service Gateway 服务网关（`⌘8`）**：生产级 Open API HTTP 服务化网关（默认 `:9090`），将逆向完成的移动端接口一键封装为高可用 REST 服务 —— 支持抓包流量一键发布、实时路由测试器、API Key 鉴权、路由级限流、**路由级 TTL 缓存**、**熔断器（Circuit Breaker）**、**6 套 TLS/HTTP2 指纹 + JA3 + mTLS 校验**、OpenAPI 3.0.3 导出、**代理 IP 池**、**设备指纹池**（虚拟预设 + ADB 同步）、**多账号 / 会话池**（单飞 401/403 自动续期）、**托管签名 Worker 进程池**（`1..8` 实例健康探活与自动重启）、**可插拔签名器**、**Prometheus `/metrics/prometheus`** 指标面板、**Docker / Compose** 无头部署导出及实时调用日志。
   9. **Terminal 内嵌终端（`⌘9`）**：多 Tab 暗色 PTY 终端（`⌘T` / `⌘W` / `Ctrl+Tab` / `Ctrl+L`），内置 `adb`、`frida`、`curl` 常用诊断快捷指令。
-  10. **Settings 系统设置（`⌘,`）**：分栏配置外观与显示语言（`English` / `简体中文`）、代理与证书、Android / Frida 运行环境、逆向工具链路径（`r2`、`java`、`mvn`、`unidbg`、`python3`、`qiling rootfs`）与默认网关地址、导出与存储、快捷键速查及关于/诊断信息。
+  10. **Settings 系统设置（`⌘,`）**：分栏配置外观与显示语言（`English` / `简体中文`）、代理与证书、Android / Frida 运行环境、逆向工具链路径（`r2`、`java`、`mvn`、`unidbg`、`python3`、独立的 `qiling` / `angr` Python 虚拟环境与 `qiling rootfs`）与默认网关地址、导出与存储、快捷键速查及关于/诊断信息。
 
 ### 全屏交互式 TUI 与命令行体验（`cap tui` / `cap start --tui`）
 
@@ -320,21 +327,78 @@ cap frida run --pkg com.example.app --spawn \
 - **内置实战脚本库与 CodeShare**：预置 7 套常用模板（14+ 通用 SSL Unpin、防 Root/防 Frida 隐身绕过、OkHttp3/URLConnection 追踪、MD5/SHA/HMAC/AES 签名加解密追踪、JNI `RegisterNatives` & `dlopen` 追踪、SharedPreferences/SQLite 监控、动态类浏览器），支持 `~/.cap/frida-scripts/*.json` 磁盘热重载、CodeShare 社区检索与应用特征指纹推荐。
 - **DeepTrace → Frida 闭环联动**：在 DeepTrace 报告页、模块卡片或 Native `.so` 列表点击「一键 Frida Hook」，自动合成含安全 Overload 包装与 `dlopen` 延迟注入的 JS 脚本并直达 Frida Studio 运行验证。
 
-### RE Lab — 原生二进制逆向与算法仿真实验室（`cap re` 与桌面端 `⌘6`）
+### RE Lab — 原生二进制逆向、宿主工具链与算法仿真（`cap re` 与桌面端 `⌘6`）
 
 无需切换多个外部工具，在 `cap` 内一站式完成 `.so`/ELF/Mach-O 静态分析与跨平台算法仿真：
 
 ```bash
-cap re status                                              # 探测 radare2、JDK/Maven/Unidbg、Python/Qiling/angr 就绪度
+cap re status                                              # 探测 r2、JDK/Maven/Unidbg 及独立 Qiling/angr 虚拟环境
+cap re run -e unidbg -f ./SignerHarness.java --apk app.apk # 直接从 CLI 运行 Unidbg/Qiling/angr/r2 任务
 cap re analyze ./libsign.so --func Java_com_app_sign       # 静态分析 + 指定函数反汇编 / 伪 C / 交叉引用
 cap re r2 ./libsign.so "iI;iEj"                            # 安全执行只读 radare2 命令
 cap re gen -e unidbg --apk app.apk --so libsign.so \
   --class com/app/Signer --method sign --http-server       # 一键生成 Unidbg 仿真工程（可选内置 HTTP 签名服务模式）
 ```
 
+- **宿主工具链自动发现与缓存**：支持 JDK 优先协同匹配（自动配对同目录 `java` / `javac` / `JAVA_HOME`）、Unidbg Maven Classpath 本地缓存与 `~/.m2` 离线回退，以及 Qiling（`--qiling-python`）与 angr（`--angr-python`）独立 Python 虚拟环境隔离探测，避免依赖冲突。
 - **radare2 静态分析 + 纯 Go ELF 自动兜底**：解析架构、安全缓解措施（`PIE` / `NX` / `Canary` / `RELRO`）、函数列表、动态导入导出、字符串、交叉引用、反汇编与伪 C（`pdg`/`pdc`）；未安装 `r2` 时自动降级至纯 Go `debug/elf` 扫描引擎。
-- **Unidbg · Qiling · angr 算法仿真与符号执行**：内置实战起步模板与参数化代码生成器，覆盖 Android JNI `.so` 仿真（Unidbg，支持内置轻量 HTTP 签名服务模式）、ARM64/ARM Linux/Android 仿真（Qiling RootFS 与系统调用 Hook）及符号约束求解（angr + `claripy` 自动提取具体解）。
-- **DeepTrace → RE Lab 联动闭环**：在 DeepTrace 报告页或 Native `.so` 卡片点击「在逆向实验室仿真」，自动携带 APK、`.so`、JNI 符号与样本入参合成可运行脚本，并支持可取消的实时流式任务执行与 `~/.cap/re-projects/*.json` 持久化。
+- **Unidbg · Qiling · angr 算法仿真与符号执行**：内置实战起步模板、参数化生成器与 `cap re run` 命令行/桌面端可取消实时任务流，支持 `~/.cap/re-projects/*.json` 持久化。
+- **DeepTrace → RE Lab 联动闭环**：在 DeepTrace 报告页或 Native `.so` 卡片点击「在逆向实验室仿真」，自动携带 APK、`.so`、JNI 符号与样本入参合成可运行脚本。
+
+### RE Pro 套件 — 自动补环境、JADX↔JNI、符号桥接与 iOS（`cap repro` 与桌面端 `⌘6`）
+
+面向 Android 与 iOS 原生逆向的商业级效率扩展套件：
+
+```bash
+cap repro autostub --file ./unidbg.log -o AutoStubs.java   # 解析 Unidbg 报错日志 → 生成 Java AbstractJni/IOResolver/SysProp 补丁
+cap repro env-snapshot --pkg com.acme.app -o snapshot.js   # 生成 Frida Android 运行时环境快照脚本供 Unidbg 复用
+cap repro jadx ./target.apk --link-so ./libsign.so --json  # 反编译 APK/DEX 工作区并自动关联 Java <-> JNI 符号
+cap repro symbols --in ./symbols.json -f ida -o apply.py   # 将 SymbolBundle 导出为 IDAPython、Ghidra Python 或 JSON
+cap repro ios ./Target.ipa --json                          # 纯 Go 静态审计 Mach-O / Fat Mach-O / IPA 与 FairPlay 加密
+cap repro ios-harness --binary ./Target --objc-class Signer --objc-selector sign:
+cap repro ios-stealth --bundle-id com.acme.ios -o ios_stealth.js
+```
+
+- **Unidbg 自动补环境助手与 Frida 环境快照**：自动解析 Unidbg 日志中缺失的 JNI 回调、Java 类、文件路径、系统属性与依赖库，一键合成可粘贴的 Java `AbstractJni` / `IOResolver` / `SystemPropertyHook` 代码片段及配套 Frida 环境快照采集脚本。
+- **JADX 反编译工作区与 Java↔JNI 交叉关联**：本地缓存反编译结果（`~/.cap/jadx-cache`），支持类树浏览、源码查看、不区分大小写全文检索，并结合静态 `.so` 导出与 Frida `RegisterNatives` 动态日志解析 Java 与 Native 方法映射。
+- **IDA Pro / Ghidra / JSON 符号桥接**：支持导入校验 `SymbolBundle` JSON 注释/符号包，并导出确定性的 IDAPython 或 Ghidra Python 脚本。
+- **iOS Mach-O / IPA 静态分析与脚本生成**：纯 Go 解析单架构/通用 Fat Mach-O 与 `.ipa` 归档，审计 `Info.plist`/ATS 配置、FairPlay `cryptid` 加密状态、PIE/NX/ARC/Canary 缓解措施、动态库/Framework 依赖及 ObjC 类与选择器，并支持生成 Unidbg `DarwinEmulatorBuilder` iOS 仿真模板与 Frida iOS 隐身诊断脚本。
+
+### CryptoLab 密码学工坊与白盒 AES-128 DFA（`cap crypto` 与桌面端 `⌘6`）
+
+内置 CyberChef 风格可编排编解码/加解密流水线、无 Schema Protobuf 编辑器与白盒 AES-128 第 9 轮差分故障分析（DFA）求解器：
+
+```bash
+cap crypto ops --json                                      # 列出全部可编排编解码、哈希、加解密与 Protobuf 算子
+cap crypto identify "SGVsbG8gV29ybGQ=" --json              # 自动识别编码格式、魔数头、JWT 声明、信息熵并推荐配方
+cap crypto run --op sm4_ecb_encrypt -p key=<32-hex> -i "hello" --output-format hex
+cap crypto protobuf --decode "08 96 01 12 05 68 65 6c 6c 6f"
+cap crypto dfa --valid <32-hex> --fault-file ./faults.txt --plaintext <32-hex>
+cap crypto dfa-script -e unidbg --binary ./libwb.so --hook-addr 0x12a40 -o WhiteboxDFA.java
+```
+
+- **可编排加密与编解码流水线**：支持 Base64（含自定义 64 字符魔改码表）、Base32、Hex、URL、Gzip/Zlib/Deflate、XOR 与单字节 XOR 爆破、自定义 IV 的 MD5/SHA-256、HMAC，以及纯 Go 实现的 **SM4**、**AES**（ECB/CBC/CTR/GCM）、**ChaCha20** 与 **RC4**，提供逐步骤中间态查看与负载自动识别。
+- **无 Schema Protobuf 二进制检查器**：无需 `.proto` 定义即可将 Hex/Base64 Protobuf 线缆数据解码为可编辑嵌套 AST，并支持无损重编码回 Hex/Base64。
+- **白盒 AES-128 第 9 轮 DFA 求解器**：从第 9 轮单字节故障密文中还原第 10 轮子密钥并逆推 AES-128 主密钥（可选明文校验），同时支持生成 Unidbg（Java）与 Qiling（Python）故障注入脚本。
+
+### 现代 TLS / mTLS 与本地代理兼容诊断（`cap tls` 与桌面端 `⌘6` / `⌘8`）
+
+纯 Go TLS 指纹档案库、APK 证书与 Pin 审计、mTLS 密钥对校验及本地代理诊断脚本生成：
+
+```bash
+cap tls profiles                                           # 列出 6 套精选 TLS/HTTP2 指纹档案与 JA3 哈希
+cap tls ja3 chrome_131 --json                              # 计算指定 TLS 档案的确定性 JA3 摘要
+cap tls scan-apk ./target.apk --json                       # 纯 Go 扫描 APK 内的 X.509 证书、密钥库与 Pin 配置
+cap tls validate-mtls --cert ./client.pem --key ./client.key
+cap tls flutter --offset 0x5a1230 --proxy 127.0.0.1:8080 -o flutter_debug.js
+cap tls cronet --pkg com.acme.app -o cronet_h2.js          # 生成 Cronet QUIC→HTTP/2 与 OkHttp 代理兼容脚本
+cap tls mtls-observer --pkg com.acme.app -o mtls_obs.js    # 生成只读 KeyStore/SSLContext 元数据观察脚本
+cap tls curl-impersonate --json                            # 探测宿主机 PATH 中的 curl-impersonate 二进制
+```
+
+- **6 套精选 TLS / HTTP2 指纹档案**：内置 `go_default`、`chrome_131`、`safari_17`、`firefox_132`、`okhttp_android` 与 `ios_cfnetwork`，提供确定性 JA3 摘要、`curl-impersonate` 宿主机探测并与服务网关路由无缝打通。
+- **APK 证书 / Pin 扫描器与 mTLS 校验**：支持解析纯文本及二进制 AXML 格式 `network_security_config.xml`，扫描 APK 内嵌 PEM/DER 证书、BKS/JKS/PKCS12 密钥库与公钥 Pin，并校验 PEM 客户端证书与私钥对（匹配性、证书链长度、ClientAuth EKU、有效期）。
+- **本地代理兼容诊断模板**：一键生成 Flutter 本地代理调试、Cronet QUIC 回退 HTTP/2 及严格只读的 mTLS KeyStore/SSLContext 观察 Frida 脚本。
 
 ### 反混淆、反调试与 VMP 逆向套件（`cap deobf` 与桌面端 `⌘6`）
 
@@ -371,21 +435,26 @@ cap exectrace export <sessionID> -f tenet -o trace.tenet.txt
 
 ### 服务化网关与集成中心（`cap gateway` 与桌面端 `⌘8`）
 
-将逆向还原后的移动端接口一键封装为稳定、鉴权、可编排的标准化 HTTP Open API 服务：
+将逆向还原后的移动端接口一键封装为生产级、可观测、带容错与鉴权的标准化 HTTP Open API 服务：
 
 ```bash
 cap gateway publish --flow f1 --slug search-feed           # 将抓包请求流一键发布为 Open API 路由
 cap gateway proxies --add socks5://user:pass@1.2.3.4:1080 --check
 cap gateway devices --from-preset pixel-8-pro              # 创建虚拟 Android 指纹（或 --sync-adb 同步真机）
+cap gateway accounts --add "VIP-1" --token "tok_abc" --tags vip
+cap gateway workers --add "Unidbg-Pool" --kind unidbg_http --cmd java --base-port 18900 --instances 4
 cap gateway signers --test <signerID> --url https://api.example.com/v1/feed
-cap gateway start -a 127.0.0.1:9090 --require-auth --api-key sk-live-demo
+cap gateway circuits --reset search-feed --clear-cache all
+cap gateway serve -a 0.0.0.0:9090 --require-auth --api-key sk-live-demo
+cap gateway prometheus -o metrics.prom                     # 导出 Prometheus 文本指标
+cap gateway export-docker -a 0.0.0.0:9090 -o ./deploy      # 导出生产级 Dockerfile 与 docker-compose.yml
 cap gateway openapi -o openapi.json                        # 导出 OpenAPI 3.0.3 接口规范
 ```
 
-- **Open API HTTP 网关（默认 `:9090`）**：支持从抓包 Flow 一键发布 `POST /gw/<slug>` 路由，内置模板变量渲染（`{{input.*}}`、`{{device.*}}`、`{{timestamp}}`、`{{nonce}}`）、API Key 鉴权（`X-API-Key` / `Bearer`）、路由级限流、失败自动重试切换、原始透传模式、在线路由测试器、实时调用日志以及 **OpenAPI 3.0.3** 文档导出。
-- **代理 IP 池**：支持 `HTTP` / `HTTPS` / `SOCKS5` 节点管理、批量导入、动态代理商 API 拉取（纯文本按行或 JSON 路径提取）、并发健康探测与延迟测速，提供轮询（`round_robin`）、随机（`random`）、最低延迟（`least_latency`）与设备粘性（`sticky_device`）调度策略。
-- **设备池与虚拟指纹**：预置主流 Android 机型虚拟指纹模板（UA、OAID、Android ID、Build 属性、屏幕参数、会话 Cookie/Token），并支持一键同步已连接的 **ADB 实体设备**。
-- **可插拔签名提供者（Signer Providers）**：支持在每次网关调用时自动注入动态签名，覆盖 **内置 HMAC/Hash**（MD5/SHA/HMAC）、**本地脚本**（`python3`/`node`/`sh`）、**外部 HTTP 接口**、**Unidbg HTTP 签名服务** 与 **Frida RPC**（`rpc.exports`）。
+- **Open API HTTP 网关（`:9090`）与无头 `serve` 模式**：支持从抓包 Flow 一键发布 `POST /gw/<slug>` 路由，内置模板变量渲染（`{{input.*}}`、`{{device.*}}`、`{{account.*}}`、`{{timestamp}}`、`{{nonce}}`）、API Key 鉴权、路由级限流、失败自动重试、原始透传、**路由级 TTL 缓存**（LRU + `X-Cap-No-Cache` 旁路）、**熔断器**（闭合/熔断/半开快速失败与手动重置）、路由级 **TLS/HTTP2 指纹档案与 mTLS**、**Prometheus `/metrics/prometheus`** 暴露、**OpenAPI 3.0.3** 导出，以及支持 `CAP_GW_LISTEN_ADDR` 与自动拉起托管 Worker 的 **`cap gateway serve`** 和 **Dockerfile / `docker-compose.yml` 导出**。
+- **多账号 / 会话池与单飞自动续期**：管理多账号 Token、Cookie、标签与设备粘性绑定，支持 `round_robin` / `least_used` / `sticky_device` 策略、401/403 或响应体匹配触发的单飞（Singleflight）防递归自动续期以及风控挑战 Webhook 告警。
+- **托管签名 Worker 进程池（`1..8` 实例）**：统一托管本地 `unidbg_http`、`qiling_http`、`script_http` 或 `custom` 签名服务多实例（顺序回环端口），提供周期 `/health` 探活、轮询负载均衡、stderr 尾部日志捕获、崩溃退避自动重启与进程组安全回收。
+- **代理 IP 池、设备池与可插拔签名器**：管理 `HTTP`/`HTTPS`/`SOCKS5` 代理节点（批量导入、动态提取源、健康测速与轮询/设备粘性）、Android 虚拟指纹预设与 ADB 真机同步，以及 **内置 HMAC/Hash**、**本地脚本**、**外部 HTTP**、**Unidbg HTTP / 托管 Worker 池** 与 **Frida RPC** 签名提供者。
 
 ### SSL Unpinning 脱钉
 
@@ -517,11 +586,33 @@ ANDROID_HOME=~/Library/Android/sdk ./android-companion/build.sh
 | `cap unpin magisk` | 部署系统级 Magisk 证书提权模块 |
 | `cap unpin codeshare [--pkg <pkg>\|--query <q>]` | 指纹识别目标 APK 并搜索 Frida CodeShare 脚本 |
 | `cap unpin script` | 输出原始 Frida 脱钉脚本至 stdout |
-| `cap re status [--r2\|--java\|--unidbg-dir\|--python\|--rootfs] [--json]` | 检测宿主机逆向工具链（`r2`、JDK/Maven/Unidbg、Python/Qiling/angr） |
-| `cap re analyze <file> [--func <name\|addr>] [--json]` | 静态分析 ELF/Mach-O 二进制及指定函数反汇编/伪 C/交叉引用 |
-| `cap re r2 <file> <cmd> [--json]` | 对目标二进制安全执行只读 radare2 命令 |
+| `cap re status [--r2\|--java\|--mvn\|--unidbg-dir\|--python\|--qiling-python\|--angr-python\|--rootfs] [--json]` | 检测宿主机逆向工具链（`r2`、JDK/Maven/Unidbg、独立 Qiling/angr 虚拟环境） |
+| `cap re run [-e unidbg\|qiling\|angr\|radare2] (-f <file>\|-p <id>) [--binary\|--apk\|--rootfs] [--timeout n] [--arg a] [--json]` | 运行 Unidbg、Qiling、angr 或 radare2 任务并流式输出 `[CAP_RE]` 结果 |
+| `cap re analyze <file> [--r2 path] [--func <name\|addr>] [--json]` | 静态分析 ELF/Mach-O 二进制及指定函数反汇编/伪 C/交叉引用 |
+| `cap re r2 <file> <cmd> [--r2 path] [--json]` | 对目标二进制安全执行只读 radare2 命令 |
 | `cap re projects [-e engine] [--show <id>] [--json]` | 列出内置与已保存逆向工程或查看仿真代码 |
-| `cap re gen -e <unidbg\|qiling\|angr\|radare2> [--apk\|--so\|--http-server]` | 合成 Unidbg、Qiling、angr 或 radare2 仿真/分析脚本 |
+| `cap re gen -e <unidbg\|qiling\|angr\|radare2> [--apk\|--so\|--binary\|--http-server] [-o file]` | 合成 Unidbg、Qiling、angr 或 radare2 仿真/分析脚本 |
+| `cap repro autostub [file] [-f <log>\|--stdin] [-o stub.java] [--json]` | 诊断 Unidbg 日志并生成 Java `AbstractJni`/`IOResolver`/SysProp 补环境代码 |
+| `cap repro env-snapshot [--pkg <pkg>] [-o snapshot.js] [--json]` | 生成供 Unidbg 使用的 Frida Android 运行时环境快照脚本 |
+| `cap repro jadx [apk] [--detect\|--filter q\|--search q\|--class c\|--link-so .so\|--register-natives json] [--json]` | 反编译 APK/DEX 工作区、搜索/查看 Java 源码并交叉关联 Java↔JNI |
+| `cap repro symbols --in <bundle.json\|-> [-f ida\|ghidra\|json] [-o file]` | 校验并导出 `SymbolBundle` JSON 为 IDAPython、Ghidra Python 或 JSON |
+| `cap repro ios <macho-or-ipa> [--json]` | 静态分析 Mach-O、通用 Fat Mach-O 或 `.ipa` 归档与 FairPlay 加密 |
+| `cap repro ios-harness [--binary\|--ipa] [--bundle-id id] [--symbol\|--objc-class --objc-selector\|--offset] [-o file]` | 生成 Unidbg `DarwinEmulatorBuilder` iOS Java 仿真模板 |
+| `cap repro ios-stealth [--bundle-id id] [--binary name] [--ptrace\|--sysctl\|--getppid\|--dyld\|--jailbreak] [-o file]` | 生成 Frida iOS 反调试与越狱检测诊断脚本 |
+| `cap crypto ops [--category codec\|compression\|xor\|hash\|hmac\|cipher\|protobuf] [--json]` | 列出可编排 CryptoLab 算子与参数定义 |
+| `cap crypto identify [input\|-] [-f file] [--json]` | 自动识别负载编码、魔数头、JWT 声明、信息熵并推荐配方 |
+| `cap crypto run (--op <name> [-p k=v]\|--pipeline-json <json\|file>) (-i <in>\|-f <file>) [--input-format\|--output-format] [--json]` | 执行单个加密/编解码算子或多步骤 JSON 流水线 |
+| `cap crypto protobuf (--decode <hex\|b64\|->\|--encode-json <json\|file\|->) [--json]` | 无 Schema Protobuf 线缆解码器与 JSON AST 无损重编码器 |
+| `cap crypto dfa --valid <hex> (--fault <hex>\|--fault-file <file>) [--plaintext <hex>] [--json]` | 通过第 9 轮 DFA 还原 AES-128 第 10 轮子密钥与主密钥 |
+| `cap crypto dfa-script [-e unidbg\|qiling] [--binary path] [--apk path] [--hook-addr hex] [--reg r\|--state-addr hex] [--xor 0x01] [-o file]` | 生成 Unidbg（Java）或 Qiling（Python）第 9 轮 DFA 故障注入脚本 |
+| `cap tls profiles [--json]` | 列出 6 套精选 TLS / HTTP2 客户端指纹档案及 JA3 哈希 |
+| `cap tls ja3 [profile] [--json]` | 计算指定 TLS 档案的确定性 JA3 指纹摘要 |
+| `cap tls scan-apk <apk> [--json]` | 纯 Go 扫描 APK 内的 X.509 证书、密钥库与 `network_security_config` Pin |
+| `cap tls validate-mtls --cert <pem> --key <key> [--json]` | 校验双向认证（mTLS）PEM 客户端证书与私钥对 |
+| `cap tls flutter [--offset hex] [--proxy host:port] [--platform android\|ios] [--pkg id] [-o file]` | 生成 Flutter 本地代理调试 Frida 脚本 |
+| `cap tls cronet [--pkg id] [--disable-quic] [--okhttp] [--log-alt-svc] [--proxy-hint addr] [-o file]` | 生成 Cronet QUIC→HTTP/2 与 OkHttp 本地代理兼容 Frida 脚本 |
+| `cap tls mtls-observer [--pkg id] [--keystore\|--keymanager\|--sslcontext\|--certs] [-o file]` | 生成严格只读的 mTLS KeyStore/SSLContext 观察 Frida 脚本 |
+| `cap tls curl-impersonate [--json]` | 检测宿主机 `PATH` 中可用的 `curl-impersonate` 二进制 |
 | `cap deobf scan <apk\|so> [--json]` | 审计 APK/ELF 的 13 种加固壳、OLLVM、VMP、反调试与内联 `SVC #0` |
 | `cap deobf stealth [--scan <path>] [--pkg <pkg>] [--patch-svc] [-o file]` | 生成可组合 Frida 反调试 / 反 Frida 隐身脚本 |
 | `cap deobf unpack [--pkg <pkg>] [-o file]` | 生成 Frida 内存 DEX 脱壳脚本 |
@@ -535,12 +626,18 @@ ANDROID_HOME=~/Library/Android/sdk ./android-companion/build.sh
 | `cap exectrace collect --kind <stalker\|java_call\|unidbg\|qiling> [-o file]` | 生成即用型执行轨迹采集脚本 |
 | `cap exectrace export <sessionID> [-f tenet\|jsonl\|markdown] [-o file]` | 将执行轨迹导出为 Tenet、JSONL 或 Markdown 格式 |
 | `cap gateway start [-a 127.0.0.1:9090] [--require-auth] [--api-key <k>]` | 启动内置 Open API HTTP 服务化网关 |
-| `cap gateway status [--json]` | 查看网关运行状态、路由与各类资源池统计 |
+| `cap gateway serve [-a 0.0.0.0:9090] [--require-auth] [--api-key <k>] [--start-workers]` | 以生产无头模式启动网关（支持 `CAP_GW_LISTEN_ADDR` 与自动拉起托管 Worker） |
+| `cap gateway status [--json]` | 查看网关运行状态、路由、缓存/熔断与各类资源池统计 |
 | `cap gateway publish --flow <id> [--slug <slug>] [--name <name>]` | 将已捕获请求流一键发布为网关服务路由 |
-| `cap gateway routes [--test <slug> --input k=v] [--delete <id>] [--json]` | 列出、测试调用或删除已发布的网关路由 |
+| `cap gateway routes [--test <slug> --input k=v] [--body s] [--raw] [--delete <id>] [--json]` | 列出、测试调用或删除已发布的网关路由 |
 | `cap gateway proxies [--add <url>\|--import <file>\|--fetch <url>\|--check]` | 管理代理 IP 池（HTTP/HTTPS/SOCKS5、动态拉取与健康检测） |
 | `cap gateway devices [--presets\|--from-preset <id>\|--sync-adb]` | 管理虚拟 Android 设备指纹池及 ADB 真机同步 |
 | `cap gateway signers [--test <id> --url <url>] [--delete <id>] [--json]` | 列出、测试或删除可插拔签名提供者 |
+| `cap gateway accounts [--add <name> --token <t> --cookie <c>\|--strategy <s>\|--mark-healthy <id>\|--delete <id>] [--json]` | 管理多账号 / 会话池与调度轮换策略 |
+| `cap gateway workers [--add <name> --kind <k> --cmd <bin> --base-port <p> --instances <1..8>\|--start\|--stop\|--restart\|--status\|--delete <id>] [--json]` | 管理本地托管签名 Worker 进程池 |
+| `cap gateway circuits [--reset <slug\|all>] [--clear-cache <slug\|all>] [--json]` | 查看/重置路由级熔断器并清理路由 TTL 缓存 |
+| `cap gateway prometheus [-o metrics.prom]` | 导出 Prometheus 文本格式网关遥测指标 |
+| `cap gateway export-docker [-a 0.0.0.0:9090] [-o ./deploy] [--json]` | 生成面向 `cap gateway serve` 的 `Dockerfile` 与 `docker-compose.yml` |
 | `cap gateway openapi [-o openapi.json]` | 导出已启用网关路由的 OpenAPI 3.0.3 JSON 规范 |
 
 **全局参数**：`--lang en|zh`（默认按 `CAP_LANG` > `LC_ALL` > `LC_MESSAGES` > `LANG` 自动识别）。
@@ -561,23 +658,25 @@ internal/
 ├── android/            ADB 工具、三策略证书安装/校验、companion.go、bin/cap-companion.apk
 ├── buildinfo/          版本构建信息注入
 ├── capture/            WebSocket 帧解析、SSE 流解析（实验性）
-├── cli/                Cobra 命令集（start、tui、gui、flows、export、android、frida、unpin、re、deobf、exectrace、gateway）
+├── cli/                Cobra 命令集（start、tui、gui、flows、export、android、frida、unpin、re、repro、crypto、tls、deobf、exectrace、gateway）
 ├── compare/            并排流量对比与结构化 Diff
 ├── config/             共享默认路径配置（~/.cap）
 ├── context/            jadx 扫描器、Retrofit/OkHttp 解析与 URL 源码映射
+├── cryptolab/          CyberChef 风格编解码/加密流水线（SM4/AES/ChaCha20/RC4）、无 Schema Protobuf AST 与 AES-128 第 9 轮 DFA 求解器
 ├── deobf/              APK/ELF 保护扫描器（13 种加固、OLLVM、VMP、内联 SVC）、隐身/脱壳/反混淆生成与 VMP 分析
 ├── exectrace/          多格式执行轨迹解析、前向/后向污点切片、加密常量/热循环检测、ASLR 差分对比与 Tenet 导出
 ├── export/             codegen/（5 种语言）与 agent/（精简 JSONL）
 ├── frida/              Frida 工具链探测、服务端部署/启停、Python Bridge、脚本库与 DeepTrace→Hook 生成器
-├── gateway/            Open API HTTP 服务网关、代理 IP 池、虚拟设备指纹池、可插拔签名器与 OpenAPI 3.0.3
+├── gateway/            Open API HTTP 网关、代理/设备/账号池、单飞续期、托管 Worker 池、TTL 缓存、熔断器、Prometheus 与 Docker 导出
 ├── grouping/           按域名与路径前缀自动分组 API
 ├── i18n/               零依赖 TUI / CLI 中英双语本地化词库
 ├── importer/           HAR 与 Charles XML 导入
 ├── plugin/             内置分析器插件引擎（实验性）
-├── proto/              无 Schema Protobuf 二进制解码器（实验性）
+├── proto/              无 Schema Protobuf 二进制解码器
 ├── proxy/              goproxy MITM 核心、ECDSA CA 生成与流式抓包
 ├── replay/             HTTP 重放、改参重发与响应 Diff
-├── retools/            原生逆向与算法仿真引擎（radare2 + 纯 Go ELF、Unidbg、Qiling、angr、DeepTrace 生成器与任务管理）
+├── repro/              RE Pro 扩展：Unidbg 自动补环境、Frida 环境快照、JADX↔JNI 交叉关联、IDA/Ghidra 符号桥接与 iOS Mach-O/IPA
+├── retools/            原生逆向与算法仿真引擎（JDK 优先/Maven 缓存 Unidbg、Qiling/angr 独立 venv、r2 + 纯 Go ELF 与任务管理）
 ├── rules/              拦截规则、Mock 与挂起断点引擎及持久化
 ├── screen/             Android 设备屏幕镜像（screencap + scrcpy）
 ├── sequence/           多步请求序列录制/回放与变量传递
@@ -585,6 +684,7 @@ internal/
 ├── stats/              流量遥测统计（P95 延迟、错误率、时间线）
 ├── store/sqlite/       SQLite WAL 持久化、多条件过滤与 JSON 编解码
 ├── terminal/           桌面 GUI 多 Tab PTY 终端后端
+├── tlskit/             精选 TLS/HTTP2 指纹与 JA3、APK 证书/Pin 扫描器、mTLS 校验、curl-impersonate 探测与 Flutter/Cronet 兼容脚本
 ├── trace/              DeepTrace：DEX 搜索、jadx、调用图与 Native 分析
 ├── tui/                无闪烁双缓冲全屏 ANSI TUI 引擎
 ├── types/              Flow、WSFrame、SSEEvent 核心数据结构

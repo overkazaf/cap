@@ -22,12 +22,12 @@ import (
 )
 
 const (
-	fileGatewayConfig       = "config.json"
-	fileProxyPool           = "proxies.json"
-	fileDevices             = "devices.json"
-	fileSigners             = "signers.json"
-	fileRoutes              = "routes.json"
-	maxConcurrentWebhooks   = 8
+	fileGatewayConfig     = "config.json"
+	fileProxyPool         = "proxies.json"
+	fileDevices           = "devices.json"
+	fileSigners           = "signers.json"
+	fileRoutes            = "routes.json"
+	maxConcurrentWebhooks = 8
 )
 
 type persistedProxyPool struct {

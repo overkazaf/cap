@@ -27,11 +27,12 @@ var (
 var templateExprRe = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
 
 // TemplateContext carries all dynamic values available during route template
-// expansion (`{{input.*}}`, `{{device.*}}`, `{{env.*}}`, `{{timestamp}}`,
-// `{{timestamp_ms}}`, `{{nonce}}`, `{{uuid}}`).
+// expansion (`{{input.*}}`, `{{device.*}}`, `{{account.*}}`, `{{env.*}}`,
+// `{{timestamp}}`, `{{timestamp_ms}}`, `{{nonce}}`, `{{uuid}}`).
 type TemplateContext struct {
 	Input       map[string]string
 	Device      *DeviceProfile
+	Account     *AccountProfile
 	Env         map[string]string
 	Timestamp   int64
 	TimestampMs int64
@@ -671,6 +672,10 @@ func resolveTemplateExpr(expr string, vars TemplateContext, ts, tsMs int64, nonc
 		return resolveDeviceField(vars.Device, field), true
 	}
 
+	if field, ok := cutPrefixFold(expr, "account."); ok {
+		return resolveAccountField(vars.Account, field), true
+	}
+
 	return "", false
 }
 
@@ -807,6 +812,24 @@ func TemplateUsesDevice(sources ...string) bool {
 		for _, m := range matches {
 			if len(m) >= 2 {
 				if _, ok := cutPrefixFold(strings.TrimSpace(m[1]), "device."); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// TemplateUsesAccount reports whether any template string references `{{account.*}}`.
+func TemplateUsesAccount(sources ...string) bool {
+	for _, src := range sources {
+		if !strings.Contains(src, "{{") {
+			continue
+		}
+		matches := templateExprRe.FindAllStringSubmatch(src, -1)
+		for _, m := range matches {
+			if len(m) >= 2 {
+				if _, ok := cutPrefixFold(strings.TrimSpace(m[1]), "account."); ok {
 					return true
 				}
 			}

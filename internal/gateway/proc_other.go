@@ -17,3 +17,8 @@ func killProcGroup(cmd *exec.Cmd) error {
 	}
 	return cmd.Process.Kill()
 }
+
+func signalProcGroupOnly(pgid int) {
+	// Non-Unix platforms do not support negative PGID signaling.
+	_ = pgid
+}

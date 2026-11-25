@@ -424,15 +424,27 @@ func executePipelineStep(data []byte, step PipelineStep) ([]byte, error) {
 		return Base32Decode(data, p["alphabet"], parseBoolParam(p["raw"]))
 
 	case "gzip_compress":
-		return GzipCompress(data, parseIntParam(p["level"], -1))
+		level, err := parseIntParamStrict("level", p["level"], -1)
+		if err != nil {
+			return nil, err
+		}
+		return GzipCompress(data, level)
 	case "gzip_decompress":
 		return GzipDecompress(data)
 	case "zlib_compress":
-		return ZlibCompress(data, parseIntParam(p["level"], -1))
+		level, err := parseIntParamStrict("level", p["level"], -1)
+		if err != nil {
+			return nil, err
+		}
+		return ZlibCompress(data, level)
 	case "zlib_decompress":
 		return ZlibDecompress(data)
 	case "deflate_compress":
-		return DeflateCompress(data, parseIntParam(p["level"], -1))
+		level, err := parseIntParamStrict("level", p["level"], -1)
+		if err != nil {
+			return nil, err
+		}
+		return DeflateCompress(data, level)
 	case "deflate_decompress":
 		return DeflateDecompress(data)
 
@@ -443,7 +455,10 @@ func executePipelineStep(data []byte, step PipelineStep) ([]byte, error) {
 		}
 		return XORBytes(data, key)
 	case "xor_bruteforce":
-		topN := parseIntParam(p["top_n"], 5)
+		topN, err := parseIntParamStrict("top_n", p["top_n"], 5)
+		if err != nil {
+			return nil, err
+		}
 		cands := XORBruteforce(data, topN)
 		if len(cands) == 0 {
 			return nil, fmt.Errorf("xor_bruteforce: input is empty")
@@ -545,7 +560,10 @@ func executePipelineStep(data []byte, step PipelineStep) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rc4 key: %w", err)
 		}
-		drop := parseIntParam(p["drop"], 0)
+		drop, err := parseIntParamStrict("drop", p["drop"], 0)
+		if err != nil {
+			return nil, err
+		}
 		return RC4XOR(data, key, drop)
 
 	case "protobuf_decode":
@@ -595,16 +613,16 @@ func parseBoolParam(v string) bool {
 	}
 }
 
-func parseIntParam(v string, fallback int) int {
+func parseIntParamStrict(name, v string, fallback int) (int, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("invalid integer parameter %s=%q: %w", name, v, err)
 	}
-	return n
+	return n, nil
 }
 
 func defaultStr(v, fallback string) string {

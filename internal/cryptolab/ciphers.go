@@ -459,6 +459,12 @@ func ChaCha20XOR(data, key, nonce []byte, counter uint32) ([]byte, error) {
 	if len(nonce) != 12 {
 		return nil, fmt.Errorf("chacha20: nonce must be 12 bytes (RFC 8439), got %d", len(nonce))
 	}
+	if len(data) > 0 {
+		blocks := (uint64(len(data)) + 63) / 64
+		if uint64(counter)+blocks > (uint64(1) << 32) {
+			return nil, fmt.Errorf("chacha20: 32-bit block counter overflow (counter=%d, blocks=%d)", counter, blocks)
+		}
+	}
 	out := make([]byte, len(data))
 	var block [64]byte
 	ctr := counter

@@ -27,11 +27,12 @@ const (
 // fixed32/float, UTF-8 string, raw hex).
 func DecodeProtobufRaw(data []byte) (*ProtoMessageNode, error) {
 	totalFields := 0
-	return decodeProtoMessage(data, 0, &totalFields)
+	node, _, err := decodeProtoMessage(data, 0, &totalFields)
+	return node, err
 }
 
-func decodeProtoMessage(data []byte, depth int, totalFields *int) (*ProtoMessageNode, error) {
-	node := &ProtoMessageNode{
+func decodeProtoMessage(data []byte, depth int, totalFields *int) (node *ProtoMessageNode, fieldCapHit bool, err error) {
+	node = &ProtoMessageNode{
 		Fields:  []ProtoFieldNode{},
 		ByteLen: len(data),
 	}
@@ -41,19 +42,19 @@ func decodeProtoMessage(data []byte, depth int, totalFields *int) (*ProtoMessage
 		if *totalFields >= maxProtoFields {
 			node.Truncated = true
 			node.Warnings = append(node.Warnings, fmt.Sprintf("field count cap reached (%d fields)", maxProtoFields))
-			return node, nil
+			return node, true, nil
 		}
 
 		tag, n := decodeProtoVarint(data[i:])
 		if n <= 0 {
-			return nil, fmt.Errorf("protobuf: invalid tag varint at offset %d", i)
+			return nil, false, fmt.Errorf("protobuf: invalid tag varint at offset %d", i)
 		}
 		i += n
 
 		fieldNum := tag >> 3
 		wireType := int(tag & 0x7)
 		if fieldNum == 0 || fieldNum > maxProtoFieldNumber {
-			return nil, fmt.Errorf("protobuf: invalid field number %d at offset %d", fieldNum, i)
+			return nil, false, fmt.Errorf("protobuf: invalid field number %d at offset %d", fieldNum, i)
 		}
 
 		*totalFields++
@@ -61,7 +62,7 @@ func decodeProtoMessage(data []byte, depth int, totalFields *int) (*ProtoMessage
 		case protoWireVarint:
 			u, vn := decodeProtoVarint(data[i:])
 			if vn <= 0 {
-				return nil, fmt.Errorf("protobuf: truncated varint for field %d at offset %d", fieldNum, i)
+				return nil, false, fmt.Errorf("protobuf: truncated varint for field %d at offset %d", fieldNum, i)
 			}
 			raw := data[i : i+vn]
 			i += vn
@@ -81,7 +82,7 @@ func decodeProtoMessage(data []byte, depth int, totalFields *int) (*ProtoMessage
 
 		case protoWireFixed64:
 			if i+8 > len(data) {
-				return nil, fmt.Errorf("protobuf: truncated fixed64 for field %d at offset %d", fieldNum, i)
+				return nil, false, fmt.Errorf("protobuf: truncated fixed64 for field %d at offset %d", fieldNum, i)
 			}
 			raw := data[i : i+8]
 			i += 8
@@ -105,26 +106,26 @@ func decodeProtoMessage(data []byte, depth int, totalFields *int) (*ProtoMessage
 		case protoWireBytes:
 			length, ln := decodeProtoVarint(data[i:])
 			if ln <= 0 {
-				return nil, fmt.Errorf("protobuf: invalid length varint for field %d at offset %d", fieldNum, i)
+				return nil, false, fmt.Errorf("protobuf: invalid length varint for field %d at offset %d", fieldNum, i)
 			}
 			i += ln
 			remaining := uint64(len(data) - i)
 			if length > remaining {
-				return nil, fmt.Errorf("protobuf: field %d declares length %d, only %d bytes remain", fieldNum, length, remaining)
+				return nil, false, fmt.Errorf("protobuf: field %d declares length %d, only %d bytes remain", fieldNum, length, remaining)
 			}
 			payload := data[i : i+int(length)]
 			i += int(length)
 
-			fn, depthHit := decodeProtoLengthDelimited(int(fieldNum), payload, depth, totalFields)
-			if depthHit {
+			fn, subTruncated, subWarnings := decodeProtoLengthDelimited(int(fieldNum), payload, depth, totalFields)
+			if subTruncated {
 				node.Truncated = true
-				node.Warnings = append(node.Warnings, fmt.Sprintf("max recursion depth (%d) reached at field %d", maxProtoDepth, fieldNum))
+				node.Warnings = append(node.Warnings, subWarnings...)
 			}
 			node.Fields = append(node.Fields, fn)
 
 		case protoWireFixed32:
 			if i+4 > len(data) {
-				return nil, fmt.Errorf("protobuf: truncated fixed32 for field %d at offset %d", fieldNum, i)
+				return nil, false, fmt.Errorf("protobuf: truncated fixed32 for field %d at offset %d", fieldNum, i)
 			}
 			raw := data[i : i+4]
 			i += 4
@@ -146,14 +147,14 @@ func decodeProtoMessage(data []byte, depth int, totalFields *int) (*ProtoMessage
 			node.Fields = append(node.Fields, fn)
 
 		default:
-			return nil, fmt.Errorf("protobuf: unsupported wire type %d for field %d at offset %d", wireType, fieldNum, i)
+			return nil, false, fmt.Errorf("protobuf: unsupported wire type %d for field %d at offset %d", wireType, fieldNum, i)
 		}
 	}
 
-	return node, nil
+	return node, false, nil
 }
 
-func decodeProtoLengthDelimited(fieldNum int, payload []byte, depth int, totalFields *int) (ProtoFieldNode, bool) {
+func decodeProtoLengthDelimited(fieldNum int, payload []byte, depth int, totalFields *int) (ProtoFieldNode, bool, []string) {
 	fn := ProtoFieldNode{
 		FieldNumber:  fieldNum,
 		WireType:     protoWireBytes,
@@ -166,37 +167,47 @@ func decodeProtoLengthDelimited(fieldNum int, payload []byte, depth int, totalFi
 	if len(payload) == 0 {
 		fn.Kind = "string"
 		fn.StringVal = ""
-		return fn, false
+		return fn, false, nil
 	}
 
 	// Prefer nested message when payload does not look like plain human-readable UTF-8 text.
 	if !looksLikeProtoPlainString(payload) {
 		if depth < maxProtoDepth {
 			savedFields := *totalFields
-			nested, err := decodeProtoMessage(payload, depth+1, totalFields)
+			nested, subFieldCapHit, err := decodeProtoMessage(payload, depth+1, totalFields)
 			if err == nil && len(nested.Fields) > 0 && looksPlausibleProto(nested) {
+				if subFieldCapHit {
+					// Keep lossless BytesHex instead of a partial nested message that dropped fields.
+					fn.Kind = "bytes"
+					return fn, true, nested.Warnings
+				}
 				fn.Kind = "message"
 				fn.Nested = nested
-				return fn, false
+				return fn, nested.Truncated, nested.Warnings
 			}
-			*totalFields = savedFields
+			if !subFieldCapHit {
+				*totalFields = savedFields
+			} else {
+				fn.Kind = "bytes"
+				return fn, true, []string{fmt.Sprintf("field count cap reached (%d fields) while inspecting field %d", maxProtoFields, fieldNum)}
+			}
 		} else {
 			fn.Kind = "bytes"
-			return fn, true
+			return fn, true, []string{fmt.Sprintf("max recursion depth (%d) reached at field %d", maxProtoDepth, fieldNum)}
 		}
 	}
 
 	if utf8.Valid(payload) && isPrintableStringBytes(payload) {
 		fn.Kind = "string"
 		fn.StringVal = string(payload)
-		return fn, false
+		return fn, false, nil
 	}
 
 	fn.Kind = "bytes"
 	if utf8.Valid(payload) {
 		fn.StringVal = string(payload)
 	}
-	return fn, false
+	return fn, false, nil
 }
 
 func looksLikeProtoPlainString(data []byte) bool {
@@ -229,19 +240,21 @@ func EncodeProtobufRaw(node *ProtoMessageNode) ([]byte, error) {
 	if node == nil {
 		return nil, fmt.Errorf("protobuf encode: nil message node")
 	}
-	return encodeProtoMessage(node, 0)
+	totalFields := 0
+	return encodeProtoMessage(node, 0, &totalFields)
 }
 
-func encodeProtoMessage(node *ProtoMessageNode, depth int) ([]byte, error) {
+func encodeProtoMessage(node *ProtoMessageNode, depth int, totalFields *int) ([]byte, error) {
 	if depth > maxProtoDepth {
 		return nil, fmt.Errorf("protobuf encode: max recursion depth (%d) exceeded", maxProtoDepth)
-	}
-	if len(node.Fields) > maxProtoFields {
-		return nil, fmt.Errorf("protobuf encode: field count %d exceeds limit %d", len(node.Fields), maxProtoFields)
 	}
 
 	var out []byte
 	for idx, f := range node.Fields {
+		*totalFields++
+		if *totalFields > maxProtoFields {
+			return nil, fmt.Errorf("protobuf encode: total field count exceeds limit %d", maxProtoFields)
+		}
 		if f.FieldNumber < 1 || f.FieldNumber > maxProtoFieldNumber {
 			return nil, fmt.Errorf("protobuf encode: field[%d] has invalid field_number %d", idx, f.FieldNumber)
 		}
@@ -281,7 +294,7 @@ func encodeProtoMessage(node *ProtoMessageNode, depth int) ([]byte, error) {
 			out = append(out, buf[:]...)
 
 		case protoWireBytes:
-			payload, err := resolveLengthDelimitedBytes(f, depth)
+			payload, err := resolveLengthDelimitedBytes(f, depth, totalFields)
 			if err != nil {
 				return nil, fmt.Errorf("protobuf encode: field %d: %w", f.FieldNumber, err)
 			}
@@ -389,11 +402,11 @@ func resolveFixed32Value(f ProtoFieldNode) (uint32, error) {
 	return 0, nil
 }
 
-func resolveLengthDelimitedBytes(f ProtoFieldNode, depth int) ([]byte, error) {
+func resolveLengthDelimitedBytes(f ProtoFieldNode, depth int, totalFields *int) ([]byte, error) {
 	switch f.Kind {
 	case "message":
 		if f.Nested != nil {
-			return encodeProtoMessage(f.Nested, depth+1)
+			return encodeProtoMessage(f.Nested, depth+1, totalFields)
 		}
 		if f.BytesHex != "" {
 			return HexDecode([]byte(f.BytesHex))
@@ -411,7 +424,7 @@ func resolveLengthDelimitedBytes(f ProtoFieldNode, depth int) ([]byte, error) {
 		return nil, nil
 	default:
 		if f.Nested != nil {
-			return encodeProtoMessage(f.Nested, depth+1)
+			return encodeProtoMessage(f.Nested, depth+1, totalFields)
 		}
 		if f.BytesHex != "" {
 			return HexDecode([]byte(f.BytesHex))

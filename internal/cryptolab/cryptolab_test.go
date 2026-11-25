@@ -719,7 +719,7 @@ func TestProtobufDecodeTamperAndExactReEncode(t *testing.T) {
 		t.Fatalf("untouched sibling field corrupted: got %s", reDecoded.Fields[5].BytesHex)
 	}
 
-	// Verify max recursion depth guard (20 nested levels) does not crash and marks Truncated.
+	// Verify max recursion depth guard (20 nested levels) does not crash, propagates Truncated + Warnings to root, and round-trips losslessly.
 	deep := []byte{0x08, 0x01} // field 1 = varint 1
 	for d := 0; d < 20; d++ {
 		var wrap []byte
@@ -732,9 +732,51 @@ func TestProtobufDecodeTamperAndExactReEncode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deep protobuf decode failed: %v", err)
 	}
+	if !deepNode.Truncated || len(deepNode.Warnings) == 0 {
+		t.Fatalf("expected root Truncated=true with warning on 20-deep message, got Truncated=%v Warnings=%v", deepNode.Truncated, deepNode.Warnings)
+	}
 	reDeep, err := EncodeProtobufRaw(deepNode)
 	if err != nil || !bytes.Equal(reDeep, deep) {
 		t.Fatalf("deep protobuf lossless round-trip failed: err=%v", err)
+	}
+
+	// Verify nested message exceeding maxProtoFields falls back to lossless bytes and propagates Truncated=true.
+	var hugeNested []byte
+	for k := 0; k < maxProtoFields+20; k++ {
+		hugeNested = appendProtoVarint(hugeNested, (1<<3)|protoWireVarint)
+		hugeNested = appendProtoVarint(hugeNested, uint64(k))
+	}
+	var outerHuge []byte
+	outerHuge = appendProtoVarint(outerHuge, (1<<3)|protoWireBytes)
+	outerHuge = appendProtoVarint(outerHuge, uint64(len(hugeNested)))
+	outerHuge = append(outerHuge, hugeNested...)
+
+	hugeNode, err := DecodeProtobufRaw(outerHuge)
+	if err != nil {
+		t.Fatalf("DecodeProtobufRaw(outerHuge) failed: %v", err)
+	}
+	if !hugeNode.Truncated || len(hugeNode.Fields) != 1 || hugeNode.Fields[0].Kind != "bytes" {
+		t.Fatalf("expected nested field-cap fallback to lossless bytes with root Truncated=true, got Truncated=%v fields=%+v", hugeNode.Truncated, hugeNode.Fields)
+	}
+	reHuge, err := EncodeProtobufRaw(hugeNode)
+	if err != nil || !bytes.Equal(reHuge, outerHuge) {
+		t.Fatalf("nested field-cap lossless round-trip failed: err=%v", err)
+	}
+
+	// Verify EncodeProtobufRaw enforces maxProtoFields globally across nested trees.
+	vOne := uint64(1)
+	childFields := make([]ProtoFieldNode, 2100)
+	for i := range childFields {
+		childFields[i] = ProtoFieldNode{FieldNumber: 1, WireType: protoWireVarint, Kind: "varint", VarintU64: &vOne}
+	}
+	overCapNode := &ProtoMessageNode{
+		Fields: []ProtoFieldNode{
+			{FieldNumber: 1, WireType: protoWireBytes, Kind: "message", Nested: &ProtoMessageNode{Fields: childFields}},
+			{FieldNumber: 2, WireType: protoWireBytes, Kind: "message", Nested: &ProtoMessageNode{Fields: childFields}},
+		},
+	}
+	if _, err := EncodeProtobufRaw(overCapNode); err == nil {
+		t.Fatalf("EncodeProtobufRaw must reject trees whose total fields exceed maxProtoFields")
 	}
 }
 
@@ -933,11 +975,14 @@ func TestGenerateDFAFaultScriptsAndPyCompile(t *testing.T) {
 		}
 	}
 
-	// Verify crafted inputs with quotes/newlines cannot break generated Python syntax or Java comment framing.
+	// Verify crafted inputs with quotes/newlines/JLS unicode escapes cannot break Python syntax or Java comments/JSON.
 	crafted := cfg
-	crafted.BinaryPath = "/tmp/evil\"\nprint('pwned')#.so"
+	crafted.BinaryPath = `/tmp/evil"\u000aSystem.exit(1);//` + "\nprint('pwned')#.so"
 	crafted.TargetSymbol = "sym\"\"\"\nimport os"
 	crafted.Arch = "arm64\"\"\"\nimport os"
+	crafted.StateBufReg = "x99"
+	crafted.ClassName = "public"
+	crafted.PlaintextHex = `not-hex"`
 	craftedPy := GenerateDFAFaultScript("qiling", crafted)
 	tmpCrafted := filepath.Join(t.TempDir(), "dfa_crafted.py")
 	if err := os.WriteFile(tmpCrafted, []byte(craftedPy.Code), 0o600); err != nil {
@@ -949,5 +994,205 @@ func TestGenerateDFAFaultScriptsAndPyCompile(t *testing.T) {
 	craftedJava := GenerateDFAFaultScript("unidbg", crafted)
 	if strings.Contains(craftedJava.Code, "\nprint('pwned')") {
 		t.Fatalf("newline broke out of Java comment in Unidbg script")
+	}
+	// Check header comment lines contain no backslash (\u000a JLS §3.3 breakout prevention).
+	for _, line := range strings.Split(craftedJava.Code, "\n") {
+		if strings.HasPrefix(line, "// ") && strings.Contains(line, `\`) {
+			t.Fatalf("Java header comment still contains backslash: %q", line)
+		}
+	}
+	if !strings.Contains(craftedJava.Code, "public class CapWbAesDfaHarness extends AbstractJni") {
+		t.Fatalf("Java reserved keyword ClassName should fall back to CapWbAesDfaHarness")
+	}
+	if !strings.Contains(craftedJava.Code, "Arm64Const.UC_ARM64_REG_X0") || strings.Contains(craftedJava.Code, "UC_ARM64_REG_X99") {
+		t.Fatalf("invalid ARM64 register x99 must fall back to UC_ARM64_REG_X0")
+	}
+	if !strings.Contains(craftedJava.Code, `"00112233445566778899aabbccddeeff"`) || !strings.Contains(craftedJava.Code, "jsonEscape(") {
+		t.Fatalf("invalid PlaintextHex should normalize to default and script should use jsonEscape")
+	}
+	// Verify leading-zero and out-of-range registers are rejected while valid X30/FP/SP/LR work.
+	for _, badReg := range []string{"X00", "X31", "X99", "W0"} {
+		if got := unidbgRegConst("arm64", badReg); got != "Arm64Const.UC_ARM64_REG_X0" {
+			t.Fatalf("unidbgRegConst(arm64, %q) = %q, want X0 fallback", badReg, got)
+		}
+	}
+	if got := unidbgRegConst("arm64", "x30"); got != "Arm64Const.UC_ARM64_REG_X30" {
+		t.Fatalf("unidbgRegConst(arm64, x30) = %q", got)
+	}
+	if got := unidbgRegConst("arm64", "fp"); got != "Arm64Const.UC_ARM64_REG_FP" {
+		t.Fatalf("unidbgRegConst(arm64, fp) = %q", got)
+	}
+}
+
+// ─── 8. Audit Regression & Negative Edge-Case Tests ──────────────────────────
+
+func TestAuditRegressionNegativeCases(t *testing.T) {
+	// 1. Custom Base64 / Base32 alphabet restrictions (spaces, tabs, control chars, UTF-8) + '=' as data char + malformed padding.
+	spaceAlpha64 := " " + stdBase64Alphabet[1:]
+	if _, err := Base64Encode([]byte("hi"), spaceAlpha64, false); err == nil {
+		t.Fatalf("Base64 must reject whitespace in custom alphabet")
+	}
+	utf8Alpha64 := "é" + stdBase64Alphabet[2:] // len==64 bytes but non-ASCII
+	if _, err := Base64Encode([]byte("hi"), utf8Alpha64, false); err == nil {
+		t.Fatalf("Base64 must reject non-ASCII bytes in custom alphabet")
+	}
+	spaceAlpha32 := "\t" + stdBase32Alphabet[1:]
+	if _, err := Base32Encode([]byte("hi"), spaceAlpha32, false); err == nil {
+		t.Fatalf("Base32 must reject control/whitespace bytes in custom alphabet")
+	}
+
+	// Custom alphabet where '=' is symbol 0 (so 0x00 bytes encode to trailing '='!).
+	eqAlpha64 := "=" + stdBase64Alphabet[1:]
+	zeroBytes := []byte{0x01, 0x00, 0x00}
+	encEq64, err := Base64Encode(zeroBytes, eqAlpha64, false)
+	if err != nil || !strings.HasSuffix(string(encEq64), "=") {
+		t.Fatalf("expected '=' data char at end of custom base64, got %q err=%v", encEq64, err)
+	}
+	decEq64, err := Base64Decode(encEq64, eqAlpha64, false)
+	if err != nil || !bytes.Equal(decEq64, zeroBytes) {
+		t.Fatalf("custom base64 with '=' data char corrupted on decode: got %x want %x err=%v", decEq64, zeroBytes, err)
+	}
+
+	eqAlpha32 := "=" + stdBase32Alphabet[1:]
+	encEq32, err := Base32Encode(zeroBytes, eqAlpha32, false)
+	if err != nil || !strings.HasSuffix(string(encEq32), "=") {
+		t.Fatalf("expected '=' data char at end of custom base32, got %q err=%v", encEq32, err)
+	}
+	decEq32, err := Base32Decode(encEq32, eqAlpha32, false)
+	if err != nil || !bytes.Equal(decEq32, zeroBytes) {
+		t.Fatalf("custom base32 with '=' data char corrupted on decode: got %x want %x err=%v", decEq32, zeroBytes, err)
+	}
+
+	// Malformed padding must be rejected for standard Base64 & Base32.
+	for _, bad := range []string{"YQ======", "SGVsbG8==="} {
+		if _, err := Base64Decode([]byte(bad), "", false); err == nil {
+			t.Fatalf("Base64Decode must reject malformed padding %q", bad)
+		}
+		if _, err := Base64Decode([]byte(bad), "", true); err == nil {
+			t.Fatalf("Base64Decode(raw=true) must reject padding %q", bad)
+		}
+	}
+	if decFoo, err := Base32Decode([]byte("MZXW6==="), "", false); err != nil || string(decFoo) != "foo" {
+		t.Fatalf("RFC 4648 Base32Decode('MZXW6===') expected 'foo', got %q err=%v", decFoo, err)
+	}
+	for _, bad32 := range []string{"MZXW6==", "MZXW6====", "MY======="} {
+		if _, err := Base32Decode([]byte(bad32), "", false); err == nil {
+			t.Fatalf("Base32Decode must reject malformed padding %q", bad32)
+		}
+	}
+
+	// 2. MD5 / SHA-256 must reject degenerate custom IVs like "0x" and ":::".
+	for _, badIV := range []string{"0x", ":::", "   0X   ", "1234"} {
+		if _, err := MD5Sum([]byte("abc"), badIV); err == nil {
+			t.Fatalf("MD5Sum must reject malformed iv_hex %q", badIV)
+		}
+		if _, err := SHA256Sum([]byte("abc"), badIV); err == nil {
+			t.Fatalf("SHA256Sum must reject malformed iv_hex %q", badIV)
+		}
+	}
+
+	// 3. IdentifyPayload on JWT must not emit a broken base64_decode recipe.
+	hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	pay := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"u1"}`))
+	jwtStr := hdr + "." + pay + ".sig123"
+	idJWT := IdentifyPayload(jwtStr)
+	for _, rec := range idJWT.Recipes {
+		r := RunPipeline(PipelineRequest{Input: jwtStr, InputEncoding: rec.InputEncoding, Steps: rec.Steps})
+		if !r.Success {
+			t.Fatalf("JWT recommended recipe %q failed when executed: %s", rec.Name, r.Error)
+		}
+	}
+
+	// 4. ChaCha20 32-bit block counter overflow boundary.
+	ccKey := make([]byte, 32)
+	ccNonce := make([]byte, 12)
+	if _, err := ChaCha20XOR(make([]byte, 64), ccKey, ccNonce, 0xffffffff); err != nil {
+		t.Fatalf("ChaCha20XOR at counter=0xffffffff with 64 bytes (1 block) should succeed: %v", err)
+	}
+	if _, err := ChaCha20XOR(make([]byte, 65), ccKey, ccNonce, 0xffffffff); err == nil {
+		t.Fatalf("ChaCha20XOR at counter=0xffffffff with 65 bytes (2 blocks) must error on counter overflow")
+	}
+
+	// 5. AES & SM4 malformed ciphertext / padding / GCM tag negative cases.
+	key16 := make([]byte, 16)
+	iv16 := make([]byte, 16)
+	if _, err := AESDecrypt([]byte{1, 2, 3}, key16, iv16, "cbc", "pkcs7", nil); err == nil {
+		t.Fatalf("AES-CBC must reject unaligned ciphertext")
+	}
+	if _, err := AESDecrypt([]byte{1, 2, 3}, key16, nil, "ecb", "pkcs7", nil); err == nil {
+		t.Fatalf("AES-ECB must reject unaligned ciphertext")
+	}
+	// Encrypt a block whose plaintext ends in invalid PKCS7 bytes (0x00 and 0x05,0x04) using padding=none, then decrypt with pkcs7.
+	badPadBlock, _ := AESEncrypt(bytes.Repeat([]byte{0x00}, 16), key16, iv16, "cbc", "none", nil)
+	if _, err := AESDecrypt(badPadBlock, key16, iv16, "cbc", "pkcs7", nil); err == nil {
+		t.Fatalf("AES-CBC must reject 0x00 PKCS7 padding byte")
+	}
+	badPadBlock2, _ := SM4Encrypt([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0x03, 0x02}, key16, iv16, "cbc", "none")
+	if _, err := SM4Decrypt(badPadBlock2, key16, iv16, "cbc", "pkcs7"); err == nil {
+		t.Fatalf("SM4-CBC must reject malformed PKCS7 padding")
+	}
+	if _, err := SM4Decrypt([]byte{1, 2, 3}, key16, nil, "ecb", "pkcs7"); err == nil {
+		t.Fatalf("SM4-ECB must reject unaligned ciphertext")
+	}
+	gcmCT, _ := AESEncrypt([]byte("secret"), key16, iv16[:12], "gcm", "none", nil)
+	gcmCT[len(gcmCT)-1] ^= 0x01 // corrupt GCM auth tag
+	if _, err := AESDecrypt(gcmCT, key16, iv16[:12], "gcm", "none", nil); err == nil {
+		t.Fatalf("AES-GCM must reject corrupted auth tag")
+	}
+
+	// 6. Zlib & Deflate zip-bomb caps (> 16 MiB).
+	bombRaw := make([]byte, MaxDecompressedBytes+65536)
+	bombZlib, err := ZlibCompress(bombRaw, 9)
+	if err != nil {
+		t.Fatalf("ZlibCompress bomb setup failed: %v", err)
+	}
+	if _, err := ZlibDecompress(bombZlib); err == nil || !strings.Contains(err.Error(), "exceeds maximum allowed size") {
+		t.Fatalf("ZlibDecompress must reject >16 MiB zip-bomb, got %v", err)
+	}
+	bombDeflate, err := DeflateCompress(bombRaw, 9)
+	if err != nil {
+		t.Fatalf("DeflateCompress bomb setup failed: %v", err)
+	}
+	if _, err := DeflateDecompress(bombDeflate); err == nil || !strings.Contains(err.Error(), "exceeds maximum allowed size") {
+		t.Fatalf("DeflateDecompress must reject >16 MiB zip-bomb, got %v", err)
+	}
+
+	// 7. Strict numeric pipeline param errors (drop, level, top_n).
+	badNumericCases := []PipelineStep{
+		{Op: "gzip_compress", Params: map[string]string{"level": "fast"}},
+		{Op: "zlib_compress", Params: map[string]string{"level": "xyz"}},
+		{Op: "deflate_compress", Params: map[string]string{"level": "1.5"}},
+		{Op: "xor_bruteforce", Params: map[string]string{"top_n": "many"}},
+		{Op: "rc4_encrypt", Params: map[string]string{"key": "010203", "drop": "abc"}},
+	}
+	for _, step := range badNumericCases {
+		r := RunPipeline(PipelineRequest{Input: "hello", Steps: []PipelineStep{step}})
+		if r.Success || r.FailedStep != 0 {
+			t.Fatalf("expected strict integer error for %s params=%v, got %+v", step.Op, step.Params, r)
+		}
+	}
+
+	// 8. DFA negative cases: blank fault counting invariant, upfront PlaintextHex validation, malformed hex, multi-byte non-column faults.
+	validHex := "00112233445566778899aabbccddeeff"
+	if _, err := SolveAES128DFA(DFARequest{ValidCiphertextHex: validHex, PlaintextHex: "not-hex"}); err == nil {
+		t.Fatalf("SolveAES128DFA must validate invalid PlaintextHex even with 0 faults")
+	}
+	if _, err := SolveAES128DFA(DFARequest{ValidCiphertextHex: "abcd"}); err == nil {
+		t.Fatalf("SolveAES128DFA must reject short ValidCiphertextHex")
+	}
+	if _, err := SolveAES128DFA(DFARequest{ValidCiphertextHex: validHex, FaultyCiphertextsHex: []string{"zzzz"}}); err == nil {
+		t.Fatalf("SolveAES128DFA must reject malformed FaultyCiphertextsHex")
+	}
+	// Non-ShiftRows 4-byte diff (bytes 0,1,2,3 instead of {0,7,10,13}) + blank entries.
+	nonColHex := "ffeeddcc445566778899aabbccddeeff"
+	dfaNeg, err := SolveAES128DFA(DFARequest{
+		ValidCiphertextHex:   validHex,
+		FaultyCiphertextsHex: []string{"", "   ", nonColHex},
+	})
+	if err != nil {
+		t.Fatalf("SolveAES128DFA returned unexpected error: %v", err)
+	}
+	if dfaNeg.UsableFaults+dfaNeg.IgnoredFaults != dfaNeg.TotalFaultsInput || dfaNeg.IgnoredFaults != 3 {
+		t.Fatalf("DFA fault accounting mismatch: usable=%d ignored=%d total=%d", dfaNeg.UsableFaults, dfaNeg.IgnoredFaults, dfaNeg.TotalFaultsInput)
 	}
 }

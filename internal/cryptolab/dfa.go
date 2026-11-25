@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ─── AES-128 Tables & GF(2^8) Arithmetic for Round-9 DFA ─────────────────────
@@ -277,6 +278,18 @@ func SolveAES128DFA(req DFARequest) (*DFAResult, error) {
 		return nil, err
 	}
 
+	var (
+		hasPlaintext   bool
+		plaintextBytes [16]byte
+	)
+	if strings.TrimSpace(req.PlaintextHex) != "" {
+		plaintextBytes, err = parseFixed16Hex(req.PlaintextHex, "plaintext_hex")
+		if err != nil {
+			return nil, err
+		}
+		hasPlaintext = true
+	}
+
 	res := &DFAResult{
 		ValidCiphertextHex: hex.EncodeToString(validBytes[:]),
 		TotalFaultsInput:   len(req.FaultyCiphertextsHex),
@@ -300,6 +313,7 @@ func SolveAES128DFA(req DFARequest) (*DFAResult, error) {
 
 	for i, fHex := range req.FaultyCiphertextsHex {
 		if strings.TrimSpace(fHex) == "" {
+			res.IgnoredFaults++
 			continue
 		}
 		fb, err := parseFixed16Hex(fHex, fmt.Sprintf("faulty_ciphertexts_hex[%d]", i))
@@ -369,14 +383,10 @@ func SolveAES128DFA(req DFARequest) (*DFAResult, error) {
 		res.Round10KeyHex = hex.EncodeToString(k10[:])
 		res.MasterKeyHex = hex.EncodeToString(k0[:])
 
-		if strings.TrimSpace(req.PlaintextHex) != "" {
-			pt, err := parseFixed16Hex(req.PlaintextHex, "plaintext_hex")
-			if err != nil {
-				return nil, err
-			}
+		if hasPlaintext {
 			block, _ := aes.NewCipher(k0[:])
 			var checkCT [16]byte
-			block.Encrypt(checkCT[:], pt[:])
+			block.Encrypt(checkCT[:], plaintextBytes[:])
 			if checkCT == validBytes {
 				res.VerifiedWithPlaintext = true
 				res.Notes = append(res.Notes, "Recovered Master Key verified against supplied plaintext/ciphertext pair via AES-128.")
@@ -590,7 +600,9 @@ func normalizedDFAConfig(cfg DFAScriptConfig) DFAScriptConfig {
 			out.StateBufReg = "x0"
 		}
 	}
-	if strings.TrimSpace(out.PlaintextHex) == "" {
+	if pt, err := parseFixed16Hex(out.PlaintextHex, "plaintext_hex"); err == nil {
+		out.PlaintextHex = hex.EncodeToString(pt[:])
+	} else {
 		out.PlaintextHex = "00112233445566778899aabbccddeeff"
 	}
 	if out.FaultXOR == 0 {
@@ -606,7 +618,7 @@ func normalizedDFAConfig(cfg DFAScriptConfig) DFAScriptConfig {
 		out.ClassName = "CapWbAesDfaHarness"
 	} else {
 		cleaned := dfaJavaIdentRe.ReplaceAllString(out.ClassName, "")
-		if cleaned == "" || (cleaned[0] >= '0' && cleaned[0] <= '9') {
+		if cleaned == "" || (cleaned[0] >= '0' && cleaned[0] <= '9') || isJavaReservedWord(cleaned) {
 			cleaned = "CapWbAesDfaHarness"
 		}
 		out.ClassName = cleaned
@@ -933,7 +945,7 @@ public class %s extends AbstractJni {
     public void sweepAndEmit() {
         byte[] pt = hexToBytes(PLAINTEXT_HEX);
         String validHex = invokeOnce(pt, -1, (byte) 0);
-        System.out.println("[CAP_RE] {\"kind\":\"dfa_baseline\",\"plaintext_hex\":\"" + PLAINTEXT_HEX + "\",\"valid_ciphertext_hex\":\"" + validHex + "\"}");
+        System.out.println("[CAP_RE] {\"kind\":\"dfa_baseline\",\"plaintext_hex\":" + jsonEscape(PLAINTEXT_HEX) + ",\"valid_ciphertext_hex\":" + jsonEscape(validHex) + "}");
 
         List<String> faultyList = new ArrayList<>();
         for (int byteIdx = 0; byteIdx < 16; byteIdx++) {
@@ -942,17 +954,43 @@ public class %s extends AbstractJni {
                 if (!faultyHex.isEmpty() && !faultyHex.equalsIgnoreCase(validHex)) {
                     faultyList.add(faultyHex);
                     System.out.printf(
-                            "[CAP_RE] {\"kind\":\"dfa_pair\",\"byte_index\":%%d,\"fault_xor\":\"0x%%02x\",\"valid_ciphertext_hex\":\"%%s\",\"faulty_ciphertext_hex\":\"%%s\"}%%n",
-                            byteIdx, mask & 0xff, validHex, faultyHex
+                            "[CAP_RE] {\"kind\":\"dfa_pair\",\"byte_index\":%%d,\"fault_xor\":\"0x%%02x\",\"valid_ciphertext_hex\":%%s,\"faulty_ciphertext_hex\":%%s}%%n",
+                            byteIdx, mask & 0xff, jsonEscape(validHex), jsonEscape(faultyHex)
                     );
                 }
             }
         }
-        System.out.println("[CAP_RE] {\"kind\":\"dfa_summary\",\"valid_ciphertext_hex\":\"" + validHex + "\",\"fault_count\":" + faultyList.size() + "}");
+        System.out.println("[CAP_RE] {\"kind\":\"dfa_summary\",\"valid_ciphertext_hex\":" + jsonEscape(validHex) + ",\"fault_count\":" + faultyList.size() + "}");
     }
 
     public void close() throws IOException {
         emulator.close();
+    }
+
+    private static String jsonEscape(String s) {
+        if (s == null) return "\"\"";
+        StringBuilder sb = new StringBuilder(s.length() + 2);
+        sb.append('"');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\b': sb.append("\\b"); break;
+                case '\f': sb.append("\\f"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        sb.append('"');
+        return sb.toString();
     }
 
     private static String envOr(String key, String fallback) {
@@ -992,9 +1030,9 @@ public class %s extends AbstractJni {
     }
 }
 `,
-		stripLineBreaks(cfg.BinaryPath),
-		stripLineBreaks(cfg.TargetClass), stripLineBreaks(methodAndSig),
-		stripLineBreaks(cfg.FaultHookAddr), stripLineBreaks(cfg.StateBufReg),
+		sanitizeJavaComment(cfg.BinaryPath),
+		sanitizeJavaComment(cfg.TargetClass), sanitizeJavaComment(methodAndSig),
+		sanitizeJavaComment(cfg.FaultHookAddr), sanitizeJavaComment(cfg.StateBufReg),
 		regImport,
 		cfg.ClassName,
 		jsonQuote(cfg.PackageName),
@@ -1028,6 +1066,35 @@ public class %s extends AbstractJni {
 	}
 }
 
+var javaReservedWords = map[string]bool{
+	"abstract": true, "assert": true, "boolean": true, "break": true, "byte": true,
+	"case": true, "catch": true, "char": true, "class": true, "const": true,
+	"continue": true, "default": true, "do": true, "double": true, "else": true,
+	"enum": true, "extends": true, "false": true, "final": true, "finally": true,
+	"float": true, "for": true, "goto": true, "if": true, "implements": true,
+	"import": true, "instanceof": true, "int": true, "interface": true, "long": true,
+	"native": true, "new": true, "null": true, "package": true, "private": true,
+	"protected": true, "public": true, "record": true, "return": true, "sealed": true,
+	"short": true, "static": true, "strictfp": true, "super": true, "switch": true,
+	"synchronized": true, "this": true, "throw": true, "throws": true, "transient": true,
+	"true": true, "try": true, "var": true, "void": true, "volatile": true,
+	"while": true, "yield": true, "_": true,
+}
+
+func isJavaReservedWord(ident string) bool {
+	return javaReservedWords[ident]
+}
+
+var arm64ValidRegs = map[string]bool{
+	"X0": true, "X1": true, "X2": true, "X3": true, "X4": true,
+	"X5": true, "X6": true, "X7": true, "X8": true, "X9": true,
+	"X10": true, "X11": true, "X12": true, "X13": true, "X14": true,
+	"X15": true, "X16": true, "X17": true, "X18": true, "X19": true,
+	"X20": true, "X21": true, "X22": true, "X23": true, "X24": true,
+	"X25": true, "X26": true, "X27": true, "X28": true, "X29": true,
+	"X30": true, "SP": true, "LR": true, "FP": true,
+}
+
 func unidbgRegConst(arch, reg string) string {
 	r := strings.ToUpper(strings.TrimSpace(reg))
 	if arch == "arm" {
@@ -1038,26 +1105,25 @@ func unidbgRegConst(arch, reg string) string {
 			return "ArmConst.UC_ARM_REG_R0"
 		}
 	}
-	if strings.HasPrefix(r, "X") && len(r) >= 2 && len(r) <= 3 {
-		valid := true
-		for i := 1; i < len(r); i++ {
-			if r[i] < '0' || r[i] > '9' {
-				valid = false
-			}
-		}
-		if valid {
-			return "Arm64Const.UC_ARM64_REG_" + r
-		}
-	}
-	if r == "SP" || r == "LR" {
+	if arm64ValidRegs[r] {
 		return "Arm64Const.UC_ARM64_REG_" + r
 	}
 	return "Arm64Const.UC_ARM64_REG_X0"
 }
 
-func stripLineBreaks(s string) string {
-	r := strings.NewReplacer("\r", " ", "\n", " ")
-	return r.Replace(s)
+// sanitizeJavaComment strips line breaks, backslashes (preventing JLS §3.3
+// \u000a / \u000d unicode escape breakouts), and non-printable characters.
+func sanitizeJavaComment(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for _, r := range s {
+		if r == '\\' || r == '\r' || r == '\n' || r < 0x20 || r == 0x7f || !unicode.IsPrint(r) {
+			sb.WriteByte(' ')
+			continue
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String()
 }
 
 func jsonQuote(s string) string {

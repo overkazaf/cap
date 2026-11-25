@@ -57,26 +57,26 @@ var (
 
 // ─── Base64 / Base32 / Hex / URL Codecs ──────────────────────────────────────
 
-func buildBase64Encoding(alphabet string, raw bool) (*base64.Encoding, error) {
-	alpha := strings.TrimSpace(alphabet)
-	switch strings.ToLower(alpha) {
+func buildBase64Encoding(alphabet string, raw bool) (*base64.Encoding, bool, error) {
+	alpha := alphabet
+	switch strings.ToLower(strings.TrimSpace(alpha)) {
 	case "", "std", "standard":
 		alpha = stdBase64Alphabet
 	case "url", "urlsafe", "url_safe":
 		alpha = urlBase64Alphabet
 	}
 	if len(alpha) != 64 {
-		return nil, fmt.Errorf("base64 custom alphabet must be exactly 64 characters, got %d", len(alpha))
+		return nil, false, fmt.Errorf("base64 custom alphabet must be exactly 64 ASCII characters, got %d bytes", len(alpha))
 	}
 	var seen [256]bool
 	hasEq := false
 	for i := 0; i < 64; i++ {
 		c := alpha[i]
-		if c == '\r' || c == '\n' {
-			return nil, fmt.Errorf("base64 alphabet cannot contain CR or LF")
+		if c < 0x21 || c > 0x7e {
+			return nil, false, fmt.Errorf("base64 alphabet byte 0x%02x must be printable non-whitespace ASCII (0x21..0x7e)", c)
 		}
 		if seen[c] {
-			return nil, fmt.Errorf("base64 alphabet contains duplicate byte 0x%02x", c)
+			return nil, false, fmt.Errorf("base64 alphabet contains duplicate byte 0x%02x", c)
 		}
 		seen[c] = true
 		if c == '=' {
@@ -87,12 +87,12 @@ func buildBase64Encoding(alphabet string, raw bool) (*base64.Encoding, error) {
 	if raw || hasEq {
 		enc = enc.WithPadding(base64.NoPadding)
 	}
-	return enc, nil
+	return enc, hasEq, nil
 }
 
 // Base64Encode encodes data using standard, URL-safe, or custom 64-char alphabet.
 func Base64Encode(data []byte, alphabet string, raw bool) ([]byte, error) {
-	enc, err := buildBase64Encoding(alphabet, raw)
+	enc, _, err := buildBase64Encoding(alphabet, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -104,52 +104,49 @@ func Base64Encode(data []byte, alphabet string, raw bool) ([]byte, error) {
 // Base64Decode decodes data using standard, URL-safe, or custom 64-char alphabet.
 func Base64Decode(data []byte, alphabet string, raw bool) ([]byte, error) {
 	cleaned := stripWhitespace(string(data))
-	enc, err := buildBase64Encoding(alphabet, raw)
+	enc, hasEq, err := buildBase64Encoding(alphabet, raw)
 	if err != nil {
 		return nil, err
 	}
-	if !raw && !strings.Contains(cleaned, "=") && len(cleaned)%4 != 0 {
-		enc = enc.WithPadding(base64.NoPadding)
+	// When '=' is padding (not a data symbol) and raw=false, tolerate missing
+	// padding cleanly while strictly enforcing RFC 4648 padding when '=' is present.
+	if !hasEq && !raw {
+		if firstEq := strings.IndexByte(cleaned, '='); firstEq >= 0 {
+			eqCount := len(cleaned) - firstEq
+			if len(cleaned)%4 != 0 || eqCount > 2 || strings.TrimRight(cleaned[firstEq:], "=") != "" {
+				return nil, fmt.Errorf("base64 decode: malformed padding")
+			}
+		} else {
+			enc = enc.WithPadding(base64.NoPadding)
+		}
 	}
 	out, err := enc.DecodeString(cleaned)
 	if err != nil {
-		// Retry without padding in case unpadded input had length divisible by 4 or trailing '=' mismatch.
-		if raw {
-			trimmed := strings.TrimRight(cleaned, "=")
-			if out2, err2 := enc.DecodeString(trimmed); err2 == nil {
-				return out2, nil
-			}
-		} else {
-			rawEnc := enc.WithPadding(base64.NoPadding)
-			if out2, err2 := rawEnc.DecodeString(strings.TrimRight(cleaned, "=")); err2 == nil {
-				return out2, nil
-			}
-		}
 		return nil, fmt.Errorf("base64 decode: %w", err)
 	}
 	return out, nil
 }
 
-func buildBase32Encoding(alphabet string, raw bool) (*base32.Encoding, error) {
-	alpha := strings.TrimSpace(alphabet)
-	switch strings.ToLower(alpha) {
+func buildBase32Encoding(alphabet string, raw bool) (*base32.Encoding, bool, error) {
+	alpha := alphabet
+	switch strings.ToLower(strings.TrimSpace(alpha)) {
 	case "", "std", "standard":
 		alpha = stdBase32Alphabet
 	case "hex":
 		alpha = hexBase32Alphabet
 	}
 	if len(alpha) != 32 {
-		return nil, fmt.Errorf("base32 custom alphabet must be exactly 32 characters, got %d", len(alpha))
+		return nil, false, fmt.Errorf("base32 custom alphabet must be exactly 32 ASCII characters, got %d bytes", len(alpha))
 	}
 	var seen [256]bool
 	hasEq := false
 	for i := 0; i < 32; i++ {
 		c := alpha[i]
-		if c == '\r' || c == '\n' {
-			return nil, fmt.Errorf("base32 alphabet cannot contain CR or LF")
+		if c < 0x21 || c > 0x7e {
+			return nil, false, fmt.Errorf("base32 alphabet byte 0x%02x must be printable non-whitespace ASCII (0x21..0x7e)", c)
 		}
 		if seen[c] {
-			return nil, fmt.Errorf("base32 alphabet contains duplicate byte 0x%02x", c)
+			return nil, false, fmt.Errorf("base32 alphabet contains duplicate byte 0x%02x", c)
 		}
 		seen[c] = true
 		if c == '=' {
@@ -160,12 +157,12 @@ func buildBase32Encoding(alphabet string, raw bool) (*base32.Encoding, error) {
 	if raw || hasEq {
 		enc = enc.WithPadding(base32.NoPadding)
 	}
-	return enc, nil
+	return enc, hasEq, nil
 }
 
 // Base32Encode encodes data using standard, hex, or custom 32-char alphabet.
 func Base32Encode(data []byte, alphabet string, raw bool) ([]byte, error) {
-	enc, err := buildBase32Encoding(alphabet, raw)
+	enc, _, err := buildBase32Encoding(alphabet, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -181,19 +178,23 @@ func Base32Decode(data []byte, alphabet string, raw bool) ([]byte, error) {
 	if lowerAlpha == "" || lowerAlpha == "std" || lowerAlpha == "standard" || lowerAlpha == "hex" {
 		cleaned = strings.ToUpper(cleaned)
 	}
-	enc, err := buildBase32Encoding(alphabet, raw)
+	enc, hasEq, err := buildBase32Encoding(alphabet, raw)
 	if err != nil {
 		return nil, err
 	}
-	if !raw && !strings.Contains(cleaned, "=") && len(cleaned)%8 != 0 {
-		enc = enc.WithPadding(base32.NoPadding)
+	if !hasEq && !raw {
+		if firstEq := strings.IndexByte(cleaned, '='); firstEq >= 0 {
+			eqCount := len(cleaned) - firstEq
+			validCount := eqCount == 1 || eqCount == 3 || eqCount == 4 || eqCount == 6
+			if len(cleaned)%8 != 0 || !validCount || strings.TrimRight(cleaned[firstEq:], "=") != "" {
+				return nil, fmt.Errorf("base32 decode: malformed padding")
+			}
+		} else {
+			enc = enc.WithPadding(base32.NoPadding)
+		}
 	}
 	out, err := enc.DecodeString(cleaned)
 	if err != nil {
-		rawEnc := enc.WithPadding(base32.NoPadding)
-		if out2, err2 := rawEnc.DecodeString(strings.TrimRight(cleaned, "=")); err2 == nil {
-			return out2, nil
-		}
 		return nil, fmt.Errorf("base32 decode: %w", err)
 	}
 	return out, nil
@@ -447,15 +448,13 @@ func XORBruteforce(data []byte, topN int) []XORCandidate {
 			buf[i] = b ^ kb
 		}
 		score, ratio := scorePrintableASCII(buf)
-		outCopy := make([]byte, len(buf))
-		copy(outCopy, buf)
 		candidates = append(candidates, XORCandidate{
 			KeyByte:        kb,
 			KeyHex:         fmt.Sprintf("0x%02x", kb),
 			Score:          math.Round(score*1000) / 1000,
 			PrintableRatio: math.Round(ratio*1000) / 1000,
-			OutputUTF8:     safeUTF8Preview(outCopy, 512),
-			OutputHex:      hex.EncodeToString(outCopy[:minInt(len(outCopy), 256)]),
+			OutputUTF8:     safeUTF8Preview(buf, 512),
+			OutputHex:      hex.EncodeToString(buf[:minInt(len(buf), 256)]),
 		})
 	}
 
@@ -603,12 +602,11 @@ func MD5WithIV(data []byte, iv [4]uint32) [16]byte {
 // string encoding 4 little-endian 32-bit words (matching RFC 1321 standard IV
 // "0123456789abcdeffedcba9876543210").
 func MD5Sum(data []byte, ivHex string) ([]byte, error) {
-	ivHex = cleanHexString(ivHex)
-	if ivHex == "" {
+	if strings.TrimSpace(ivHex) == "" {
 		sum := md5.Sum(data)
 		return sum[:], nil
 	}
-	raw, err := hex.DecodeString(ivHex)
+	raw, err := HexDecode([]byte(ivHex))
 	if err != nil || len(raw) != 16 {
 		return nil, fmt.Errorf("md5 custom iv_hex must be exactly 16 bytes (32 hex chars, 4x32-bit LE words)")
 	}
@@ -694,12 +692,11 @@ func SHA256WithIV(data []byte, iv [8]uint32) [32]byte {
 // SHA256Sum computes SHA-256 over data, optionally overriding the IV via a 64-hex-char
 // string encoding 8 big-endian 32-bit words.
 func SHA256Sum(data []byte, ivHex string) ([]byte, error) {
-	ivHex = cleanHexString(ivHex)
-	if ivHex == "" {
+	if strings.TrimSpace(ivHex) == "" {
 		sum := sha256.Sum256(data)
 		return sum[:], nil
 	}
-	raw, err := hex.DecodeString(ivHex)
+	raw, err := HexDecode([]byte(ivHex))
 	if err != nil || len(raw) != 32 {
 		return nil, fmt.Errorf("sha256 custom iv_hex must be exactly 32 bytes (64 hex chars, 8x32-bit BE words)")
 	}
@@ -814,9 +811,9 @@ func IdentifyPayload(input string) *IdentifyResult {
 	// 1. JWT detection (header.payload.signature)
 	if jwtPrev := tryDetectJWT(trimmed); jwtPrev != nil {
 		res.JWT = jwtPrev
-		detail := "3-part compact JWS/JWT"
+		detail := "3-part compact JWS/JWT (header & payload decoded in jwt preview)"
 		if jwtPrev.Algorithm != "" {
-			detail = fmt.Sprintf("JWT (alg=%s)", jwtPrev.Algorithm)
+			detail = fmt.Sprintf("JWT (alg=%s; header & payload decoded in jwt preview)", jwtPrev.Algorithm)
 		}
 		res.Candidates = append(res.Candidates, IdentifyCandidate{
 			Format:     "jwt",
@@ -825,15 +822,6 @@ func IdentifyPayload(input string) *IdentifyResult {
 			Details:    detail,
 			Preview:    jwtPrev.PayloadJSON,
 		})
-		parts := strings.Split(trimmed, ".")
-		res.Recipes = append(res.Recipes, RecommendedRecipe{
-			Name:        "Decode JWT Payload",
-			Description: "Base64URL-decode the JWT claims segment",
-			Steps: []PipelineStep{
-				{Op: "base64_decode", Params: map[string]string{"alphabet": "url", "raw": "true"}},
-			},
-		})
-		_ = parts
 	}
 
 	// 2. UUID detection

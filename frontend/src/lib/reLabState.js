@@ -3,12 +3,13 @@ import { navigate } from './navigation.js'
 
 // Persistent UI state for RE Lab across route switches
 export const reLabState = {
-  // Active top-level sub-tab: 'native' | 'emulate' | 'deobf' | 'exectrace'
+  // Active top-level sub-tab: 'native' | 'emulate' | 'jadx' | 'deobf' | 'exectrace' | 'cryptolab'
   subTab: 'native',
 
-  // Sub-tab 1: Native Binary & Radare2
+  // Sub-tab 1: Native Binary & Radare2 + iOS Mach-O/IPA + Symbol Bridge
   binaryPath: '',
   binaryAnalysis: null,
+  nativeMode: 'r2', // 'r2' | 'ios'
   nativeLeftTab: 'functions', // 'functions' | 'exports' | 'imports' | 'strings' | 'xrefs'
   nativeSearch: '',
   nativeJniOnly: false,
@@ -17,8 +18,21 @@ export const reLabState = {
   funcViewTab: 'disasm', // 'disasm' | 'pseudoc' | 'xrefs'
   r2Cmd: 'iI',
   r2History: [],
+  iosReport: null,
+  iosLeftTab: 'objc_classes', // 'objc_classes' | 'objc_selectors' | 'exports' | 'dylibs'
+  iosSearch: '',
+  iosTargetObjCClass: '',
+  iosTargetObjCSelector: '',
+  iosTargetSymbol: '',
+  iosTargetOffset: '',
+  symExportFormat: 'ida', // 'ida' | 'ghidra' | 'json'
+  symImageBase: '0x0',
+  symExportOutput: '',
+  symImportRaw: '',
+  importedSymbolBundle: null,
+  appliedSymbolComments: {},
 
-  // Sub-tab 2: Emulation & Symbolic (Unidbg / Qiling / angr)
+  // Sub-tab 2: Emulation & Symbolic (Unidbg / Qiling / angr) + Auto-Stub Assistant
   projectEngineFilter: 'all', // 'all' | 'unidbg' | 'qiling' | 'angr' | 'radare2'
   projectSearch: '',
   projId: '',
@@ -42,9 +56,30 @@ export const reLabState = {
   jobConsoleFilter: 'all', // 'all' | 'result' | 'stdout' | 'stderr' | 'system'
   jobConsoleSearch: '',
   jobAutoScroll: true,
+  autoStubRawLog: '',
+  autoStubDiagnosis: null,
+  autoStubSnippetTab: 'combined', // 'combined' | 'jni' | 'io' | 'sysprop'
+  autoStubPkg: '',
 
-  // Sub-tab 3: Deobf · Anti-Debug · VMP
-  deobfView: 'audit', // 'audit' | 'scripts' | 'vmp_trace'
+  // Sub-tab 3: JADX Decompiler & Java<->JNI Cross-Link
+  jadxApkPath: '',
+  jadxInfo: null,
+  jadxWorkspace: null,
+  jadxClasses: [],
+  jadxLeftTab: 'classes', // 'classes' | 'search'
+  jadxClassFilter: '',
+  jadxNativeOnly: false,
+  jadxSearchQuery: '',
+  jadxSearchHits: [],
+  jadxSelectedClass: '',
+  jadxClassSource: null,
+  jadxSoPath: '',
+  jadxRegisterNativesJSON: '',
+  jadxLinkReport: null,
+  jadxLinkFilter: 'all', // 'all' | 'static_export' | 'dynamic_register' | 'unresolved'
+
+  // Sub-tab 4: Deobf · Anti-Debug · VMP · TLS/Proxy Compat
+  deobfView: 'audit', // 'audit' | 'scripts' | 'vmp_trace' | 'tls'
   scanPath: '',
   protectionReport: null,
   selectedGenerator: 'stealth', // 'stealth' | 'unpack' | 'ollvm' | 'string_decrypt' | 'java_deobf' | 'vmp_stalker' | 'vmp_jni' | 'vmp_unidbg'
@@ -76,8 +111,44 @@ export const reLabState = {
   vmpTraceRaw: '',
   vmpTraceBaseHex: '',
   vmpTraceAnalysis: null,
+  tlsApkPath: '',
+  tlsCertReport: null,
+  tlsMtlsCertPath: '',
+  tlsMtlsKeyPath: '',
+  tlsMtlsResult: null,
+  tlsProfiles: [],
+  tlsSelectedProfileId: 'chrome_131',
+  tlsProfileJA3: null,
+  tlsCurlInfo: null,
+  tlsCompatKind: 'flutter', // 'flutter' | 'cronet' | 'mtls_observer'
+  tlsFlutterOpts: {
+    package_name: '',
+    platform: 'android',
+    module_name: 'libflutter.so',
+    proxy_host: '127.0.0.1',
+    proxy_port: 8080,
+    offset_hex: '',
+    verify_symbol: 'ssl_crypto_x509_session_verify_cert_chain',
+    force_allow_local_verify: false,
+  },
+  tlsCronetOpts: {
+    package_name: '',
+    disable_quic: true,
+    configure_okhttp_protocols: true,
+    log_alt_svc_headers: true,
+    proxy_hint: '127.0.0.1:8080',
+  },
+  tlsMtlsObsOpts: {
+    package_name: '',
+    observe_keystore: true,
+    observe_key_manager: true,
+    observe_ssl_context: true,
+    observe_certificates: true,
+    max_aliases_per_store: 32,
+  },
+  tlsGeneratedScript: null,
 
-  // Sub-tab 4: ExecTrace & Taint
+  // Sub-tab 5: ExecTrace & Taint
   selectedTraceId: '',
   traceViewTab: 'overview', // 'overview' | 'events' | 'taint' | 'diff'
   traceListSearch: '',
@@ -97,6 +168,46 @@ export const reLabState = {
   diffMaxDivergences: 25,
   diffResult: null,
   generatedCollector: null,
+
+  // Sub-tab 6: CryptoLab (Pipeline · Protobuf · White-Box AES DFA)
+  cryptoMode: 'pipeline', // 'pipeline' | 'protobuf' | 'dfa'
+  cryptoOps: [],
+  cryptoOpSearch: '',
+  cryptoOpCategory: 'all',
+  cryptoInput: '',
+  cryptoInputEncoding: 'utf8',
+  cryptoSteps: [],
+  cryptoOutputTab: 'utf8', // 'utf8' | 'hex' | 'base64'
+  cryptoResult: null,
+  cryptoIdentify: null,
+  protoInput: '',
+  protoTree: null,
+  protoEncodedHex: '',
+  dfaValidHex: '',
+  dfaFaultsText: '',
+  dfaPlaintextHex: '',
+  dfaResult: null,
+  dfaScriptEngine: 'unidbg', // 'unidbg' | 'qiling'
+  dfaScriptCfg: {
+    binary_path: '',
+    apk_path: '',
+    package_name: '',
+    arch: 'arm64',
+    rootfs: '',
+    target_class: '',
+    target_method: '',
+    method_signature: '',
+    target_symbol: '',
+    target_addr: '',
+    fault_hook_addr: '',
+    state_buf_reg: 'x0',
+    state_buf_addr: '',
+    plaintext_hex: '',
+    fault_xor: 1,
+    faults_per_byte: 2,
+    class_name: 'WhiteboxDFAHarness',
+  },
+  dfaGeneratedScript: null,
 }
 
 // Reactive handoff store for jumping into RE Lab from DeepTrace, Capture, Flows, or Frida
@@ -114,7 +225,7 @@ export function openRELab({
   generatedHarness = null,
   scanPath = '',
 } = {}) {
-  const validTabs = ['native', 'emulate', 'deobf', 'exectrace']
+  const validTabs = ['native', 'emulate', 'jadx', 'deobf', 'exectrace', 'cryptolab']
   if (validTabs.includes(subTab)) {
     reLabState.subTab = subTab
   } else if (generatedHarness) {
@@ -129,10 +240,13 @@ export function openRELab({
     reLabState.binaryPath = binaryPath
     reLabState.projBinaryPath = binaryPath
     if (!reLabState.genSoPath) reLabState.genSoPath = binaryPath
+    if (!reLabState.jadxSoPath) reLabState.jadxSoPath = binaryPath
   }
   if (apkPath) {
     reLabState.projAPKPath = apkPath
     if (!reLabState.genApkPath) reLabState.genApkPath = apkPath
+    if (!reLabState.jadxApkPath) reLabState.jadxApkPath = apkPath
+    if (!reLabState.tlsApkPath) reLabState.tlsApkPath = apkPath
   }
   if (engine) {
     reLabState.projEngine = engine

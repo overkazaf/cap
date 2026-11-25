@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1878,5 +1879,82 @@ func TestAuditFixesConcurrencyEnvOverridesSymlinksAndR2Sandbox(t *testing.T) {
 	}
 	if !foundTwoC {
 		t.Fatalf("expected two separate -c args for sandbox isolation, got %v", r2Args)
+	}
+}
+
+func TestGeneratedPythonScriptsValidSyntax(t *testing.T) {
+	type scriptCase struct {
+		name string
+		code string
+	}
+
+	var cases []scriptCase
+	for _, arch := range []string{"arm64", "arm", "x86_64", "x86"} {
+		h := GenerateQilingHarness(GenerateOptions{
+			BinaryPath:   "/tmp/libnative.so",
+			TargetSymbol: "Java_com_example_Signer_sign",
+			TargetAddr:   "0x1200",
+			Arch:         arch,
+			Args:         []string{"sample_payload"},
+		})
+		cases = append(cases, scriptCase{name: "qiling_" + arch, code: h.Code})
+
+		// Verify regSetup lines sit at 8-space indentation inside `if target_addr > 0:`
+		inTargetBlock := false
+		foundRegLine := false
+		for lineNo, line := range strings.Split(h.Code, "\n") {
+			if line == "    if target_addr > 0:" {
+				inTargetBlock = true
+				continue
+			}
+			if inTargetBlock && strings.HasPrefix(line, "    else:") {
+				inTargetBlock = false
+				continue
+			}
+			if inTargetBlock && (strings.Contains(line, "ql.arch.regs.") || strings.Contains(line, "ql.stack_push(")) {
+				foundRegLine = true
+				if !strings.HasPrefix(line, "        ") || strings.HasPrefix(line, "         ") {
+					t.Errorf("qiling_%s line %d has wrong indentation inside if target_addr > 0: %q", arch, lineNo+1, line)
+				}
+			}
+		}
+		if !foundRegLine {
+			t.Errorf("qiling_%s did not emit register/stack setup lines inside if target_addr > 0:", arch)
+		}
+	}
+
+	for _, proj := range BuiltinQilingProjects() {
+		cases = append(cases, scriptCase{name: "builtin_" + proj.ID, code: proj.Code})
+	}
+	for _, proj := range BuiltinAngrProjects() {
+		cases = append(cases, scriptCase{name: "builtin_" + proj.ID, code: proj.Code})
+	}
+	cases = append(cases,
+		scriptCase{
+			name: "angr_entry",
+			code: GenerateAngrHarness(GenerateOptions{BinaryPath: "/tmp/bin", FindAddr: "0x401000"}).Code,
+		},
+		scriptCase{
+			name: "angr_call_state",
+			code: GenerateAngrHarness(GenerateOptions{BinaryPath: "/tmp/lib.so", TargetAddr: "0x1200", FindAddr: "0x1300", AvoidAddr: "0x1340"}).Code,
+		},
+	)
+
+	py3, err := exec.LookPath("python3")
+	if err != nil {
+		t.Logf("python3 not found on PATH; skipping py_compile check")
+		return
+	}
+
+	dir := t.TempDir()
+	for i, tc := range cases {
+		scriptPath := filepath.Join(dir, fmt.Sprintf("case_%d.py", i))
+		if err := os.WriteFile(scriptPath, []byte(tc.code), 0644); err != nil {
+			t.Fatalf("write %s: %v", tc.name, err)
+		}
+		cmd := exec.Command(py3, "-m", "py_compile", scriptPath)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s failed python3 -m py_compile: %v\n%s", tc.name, err, string(out))
+		}
 	}
 }

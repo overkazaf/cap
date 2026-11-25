@@ -979,3 +979,135 @@ sleep 30
 		t.Fatalf("expected 0 entries after ClearHistory, got %d", len(remaining))
 	}
 }
+
+func TestHardeningEdgeCases(t *testing.T) {
+	// 1. ParseNmapXML rejects empty and malformed XML cleanly.
+	if _, err := ParseNmapXML(nil); err == nil {
+		t.Fatal("expected empty nmap XML to fail")
+	}
+	if _, err := ParseNmapXML([]byte("   \n\t  ")); err == nil {
+		t.Fatal("expected whitespace-only nmap XML to fail")
+	}
+	if _, err := ParseNmapXML([]byte("<nmaprun><host><broken>")); err == nil {
+		t.Fatal("expected malformed nmap XML to fail")
+	}
+
+	// 2. ProbeSite rejects redirect chains exceeding MaxRedirects (10).
+	redirSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/hop/"))
+		http.Redirect(w, r, fmt.Sprintf("/hop/%d", n+1), http.StatusFound)
+	}))
+	defer redirSrv.Close()
+	if _, err := ProbeSite(context.Background(), redirSrv.URL+"/hop/0", SiteProbeOptions{
+		SkipDiscovery: true,
+		TimeoutMs:     3000,
+	}); err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("expected >10 redirect rejection error, got %v", err)
+	}
+
+	// 3. Fake nmap with IPv6 target passes -6 and handles >64 KiB stderr line cleanly.
+	tmp := t.TempDir()
+	argsFile := filepath.Join(tmp, "ipv6-args.txt")
+	fakeNmap := writeFakeScript(t, tmp, "nmap", fmt.Sprintf(`
+printf '%%s\n' "$@" > %q
+# Emit a >70 KiB stderr line plus a trailing line without newline.
+head -c 72000 /dev/zero | tr '\0' 'X' >&2
+printf '\ntrailing-stderr-line' >&2
+cat <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" version="7.95">
+  <host>
+    <status state="up"/>
+    <address addr="::1" addrtype="ipv6"/>
+    <ports>
+      <port protocol="tcp" portid="8080">
+        <state state="open"/>
+        <service name="http-proxy"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>
+EOF
+`, argsFile))
+
+	var progress []string
+	res, err := RunPortScan(context.Background(), PortScanRequest{
+		Target:    "::1",
+		Engine:    PortScanEngineNmap,
+		Preset:    PresetCustom,
+		PortsSpec: "8080",
+	}, ToolchainConfig{NmapPath: fakeNmap}, func(msg string) {
+		progress = append(progress, msg)
+	})
+	if err != nil {
+		t.Fatalf("RunPortScan IPv6 failed: %v", err)
+	}
+	rawArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read ipv6 args: %v", err)
+	}
+	argv := strings.Fields(string(rawArgs))
+	wantArgv := []string{"-sT", "-T4", "-6", "-p", "8080", "-oX", "-", "--", "::1"}
+	if !slices.Equal(argv, wantArgv) {
+		t.Fatalf("IPv6 nmap argv = %v, want %v", argv, wantArgv)
+	}
+	if res.OpenCount != 1 || len(res.Hosts) != 1 || res.Hosts[0].Address != "::1" {
+		t.Fatalf("unexpected IPv6 nmap result: %+v", res)
+	}
+	if !slices.Contains(progress, "[nmap] trailing-stderr-line") {
+		t.Errorf("expected trailing stderr line to be flushed without race, got %v", progress)
+	}
+
+	// 4. Custom CTEndpoint with percent-encoded query (%25.%s) does not corrupt %25.
+	var gotRawQuery string
+	ctSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"name_value":"ok.pct.test"}]`))
+	}))
+	defer ctSrv.Close()
+
+	subRep, err := EnumerateSubdomains(context.Background(), SubdomainRequest{
+		Domain:     "pct.test",
+		UseCTLog:   true,
+		CTEndpoint: ctSrv.URL + "/?q=%25.%s&output=json",
+	}, ToolchainConfig{})
+	if err != nil {
+		t.Fatalf("EnumerateSubdomains CT template failed: %v", err)
+	}
+	if gotRawQuery != "q=%25.pct.test&output=json" {
+		t.Fatalf("CT endpoint query corrupted: got %q, want %q", gotRawQuery, "q=%25.pct.test&output=json")
+	}
+	if subRep.TotalCount != 1 || subRep.Subdomains[0].Hostname != "ok.pct.test" {
+		t.Fatalf("unexpected CT subdomain report: %+v", subRep)
+	}
+
+	// 5. Manager rejects leading-dot history IDs and IP subdomain jobs synchronously.
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Shutdown()
+
+	for _, badID := range []string{".", "..", ".hidden", ".DS_Store"} {
+		if _, ok := mgr.GetHistory(badID); ok {
+			t.Errorf("GetHistory(%q) unexpectedly succeeded", badID)
+		}
+		if err := mgr.DeleteHistory(badID); err == nil {
+			t.Errorf("DeleteHistory(%q) unexpectedly succeeded", badID)
+		}
+	}
+	if _, err := mgr.StartScanJob(ReconJobRequest{
+		Kind:   JobKindSubdomain,
+		Target: "127.0.0.1",
+	}); err == nil {
+		t.Fatal("expected StartScanJob(subdomain, IP) to fail synchronously")
+	}
+
+	// 6. AnalyzeDomain propagates cancelled context error.
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := AnalyzeDomain(canceledCtx, "127.0.0.1", ToolchainConfig{}); err == nil {
+		t.Fatal("expected AnalyzeDomain to propagate cancelled context error")
+	}
+}

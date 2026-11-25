@@ -299,6 +299,10 @@ func AnalyzeDomain(ctx context.Context, target string, cfg ToolchainConfig) (*Do
 
 	wg.Wait()
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	cdn, waf := DetectCDNAndWAF(report.DNSRecords.CNAME, report.DNSRecords.NS, report.DNSRecords.TXT, host)
 	report.CDNProviders = cdn
 	report.WAFHints = waf
@@ -713,7 +717,7 @@ func InspectTLS(ctx context.Context, host string, port int) (*TLSInspectReport, 
 			intermediates.AddCert(ic)
 		}
 		verifyOpts := x509.VerifyOptions{
-			DNSName:       serverName,
+			DNSName:       normHost,
 			Intermediates: intermediates,
 			CurrentTime:   now,
 		}

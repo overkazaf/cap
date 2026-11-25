@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -251,6 +252,9 @@ func validateJobRequest(kind string, req *ReconJobRequest) (string, error) {
 		dom, _, err := NormalizeDomainTarget(subReq.Domain)
 		if err != nil {
 			return "", err
+		}
+		if net.ParseIP(dom) != nil {
+			return "", fmt.Errorf("recon: subdomain job requires a domain name, got IP %q", dom)
 		}
 		if !strings.Contains(dom, ".") {
 			return "", fmt.Errorf("recon: subdomain job requires a domain name, got %q", dom)
@@ -655,7 +659,7 @@ func nowHistoryTimestamp() string {
 }
 
 func isValidHistoryID(id string) bool {
-	if id == "" || len(id) > 128 || strings.Contains(id, "..") {
+	if id == "" || len(id) > 128 || strings.HasPrefix(id, ".") || strings.Contains(id, "..") {
 		return false
 	}
 	return historyIDSafeRe.MatchString(id)

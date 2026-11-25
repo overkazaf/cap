@@ -1,7 +1,6 @@
 package recon
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -569,6 +568,9 @@ func runNmapScan(
 ) (*PortScanResult, error) {
 	// Strict allowlisted Nmap arguments ONLY — never accepts raw user flags or --script.
 	args := []string{"-sT", "-T4"}
+	if ip := net.ParseIP(target); ip != nil && ip.To4() == nil {
+		args = append(args, "-6")
+	}
 	if skipHostDiscovery {
 		args = append(args, "-Pn")
 	}
@@ -589,43 +591,26 @@ func runNmapScan(
 	var stdoutBuf cappedBuffer
 	stdoutBuf.limit = MaxNmapXMLBytes
 
-	stderrPipe, pipeErr := cmd.StderrPipe()
-	if pipeErr != nil {
-		return nil, fmt.Errorf("recon: nmap stderr pipe: %w", pipeErr)
-	}
-	cmd.Stdout = &stdoutBuf
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("recon: start nmap: %w", err)
-	}
-
-	var stderrLines []string
-	var stderrWG sync.WaitGroup
-	stderrWG.Add(1)
-	go func() {
-		defer stderrWG.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			if len(stderrLines) < 50 {
-				stderrLines = append(stderrLines, line)
-			}
+	stderrWriter := &lineStreamWriter{
+		maxLineBytes: 2048,
+		maxStored:    50,
+		onLine: func(line string) {
 			if onProgress != nil {
 				onProgress("[nmap] " + line)
 			}
-		}
-	}()
+		},
+	}
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = stderrWriter
 
-	waitErr := cmd.Wait()
-	stderrWG.Wait()
+	waitErr := cmd.Run()
+	stderrWriter.Flush()
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
+	stderrLines := stderrWriter.Lines()
 	hosts, xmlSummary, parseErr := parseNmapXMLDetailed(stdoutBuf.Bytes())
 	if parseErr != nil {
 		if waitErr != nil {
@@ -967,4 +952,86 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// lineStreamWriter is a bounded, line-oriented io.Writer that safely streams
+// subprocess stderr lines to a callback without size-limited bufio.Scanner
+// failures or StderrPipe/cmd.Wait race hazards.
+type lineStreamWriter struct {
+	mu           sync.Mutex
+	buf          []byte
+	maxLineBytes int
+	maxStored    int
+	lines        []string
+	onLine       func(string)
+}
+
+func (w *lineStreamWriter) Write(p []byte) (int, error) {
+	origLen := len(p)
+	var emit []string
+
+	w.mu.Lock()
+	for len(p) > 0 {
+		idx := bytes.IndexByte(p, '\n')
+		if idx < 0 {
+			w.appendBoundedLocked(p)
+			break
+		}
+		w.appendBoundedLocked(p[:idx])
+		if line := w.takeLineLocked(); line != "" {
+			emit = append(emit, line)
+		}
+		p = p[idx+1:]
+	}
+	onLine := w.onLine
+	w.mu.Unlock()
+
+	if onLine != nil {
+		for _, line := range emit {
+			onLine(line)
+		}
+	}
+	return origLen, nil
+}
+
+func (w *lineStreamWriter) Flush() {
+	w.mu.Lock()
+	line := w.takeLineLocked()
+	onLine := w.onLine
+	w.mu.Unlock()
+	if line != "" && onLine != nil {
+		onLine(line)
+	}
+}
+
+func (w *lineStreamWriter) Lines() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.lines...)
+}
+
+func (w *lineStreamWriter) appendBoundedLocked(chunk []byte) {
+	limit := w.maxLineBytes
+	if limit <= 0 {
+		limit = 2048
+	}
+	rem := limit - len(w.buf)
+	if rem > 0 {
+		if len(chunk) > rem {
+			chunk = chunk[:rem]
+		}
+		w.buf = append(w.buf, chunk...)
+	}
+}
+
+func (w *lineStreamWriter) takeLineLocked() string {
+	line := strings.TrimSpace(string(w.buf))
+	w.buf = w.buf[:0]
+	if line == "" {
+		return ""
+	}
+	if w.maxStored > 0 && len(w.lines) < w.maxStored {
+		w.lines = append(w.lines, line)
+	}
+	return line
 }

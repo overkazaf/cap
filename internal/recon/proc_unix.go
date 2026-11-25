@@ -18,7 +18,7 @@ func configureProcGroup(cmd *exec.Cmd) {
 }
 
 func killProcGroup(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
 		return nil
 	}
 	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)

@@ -986,13 +986,22 @@ func runDiscoveryProbes(
 
 	wg.Wait()
 
-	// If /sitemap.xml was missing but robots.txt declared a same-origin Sitemap URL, probe the first one.
-	if len(sitemapURLs) == 0 && len(robotsSitemaps) > 0 {
+	// If /sitemap.xml was missing but robots.txt declared a same-origin HTTP/HTTPS Sitemap URL, probe up to 3.
+	if len(sitemapURLs) == 0 && len(robotsSitemaps) > 0 && ctx.Err() == nil {
+		probed := 0
 		for _, sm := range robotsSitemaps {
+			if ctx.Err() != nil || probed >= 3 {
+				break
+			}
 			smU, pErr := url.Parse(sm)
-			if pErr != nil || !strings.EqualFold(smU.Host, u.Host) {
+			if pErr != nil || smU == nil {
 				continue
 			}
+			scheme := strings.ToLower(smU.Scheme)
+			if (scheme != "http" && scheme != "https") || !strings.EqualFold(smU.Host, u.Host) {
+				continue
+			}
+			probed++
 			st, _, data, fErr := fetchSmall(sm, MaxHTTPBodyBytes)
 			if fErr == nil && st == http.StatusOK && len(data) > 0 {
 				locs := parseSitemapXML(data, MaxSitemapSamples)

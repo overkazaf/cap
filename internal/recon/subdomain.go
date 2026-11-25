@@ -416,7 +416,7 @@ func queryCTLog(ctx context.Context, domain, endpointOverride string) ([]string,
 	if ep == "" {
 		ep = fmt.Sprintf("https://crt.sh/?q=%%25.%s&output=json", url.QueryEscape(domain))
 	} else if strings.Contains(ep, "%s") {
-		ep = fmt.Sprintf(ep, url.QueryEscape(domain))
+		ep = strings.ReplaceAll(ep, "%s", url.QueryEscape(domain))
 	}
 
 	u, err := url.Parse(ep)

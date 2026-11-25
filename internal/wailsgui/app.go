@@ -89,8 +89,10 @@ type App struct {
 	reconMgr     *recon.Manager
 	aiMgr        *ai.Manager
 
+	aiHealOpMu   sync.Mutex
 	aiHealMu     sync.Mutex
 	aiHealCancel context.CancelFunc
+	aiHealDone   chan struct{}
 	aiHealSeq    uint64
 }
 
@@ -178,11 +180,14 @@ func NewApp(st store.Store) *App {
 }
 
 func (a *App) Startup(ctx context.Context) {
+	a.mu.Lock()
 	a.ctx = ctx
+	certDir := a.certDir
+	a.mu.Unlock()
 	a.events.SetEmitter(func(event string, data ...interface{}) {
 		runtime.EventsEmit(ctx, event, data...)
 	})
-	proxy.EnsureCA(a.certDir)
+	proxy.EnsureCA(certDir)
 }
 
 func (a *App) Shutdown(ctx context.Context) {

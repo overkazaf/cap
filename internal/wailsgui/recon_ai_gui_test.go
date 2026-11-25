@@ -478,7 +478,13 @@ func TestAIGUIBindingsAndConfigAllowlist(t *testing.T) {
 		t.Fatalf("expected Chinese locale prompt when app locale=zh-CN, got:\n%s", sysMsg)
 	}
 
-	// ApplyAIConfigChanges strict allowlist enforcement
+	// Ensure retoolsMgr is already initialized before ApplyAIConfigChanges so we verify live propagation.
+	reMgr, err := app.ensureRetoolsManager()
+	if err != nil {
+		t.Fatalf("ensureRetoolsManager: %v", err)
+	}
+
+	// ApplyAIConfigChanges strict allowlist enforcement + live propagation into retoolsMgr
 	applied, err := app.ApplyAIConfigChanges(map[string]string{
 		"re_python_path":     "/opt/venv/bin/python3",
 		"gateway_addr":       "127.0.0.1:9191",
@@ -501,6 +507,9 @@ func TestAIGUIBindingsAndConfigAllowlist(t *testing.T) {
 	}
 	if got := app.GetSetting("re_python_path"); got != "/opt/venv/bin/python3" {
 		t.Fatalf("re_python_path = %q", got)
+	}
+	if got := reMgr.GetToolchainConfig().PythonPath; got != "/opt/venv/bin/python3" {
+		t.Fatalf("retoolsMgr live PythonPath = %q, want /opt/venv/bin/python3", got)
 	}
 	if got := app.GetSetting("theme"); got != "dark" {
 		t.Fatalf("disallowed theme setting should remain dark, got %q", got)
@@ -688,12 +697,61 @@ func TestRunREJobWithAutoHealAndCancelHermetic(t *testing.T) {
 		t.Fatal("timed out waiting for CancelAIAutoHeal to terminate auto-heal loop")
 	}
 
-	// Ensure aiHealCancel was cleaned up via defer.
+	// 3. Concurrent/overlapping RunREJobWithAutoHeal: Call 2 supersedes sleeping Call 1
+	// and completes with StopReasonHealed without Call 1 killing Call 2's RE job.
+	call1Done := make(chan struct {
+		res *ai.AutoHealRunResult
+		err error
+	}, 1)
+	go func() {
+		r, e := app.RunREJobWithAutoHeal(retools.RunJobRequest{
+			Engine: retools.EngineQiling,
+			Code:   "# SLEEP_LONG\nprint('call1')\n",
+		}, 2, "en")
+		call1Done <- struct {
+			res *ai.AutoHealRunResult
+			err error
+		}{res: r, err: e}
+	}()
+
+	waitCall1 := time.Now().Add(3 * time.Second)
+	for time.Now().Before(waitCall1) {
+		if st := app.GetREJobState(); st != nil && st.Running {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	call2Res, err := app.RunREJobWithAutoHeal(retools.RunJobRequest{
+		Engine: retools.EngineQiling,
+		Code:   "print(BROKEN_SYM)\n",
+	}, 3, "en")
+	if err != nil {
+		t.Fatalf("overlapping Call 2 RunREJobWithAutoHeal: %v", err)
+	}
+	if !call2Res.Healed || call2Res.StopReason != ai.StopReasonHealed || call2Res.FinalExitCode != 0 {
+		t.Fatalf("expected Call 2 to heal cleanly after superseding Call 1, got %+v", call2Res)
+	}
+
+	select {
+	case c1 := <-call1Done:
+		if c1.err != nil {
+			t.Fatalf("superseded Call 1 returned unexpected error: %v", c1.err)
+		}
+		if c1.res == nil || c1.res.StopReason != ai.StopReasonCancelled {
+			t.Fatalf("expected superseded Call 1 StopReasonCancelled, got %+v", c1.res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for superseded Call 1 to finish")
+	}
+
+	// Ensure aiHealCancel and aiHealDone were cleaned up via defer.
 	app.aiHealMu.Lock()
 	hasCancel := app.aiHealCancel != nil
+	hasDone := app.aiHealDone != nil
 	app.aiHealMu.Unlock()
-	if hasCancel {
-		t.Fatal("expected aiHealCancel to be nil after RunREJobWithAutoHeal returns")
+	if hasCancel || hasDone {
+		t.Fatalf("expected aiHealCancel/aiHealDone to be nil after RunREJobWithAutoHeal returns (cancel=%v done=%v)", hasCancel, hasDone)
 	}
 	_ = fmt.Sprintf("verified %d heal events", len(phases))
 }

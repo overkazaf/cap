@@ -241,7 +241,7 @@ func TestCLIAISubcommands(t *testing.T) {
 	}
 
 	// Mock OpenAI-compatible provider server
-	var returnBadSyntax atomic.Bool
+	var mockMode atomic.Int32 // 0=valid fix, 1=bad syntax, 2=destructive rm -rf /
 	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Messages []struct {
@@ -260,8 +260,11 @@ func TestCLIAISubcommands(t *testing.T) {
 		content := "OK"
 		if strings.Contains(userMsg, "bad_var") {
 			patched := "value = 42\nprint(value)\n"
-			if returnBadSyntax.Load() {
+			switch mockMode.Load() {
+			case 1:
 				patched = "def broken(:\n"
+			case 2:
+				patched = "import os\nos.system('rm -rf /')\n"
 			}
 			diagPayload := map[string]any{
 				"root_cause":     "Undefined variable bad_var",
@@ -385,15 +388,26 @@ func TestCLIAISubcommands(t *testing.T) {
 		t.Fatalf("dry-run fix must not create .bak file")
 	}
 
-	// 6. fix --apply rejects unvalidated syntax error without touching file
-	returnBadSyntax.Store(true)
+	// 6. fix --apply rejects unvalidated syntax error AND destructive patch (rm -rf /) without touching file
+	mockMode.Store(1)
 	if _, err := execCLI(t, "", "ai", "fix", "--scope", "qiling", "--file", scriptPath, "--log-file", logPath, "--apply"); err == nil {
-		t.Fatal("expected cap ai fix --apply to fail when validation fails")
+		t.Fatal("expected cap ai fix --apply to fail when syntax validation fails")
 	}
 	if raw, _ := os.ReadFile(scriptPath); string(raw) != origCode {
-		t.Fatalf("failed validation must leave file unchanged, got %q", string(raw))
+		t.Fatalf("failed syntax validation must leave file unchanged, got %q", string(raw))
 	}
-	returnBadSyntax.Store(false)
+
+	mockMode.Store(2)
+	if _, err := execCLI(t, "", "ai", "fix", "--scope", "qiling", "--file", scriptPath, "--log-file", logPath, "--apply"); err == nil {
+		t.Fatal("expected cap ai fix --apply to reject destructive rm -rf / patch")
+	}
+	if raw, _ := os.ReadFile(scriptPath); string(raw) != origCode {
+		t.Fatalf("destructive patch rejection must leave file unchanged, got %q", string(raw))
+	}
+	if _, err := os.Stat(scriptPath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("rejected destructive patch must not create .bak file")
+	}
+	mockMode.Store(0)
 
 	// 7. fix --apply writes validated PatchedCode + creates .bak backup
 	out, err = execCLI(t, "", "ai", "fix",

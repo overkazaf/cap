@@ -28,8 +28,11 @@ func isReconToolchainSettingKey(key string) bool {
 }
 
 func (a *App) appBaseContext() context.Context {
-	if a.ctx != nil {
-		return a.ctx
+	a.mu.Lock()
+	ctx := a.ctx
+	a.mu.Unlock()
+	if ctx != nil {
+		return ctx
 	}
 	return context.Background()
 }

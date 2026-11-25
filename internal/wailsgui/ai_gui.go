@@ -289,27 +289,46 @@ func (a *App) RunREJobWithAutoHeal(req retools.RunJobRequest, maxRetries int, lo
 		Locale:   locale,
 	}
 
-	// Cancel any prior active auto-heal loop and register our cancellable context.
+	// Serialize cancel-previous + register-new transitions so any superseded
+	// auto-heal loop fully unwinds before the next loop launches a new RE job
+	// or emits EventAIHeal.
 	ctx, cancel := context.WithCancel(a.appBaseContext())
+	myDone := make(chan struct{})
+
+	a.aiHealOpMu.Lock()
 	a.aiHealMu.Lock()
 	prevCancel := a.aiHealCancel
-	a.aiHealSeq++
-	mySeq := a.aiHealSeq
-	a.aiHealCancel = cancel
+	prevDone := a.aiHealDone
 	a.aiHealMu.Unlock()
 
 	if prevCancel != nil {
 		prevCancel()
 		_ = retoolsMgr.CancelJob()
 	}
+	if prevDone != nil {
+		select {
+		case <-prevDone:
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	a.aiHealMu.Lock()
+	a.aiHealSeq++
+	mySeq := a.aiHealSeq
+	a.aiHealCancel = cancel
+	a.aiHealDone = myDone
+	a.aiHealMu.Unlock()
+	a.aiHealOpMu.Unlock()
 
 	defer func() {
 		cancel()
 		a.aiHealMu.Lock()
 		if a.aiHealSeq == mySeq {
 			a.aiHealCancel = nil
+			a.aiHealDone = nil
 		}
 		a.aiHealMu.Unlock()
+		close(myDone)
 	}()
 
 	runner := func(rctx context.Context, code string) (int, string, error) {
@@ -318,19 +337,29 @@ func (a *App) RunREJobWithAutoHeal(req retools.RunJobRequest, maxRetries int, lo
 		}
 		runReq := req
 		runReq.Code = code
-		if _, err := retoolsMgr.StartJob(runReq); err != nil {
+		started, err := retoolsMgr.StartJob(runReq)
+		if err != nil {
 			return -1, "", err
 		}
 		st, waitErr := retoolsMgr.WaitJob(rctx)
 		if waitErr != nil {
-			_ = retoolsMgr.CancelJob()
-			st = retoolsMgr.GetJobState()
-			logs := collectREJobLogs(st)
+			if cur := retoolsMgr.GetJobState(); cur != nil && started != nil && cur.ID == started.ID && cur.Running {
+				_ = retoolsMgr.CancelJob()
+			}
+			cur := retoolsMgr.GetJobState()
+			logs := ""
 			exitCode := -1
-			if st != nil && st.ExitCode != 0 {
-				exitCode = st.ExitCode
+			if cur != nil && (started == nil || cur.ID == started.ID) {
+				logs = collectREJobLogs(cur)
+				if cur.ExitCode != 0 {
+					exitCode = cur.ExitCode
+				}
 			}
 			return exitCode, logs, waitErr
+		}
+		if st != nil && started != nil && st.ID != started.ID {
+			cancel()
+			return -1, "", context.Canceled
 		}
 		logs := collectREJobLogs(st)
 		if st == nil {
@@ -357,7 +386,13 @@ func (a *App) RunREJobWithAutoHeal(req retools.RunJobRequest, maxRetries int, lo
 	}
 
 	onEvent := func(ev ai.AutoHealEvent) {
-		if a.events != nil {
+		if a.events == nil {
+			return
+		}
+		a.aiHealMu.Lock()
+		isCurrent := a.aiHealSeq == mySeq
+		a.aiHealMu.Unlock()
+		if isCurrent {
 			a.events.Emit(EventAIHeal, ev)
 		}
 	}
@@ -365,10 +400,12 @@ func (a *App) RunREJobWithAutoHeal(req retools.RunJobRequest, maxRetries int, lo
 	return aiMgr.RunAutoHealLoop(ctx, diagReq, maxRetries, runner, onEvent)
 }
 
-// CancelAIAutoHeal cancels any active AI auto-heal loop and terminates any active RE job.
+// CancelAIAutoHeal cancels any active AI auto-heal loop, terminates any active RE job,
+// and waits briefly for the auto-heal loop goroutine to unwind cleanly.
 func (a *App) CancelAIAutoHeal() error {
 	a.aiHealMu.Lock()
 	cancel := a.aiHealCancel
+	done := a.aiHealDone
 	a.aiHealCancel = nil
 	a.aiHealMu.Unlock()
 
@@ -379,10 +416,18 @@ func (a *App) CancelAIAutoHeal() error {
 	a.mu.Lock()
 	retoolsMgr := a.retoolsMgr
 	a.mu.Unlock()
+	var cancelErr error
 	if retoolsMgr != nil {
-		return retoolsMgr.CancelJob()
+		cancelErr = retoolsMgr.CancelJob()
 	}
-	return nil
+
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	}
+	return cancelErr
 }
 
 // ComputeTextUnifiedDiff computes a pure-Go LCS unified diff between oldText and newText.

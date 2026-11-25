@@ -247,7 +247,7 @@ func ValidateR2Command(r2Cmd string) error {
 			return fmt.Errorf("r2 command must be a single line without control characters")
 		}
 	}
-	for _, forbidden := range []string{"!", "`", "|", ">", "<", "\"", "'", "&", "$", "%", "\\", "(", ")", "{", "}", "="} {
+	for _, forbidden := range []string{"!", "`", "|", ">", "<", "\"", "'", "&", "$", "%", "\\", "(", ")", "{", "}", "=", "#", "@@", "@F:", "@f:", "@c:", "@k:"} {
 		if strings.Contains(trimmed, forbidden) {
 			return fmt.Errorf("unsafe r2 command rejected: contains forbidden token %q", forbidden)
 		}
@@ -321,13 +321,13 @@ func RunR2Command(ctx context.Context, binaryPath, r2Cmd, r2Path string) (*R2Com
 	defer cancel()
 
 	started := time.Now()
-	// Enable cfg.sandbox=true inside -c so r2 can open binaryPath read-only first,
-	// then lock down the session before executing the validated user command.
-	sandboxedCmd := "e cfg.sandbox=true; " + strings.TrimSpace(r2Cmd)
+	// Enable cfg.sandbox=true in its own preceding -c argument so r2 opens
+	// binaryPath read-only first, then latches sandbox mode before parsing r2Cmd.
 	cmd := exec.CommandContext(runCtx, resolvedR2,
 		"-q",
 		"-e", "scr.color=0",
-		"-c", sandboxedCmd,
+		"-c", "e cfg.sandbox=true",
+		"-c", strings.TrimSpace(r2Cmd),
 		binaryPath,
 	)
 	configureProcGroup(cmd)

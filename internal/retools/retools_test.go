@@ -1664,3 +1664,219 @@ exit 0
 		t.Fatalf("expected mvn skipped on M2 run 2 cache hit (count=2), got %d", lines)
 	}
 }
+
+func TestAuditFixesConcurrencyEnvOverridesSymlinksAndR2Sandbox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlinks and shell scripts required")
+	}
+
+	dir := t.TempDir()
+
+	// 1a. Concurrent saveCachedClasspath writers must not race or corrupt the cache file.
+	cacheFile := filepath.Join(dir, "cache", "unidbg-cp-concurrent.txt")
+	jarA := filepath.Join(dir, "a.jar")
+	jarB := filepath.Join(dir, "b.jar")
+	_ = os.WriteFile(jarA, []byte("a"), 0644)
+	_ = os.WriteFile(jarB, []byte("b"), 0644)
+	payloadA := jarA + string(os.PathListSeparator) + jarB
+	payloadB := jarB + string(os.PathListSeparator) + jarA
+	var saveWG sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		saveWG.Add(1)
+		go func(idx int) {
+			defer saveWG.Done()
+			for j := 0; j < 20; j++ {
+				if (idx+j)%2 == 0 {
+					saveCachedClasspath(cacheFile, payloadA)
+				} else {
+					saveCachedClasspath(cacheFile, payloadB)
+				}
+			}
+		}(i)
+	}
+	saveWG.Wait()
+	loaded, ok := loadValidCachedClasspath(cacheFile)
+	if !ok || (loaded != payloadA && loaded != payloadB) {
+		t.Fatalf("concurrent saveCachedClasspath corrupted cache: ok=%v got=%q", ok, loaded)
+	}
+	// Missing jar invalidates cached classpath cleanly.
+	_ = os.Remove(jarB)
+	if _, ok := loadValidCachedClasspath(cacheFile); ok {
+		t.Fatalf("expected loadValidCachedClasspath to invalidate when a cached jar is removed")
+	}
+
+	// 1b. Multi-module cache hit must NOT skip mvn when compiled module targets were cleaned (`mvn clean`).
+	cleanRepo := filepath.Join(dir, "clean-repo")
+	if err := os.MkdirAll(filepath.Join(cleanRepo, "unidbg-android"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(cleanRepo, "pom.xml"), []byte(`<project><artifactId>unidbg</artifactId><version>0.9.9</version></project>`), 0644)
+	_ = os.WriteFile(filepath.Join(cleanRepo, "unidbg-android", "pom.xml"), []byte(`<project><artifactId>unidbg-android</artifactId><version>0.9.9</version></project>`), 0644)
+	jdkHome := filepath.Join(dir, "jdk17")
+	jdkBin := filepath.Join(jdkHome, "bin")
+	if err := os.MkdirAll(jdkBin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fakeJava := writeFakeExec(t, jdkBin, "java", `echo 'openjdk version "17.0.7"' >&2`)
+	fakeJavac := writeFakeExec(t, jdkBin, "javac", `echo 'javac 17.0.7'`)
+	fakeMvn := writeFakeExec(t, jdkBin, "mvn", `echo 'Apache Maven 3.9.9'`)
+	capDir := filepath.Join(dir, "cap-clean")
+	cleanTC := ToolchainInfo{
+		Java:       ToolStatus{Name: "java", Ready: true, Path: fakeJava, Version: "17.0.7"},
+		JavaHome:   jdkHome,
+		JavacPath:  fakeJavac,
+		Mvn:        ToolStatus{Name: "mvn", Ready: true, Path: fakeMvn, Version: "3.9.9"},
+		Unidbg:     ToolStatus{Name: "unidbg", Ready: true, Path: cleanRepo, Version: "0.9.9"},
+		UnidbgMode: UnidbgModeMavenRepo,
+	}
+	// Pre-populate a valid cache file referencing jarA (which still exists), while cleanRepo has NO target/classes.
+	rootPom := filepath.Join(cleanRepo, "pom.xml")
+	androidPom := filepath.Join(cleanRepo, "unidbg-android", "pom.xml")
+	preCache := unidbgClasspathCachePath(capDir, "maven-repo", androidPom, statSignature(androidPom), jdkHome, fakeJava, rootPom, statSignature(rootPom))
+	saveCachedClasspath(preCache, jarA)
+	plan, err := prepareJobPlan(RunJobRequest{
+		Engine: EngineUnidbg,
+		Code:   "public class CleanTest { public static void main(String[] a) {} }",
+	}, cleanTC, capDir)
+	if err != nil {
+		t.Fatalf("prepareJobPlan on cleaned multi-module repo failed: %v", err)
+	}
+	defer cleanupPaths(plan.tempPaths)
+	if len(plan.steps) != 3 || plan.steps[0].label != "mvn-classpath" {
+		t.Fatalf("expected mvn-classpath step when multi-module target classes are absent after mvn clean; got steps=%d (%q)", len(plan.steps), plan.displayCmd)
+	}
+
+	// 2. buildJobEnv + prependPathEnv produce zero duplicate JAVA_HOME/PATH/CAP_RE_* entries even with req.Env overrides.
+	t.Setenv("CAP_RE_SYMBOL", "old_sym")
+	t.Setenv("JAVA_HOME", "/old/jre")
+	unidbgPlan, err := prepareJobPlan(RunJobRequest{
+		Engine:       EngineUnidbg,
+		Code:         "public class EnvTest { public static void main(String[] a) {} }",
+		TargetSymbol: "new_sym",
+		Env: map[string]string{
+			"PATH":       "/custom/req/bin:/usr/bin",
+			"JAVA_HOME":  "/wrong/req/jre",
+			"BAD=KEY":    "ignored",
+			"CUSTOM_VAR": "ok",
+		},
+	}, ToolchainInfo{
+		Java:       ToolStatus{Name: "java", Ready: true, Path: fakeJava, Version: "17.0.7"},
+		JavaHome:   jdkHome,
+		JavacPath:  fakeJavac,
+		Unidbg:     ToolStatus{Name: "unidbg", Ready: true, Path: jarA},
+		UnidbgMode: UnidbgModeFatJar,
+		UnidbgJars: []string{jarA},
+	}, capDir)
+	if err != nil {
+		t.Fatalf("prepareJobPlan env test failed: %v", err)
+	}
+	defer cleanupPaths(unidbgPlan.tempPaths)
+	stepEnv := unidbgPlan.steps[0].env
+	countKey := func(k string) (cnt int, val string) {
+		p := k + "="
+		for _, kv := range stepEnv {
+			if strings.HasPrefix(kv, p) {
+				cnt++
+				val = strings.TrimPrefix(kv, p)
+			}
+		}
+		return cnt, val
+	}
+	if cnt, val := countKey("JAVA_HOME"); cnt != 1 || val != jdkHome {
+		t.Fatalf("JAVA_HOME dup/mismatch: cnt=%d val=%q want=%q", cnt, val, jdkHome)
+	}
+	if cnt, val := countKey("PATH"); cnt != 1 || !strings.HasPrefix(val, jdkBin+string(os.PathListSeparator)+"/custom/req/bin") {
+		t.Fatalf("PATH dup/mismatch: cnt=%d val=%q", cnt, val)
+	}
+	if cnt, val := countKey("CAP_RE_SYMBOL"); cnt != 1 || val != "new_sym" {
+		t.Fatalf("CAP_RE_SYMBOL dup/mismatch: cnt=%d val=%q", cnt, val)
+	}
+	if cnt, _ := countKey("BAD"); cnt != 0 {
+		t.Fatalf("invalid key containing '=' should be ignored")
+	}
+	// Also test prependPathEnv directly collapsing duplicate PATH entries.
+	collapsed := prependPathEnv([]string{"PATH=/first", "FOO=1", "PATH=/second"}, "/jdk/bin")
+	pathCount := 0
+	pathVal := ""
+	for _, kv := range collapsed {
+		if strings.HasPrefix(kv, "PATH=") {
+			pathCount++
+			pathVal = strings.TrimPrefix(kv, "PATH=")
+		}
+	}
+	if pathCount != 1 || pathVal != "/jdk/bin"+string(os.PathListSeparator)+"/second" {
+		t.Fatalf("prependPathEnv failed to collapse duplicate PATH entries: count=%d val=%q", pathCount, pathVal)
+	}
+
+	// 3. Broken explicit QilingPythonPath / AngrPythonPath must fail with engine error instead of exec'ing broken path.
+	goodPy := writeFakeExec(t, jdkBin, "python3", "echo PY=3.12.0\necho QILING=\necho ANGR=")
+	badOverrideTC := ToolchainInfo{
+		Python: ToolStatus{Name: "python3", Ready: true, Path: goodPy, Version: "3.12.0"},
+		Qiling: ToolStatus{Name: "qiling", Ready: false, Path: filepath.Join(dir, "no-such-qiling-py"), Issue: "Qiling python3 not working at configured path"},
+		Angr:   ToolStatus{Name: "angr", Ready: false, Path: filepath.Join(dir, "no-such-angr-py"), Issue: "angr python3 not working at configured path"},
+	}
+	if _, err := prepareJobPlan(RunJobRequest{Engine: EngineQiling, Code: "print(1)"}, badOverrideTC, capDir); err == nil || !strings.Contains(err.Error(), "Qiling python3 not working") {
+		t.Fatalf("expected error for broken QilingPythonPath override, got: %v", err)
+	}
+	if _, err := prepareJobPlan(RunJobRequest{Engine: EngineAngr, Code: "print(1)"}, badOverrideTC, capDir); err == nil || !strings.Contains(err.Error(), "angr python3 not working") {
+		t.Fatalf("expected error for broken AngrPythonPath override, got: %v", err)
+	}
+
+	// 4. Symlink deriveJavaHome resolves through symlinked bin dirs when parent is generic (or via EvalSymlinks).
+	realJDKHome := filepath.Join(dir, "real-openjdk-17", "Contents", "Home")
+	if err := os.MkdirAll(filepath.Join(realJDKHome, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	realJava := writeFakeExec(t, filepath.Join(realJDKHome, "bin"), "java", `echo 'openjdk version "17.0.9"' >&2`)
+	// Put symlink directly inside a non-bin dir so direct homeFromBin returns "" and EvalSymlinks resolves to realJDKHome.
+	symlinkDir := filepath.Join(dir, "flat-links")
+	if err := os.MkdirAll(symlinkDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkJava := filepath.Join(symlinkDir, "java")
+	if err := os.Symlink(realJava, linkJava); err != nil {
+		t.Fatal(err)
+	}
+	wantRealHome, err := filepath.EvalSymlinks(realJDKHome)
+	if err != nil {
+		wantRealHome = realJDKHome
+	}
+	if gotHome := deriveJavaHome(linkJava); gotHome != wantRealHome {
+		t.Fatalf("deriveJavaHome(symlink) = %q, want %q", gotHome, wantRealHome)
+	}
+
+	// 5. ValidateR2Command rejects @@, @F:/@f:/@c:/@k:, and #; EngineRadare2 job uses separate -c flags.
+	for _, bad := range []string{
+		"pdf @@ sym.*",
+		"px 16 @F:/etc/passwd",
+		"px 16 @f:/etc/passwd",
+		"px 16 @c:wx 90",
+		"px 16 @k:foo",
+		"ij # comment",
+	} {
+		if err := ValidateR2Command(bad); err == nil {
+			t.Errorf("expected ValidateR2Command to reject %q", bad)
+		}
+	}
+	r2Plan, err := prepareJobPlan(RunJobRequest{
+		Engine:     EngineRadare2,
+		BinaryPath: jarA,
+		R2Command:  "ij; aflj",
+	}, ToolchainInfo{
+		R2: ToolStatus{Name: "r2", Ready: true, Path: "/usr/local/bin/r2"},
+	}, capDir)
+	if err != nil {
+		t.Fatalf("prepareJobPlan(radare2): %v", err)
+	}
+	r2Args := r2Plan.steps[0].args
+	foundTwoC := false
+	for i := 0; i+3 < len(r2Args); i++ {
+		if r2Args[i] == "-c" && r2Args[i+1] == "e cfg.sandbox=true" && r2Args[i+2] == "-c" && r2Args[i+3] == "ij; aflj" {
+			foundTwoC = true
+			break
+		}
+	}
+	if !foundTwoC {
+		t.Fatalf("expected two separate -c args for sandbox isolation, got %v", r2Args)
+	}
+}

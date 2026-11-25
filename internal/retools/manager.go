@@ -643,20 +643,22 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo, capDir string) (*jobPla
 		if strings.TrimSpace(req.Code) == "" {
 			return nil, fmt.Errorf("%s script code is required", req.Engine)
 		}
-		var pyPath string
-		var pyReady bool
-		var pyIssue string
+		var engStatus ToolStatus
 		if req.Engine == EngineQiling {
-			pyPath = firstNonEmpty(tc.Qiling.Path, tc.Python.Path)
-			pyReady = (tc.Qiling.Ready && tc.Qiling.Path != "") || (tc.Python.Ready && tc.Python.Path != "")
-			pyIssue = firstNonEmpty(tc.Qiling.Issue, tc.Python.Issue)
+			engStatus = tc.Qiling
 		} else {
-			pyPath = firstNonEmpty(tc.Angr.Path, tc.Python.Path)
-			pyReady = (tc.Angr.Ready && tc.Angr.Path != "") || (tc.Python.Ready && tc.Python.Path != "")
-			pyIssue = firstNonEmpty(tc.Angr.Issue, tc.Python.Issue)
+			engStatus = tc.Angr
 		}
-		if !pyReady || pyPath == "" {
-			return nil, fmt.Errorf("Python 3 runtime for %s not available (%s)", req.Engine, pyIssue)
+		var pyPath string
+		switch {
+		case engStatus.Ready && engStatus.Path != "":
+			pyPath = engStatus.Path
+		case engStatus.Path != "" && engStatus.Path != tc.Python.Path:
+			return nil, fmt.Errorf("Python 3 runtime for %s not available (%s)", req.Engine, firstNonEmpty(engStatus.Issue, tc.Python.Issue))
+		case tc.Python.Ready && tc.Python.Path != "":
+			pyPath = tc.Python.Path
+		default:
+			return nil, fmt.Errorf("Python 3 runtime for %s not available (%s)", req.Engine, firstNonEmpty(engStatus.Issue, tc.Python.Issue))
 		}
 		tmpFile, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("cap-%s-*.py", req.Engine))
 		if err != nil {
@@ -702,7 +704,7 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo, capDir string) (*jobPla
 		if !tc.R2.Ready || tc.R2.Path == "" {
 			return nil, fmt.Errorf("radare2 (r2) not available (%s)", tc.R2.Issue)
 		}
-		args := []string{"-q", "-e", "scr.color=0", "-c", "e cfg.sandbox=true; " + r2Cmd, binPath}
+		args := []string{"-q", "-e", "scr.color=0", "-c", "e cfg.sandbox=true", "-c", r2Cmd, binPath}
 		return &jobPlan{
 			steps: []jobStep{
 				{
@@ -844,7 +846,9 @@ func prepareJobPlan(req RunJobRequest, tc ToolchainInfo, capDir string) (*jobPla
 			}
 
 			// Fast path: cache hit where every cached classpath entry exists on disk -> skip mvn!
-			if cachedRaw, ok := loadValidCachedClasspath(cacheFile); ok {
+			// For multi-module repos, also verify compiled module targets still exist (prevents stale
+			// cache hit after `mvn clean`).
+			if cachedRaw, ok := loadValidCachedClasspath(cacheFile); ok && (!isMultiModule || len(collectUnidbgModuleTargets(tc.Unidbg.Path, pomDir)) > 0) {
 				cp, err := assembleCP(cachedRaw)
 				if err == nil {
 					runCP := outDir + string(os.PathListSeparator) + cp
@@ -1244,12 +1248,33 @@ func saveCachedClasspath(cacheFile, content string) {
 	if strings.TrimSpace(cacheFile) == "" || strings.TrimSpace(content) == "" {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(cacheFile), 0755); err != nil {
+	dir := filepath.Dir(cacheFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return
 	}
-	tmp := cacheFile + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strings.TrimSpace(content)), 0644); err == nil {
-		_ = os.Rename(tmp, cacheFile)
+	f, err := os.CreateTemp(dir, filepath.Base(cacheFile)+".*.tmp")
+	if err != nil {
+		return
+	}
+	tmpName := f.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := f.WriteString(strings.TrimSpace(content)); err != nil {
+		_ = f.Close()
+		return
+	}
+	if err := f.Close(); err != nil {
+		return
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		return
+	}
+	if err := os.Rename(tmpName, cacheFile); err == nil {
+		cleanup = false
 	}
 }
 
@@ -1279,18 +1304,21 @@ func prependPathEnv(env []string, dir string) []string {
 		return env
 	}
 	sep := string(os.PathListSeparator)
-	for i, kv := range env {
+	effective := ""
+	hasPath := false
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
 		if strings.HasPrefix(kv, "PATH=") {
-			cur := strings.TrimPrefix(kv, "PATH=")
-			if cur == "" {
-				env[i] = "PATH=" + dir
-			} else {
-				env[i] = "PATH=" + dir + sep + cur
-			}
-			return env
+			effective = strings.TrimPrefix(kv, "PATH=")
+			hasPath = true
+			continue
 		}
+		out = append(out, kv)
 	}
-	return append(env, "PATH="+dir)
+	if !hasPath || effective == "" {
+		return append(out, "PATH="+dir)
+	}
+	return append(out, "PATH="+dir+sep+effective)
 }
 
 func xmlEscapeText(s string) string {
@@ -1308,7 +1336,7 @@ func buildJobEnv(req RunJobRequest, tc ToolchainInfo) []string {
 	env := os.Environ()
 	add := func(k, v string) {
 		if strings.TrimSpace(v) != "" {
-			env = append(env, k+"="+v)
+			env = setEnvVar(env, k, v)
 		}
 	}
 	binPath := strings.TrimSpace(req.BinaryPath)
@@ -1328,8 +1356,9 @@ func buildJobEnv(req RunJobRequest, tc ToolchainInfo) []string {
 	add("CAP_RE_FIND_ADDR", req.FindAddr)
 	add("CAP_RE_AVOID_ADDR", req.AvoidAddr)
 	for k, v := range req.Env {
-		if strings.TrimSpace(k) != "" {
-			env = append(env, k+"="+v)
+		key := strings.TrimSpace(k)
+		if key != "" && !strings.Contains(key, "=") {
+			env = setEnvVar(env, key, v)
 		}
 	}
 	return env

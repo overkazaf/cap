@@ -229,14 +229,24 @@ func probeJavaToolchain(preferred string, info *ToolchainInfo) {
 				info.Java.Ready = true
 				info.JavaHome = deriveJavaHome(bin)
 				sibling := filepath.Join(filepath.Dir(bin), executableName("javac"))
-				if isExecutableFile(sibling) {
+				switch {
+				case !isMacOSJavaStub(bin) && isExecutableFile(sibling):
 					info.JavacPath = sibling
-				} else if p, err := exec.LookPath("javac"); err == nil {
-					// Pair with PATH javac only when major versions match (or javac version is unparseable, e.g. mock script).
+				case isExecutableFile(sibling):
+					// macOS /usr/bin/java stub: verify /usr/bin/javac major version matches before pairing.
 					javaMajor := parseJavaMajor(ver)
-					javacMajor := probeJavacMajor(p)
+					javacMajor := probeJavacMajor(sibling)
 					if javacMajor == 0 || javaMajor == 0 || javacMajor == javaMajor {
-						info.JavacPath = p
+						info.JavacPath = sibling
+					}
+				default:
+					if p, err := exec.LookPath("javac"); err == nil {
+						// Pair with PATH javac only when major versions match (or javac version is unparseable, e.g. mock script).
+						javaMajor := parseJavaMajor(ver)
+						javacMajor := probeJavacMajor(p)
+						if javacMajor == 0 || javaMajor == 0 || javacMajor == javaMajor {
+							info.JavacPath = p
+						}
 					}
 				}
 				return
@@ -409,14 +419,25 @@ func deriveJavaHome(javaBin string) string {
 	if clean == "" || isMacOSJavaStub(clean) {
 		return ""
 	}
-	dir := filepath.Dir(clean)
-	if strings.EqualFold(filepath.Base(dir), "bin") {
-		parent := filepath.Dir(dir)
-		switch filepath.Clean(parent) {
-		case "/", "/usr", "/usr/local", "/opt/homebrew":
-			return ""
-		default:
-			return parent
+	homeFromBin := func(p string) string {
+		dir := filepath.Dir(p)
+		if strings.EqualFold(filepath.Base(dir), "bin") {
+			parent := filepath.Dir(dir)
+			switch filepath.Clean(parent) {
+			case "/", "/usr", "/usr/local", "/opt/homebrew":
+				return ""
+			default:
+				return parent
+			}
+		}
+		return ""
+	}
+	if h := homeFromBin(clean); h != "" {
+		return h
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil && resolved != "" && resolved != clean {
+		if h := homeFromBin(filepath.Clean(resolved)); h != "" {
+			return h
 		}
 	}
 	return ""

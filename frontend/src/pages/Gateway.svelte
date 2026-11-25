@@ -224,6 +224,7 @@ rpc.exports = {
   let rMtlsKeyPath = ''
   let mtlsValidation = null
   let validatingMtls = false
+  let mtlsValidateSeq = 0
   let rAccountTags = ''
   let rRequireAccount = false
   let rAutoRefresh = false
@@ -445,6 +446,8 @@ rpc.exports = {
   let workerActionBusyId = ''
   let expandedInstanceKeys = new Set()
   let workerPollTimer = null
+  let workerPollInFlight = false
+  let destroyed = false
 
   // Worker Pool Editor fields
   let wId = ''
@@ -942,6 +945,7 @@ rpc.exports = {
         app.ListGatewayWorkers?.().catch(() => []),
         app.ListGatewayWorkerStatuses?.().catch(() => []),
       ])
+      if (destroyed) return
       if (st) {
         stats = { ...stats, ...st }
         if (st.listen_addr) listenAddr = st.listen_addr
@@ -1224,26 +1228,20 @@ rpc.exports = {
     }
   }
 
-  function activeDockerFilename() {
-    return dockerTab === 'compose' ? 'docker-compose.yml' : 'Dockerfile'
-  }
-
-  function activeDockerContent() {
-    if (!dockerBundle) return ''
-    return dockerTab === 'compose' ? (dockerBundle.docker_compose || '') : (dockerBundle.dockerfile || '')
-  }
+  $: activeDockerFilename = dockerTab === 'compose' ? 'docker-compose.yml' : 'Dockerfile'
+  $: activeDockerContent = !dockerBundle
+    ? ''
+    : (dockerTab === 'compose' ? (dockerBundle.docker_compose || '') : (dockerBundle.dockerfile || ''))
 
   function copyActiveDockerFile() {
-    const content = activeDockerContent()
-    if (!content) return
-    copyToClipboard(content, translate('gateway.toast.dockerCopied', { file: activeDockerFilename() }))
+    if (!activeDockerContent) return
+    copyToClipboard(activeDockerContent, translate('gateway.toast.dockerCopied', { file: activeDockerFilename }))
   }
 
   function downloadActiveDockerFile() {
-    const content = activeDockerContent()
-    if (!content) return
-    const file = activeDockerFilename()
-    downloadTextFile(file, content, 'text/plain;charset=utf-8')
+    if (!activeDockerContent) return
+    const file = activeDockerFilename
+    downloadTextFile(file, activeDockerContent, 'text/plain;charset=utf-8')
     toast.success(translate('gateway.toast.dockerDownloaded', { file }))
   }
 
@@ -1280,7 +1278,9 @@ rpc.exports = {
     rTlsProfile = r.tls_profile || 'go_default'
     rMtlsCertPath = r.mtls_cert_path || ''
     rMtlsKeyPath = r.mtls_key_path || ''
+    mtlsValidateSeq++
     mtlsValidation = null
+    validatingMtls = false
     rAccountTags = formatTagsInput(r.account_tags)
     rRequireAccount = Boolean(r.require_account)
     rAutoRefresh = Boolean(r.auto_refresh)
@@ -1323,7 +1323,9 @@ rpc.exports = {
     rTlsProfile = 'go_default'
     rMtlsCertPath = ''
     rMtlsKeyPath = ''
+    mtlsValidateSeq++
     mtlsValidation = null
+    validatingMtls = false
     rAccountTags = ''
     rRequireAccount = false
     rAutoRefresh = false
@@ -1361,10 +1363,14 @@ rpc.exports = {
   async function handleValidateMtlsPair() {
     const app = api()
     if (!app?.ValidateMTLSKeyPair || validatingMtls) return
+    const seq = ++mtlsValidateSeq
+    const certPath = rMtlsCertPath.trim()
+    const keyPath = rMtlsKeyPath.trim()
     validatingMtls = true
     mtlsValidation = null
     try {
-      const res = await app.ValidateMTLSKeyPair(rMtlsCertPath.trim(), rMtlsKeyPath.trim())
+      const res = await app.ValidateMTLSKeyPair(certPath, keyPath)
+      if (destroyed || seq !== mtlsValidateSeq) return
       mtlsValidation = res || null
       if (res?.valid) {
         toast.success(translate('gateway.toast.mtlsValidated'))
@@ -1372,10 +1378,13 @@ rpc.exports = {
         toast.warning(translate('gateway.toast.mtlsValidationFailed', { err: res.error }))
       }
     } catch (e) {
+      if (destroyed || seq !== mtlsValidateSeq) return
       mtlsValidation = { valid: false, error: e?.message || String(e) }
       toast.error(translate('gateway.toast.mtlsValidationFailed', { err: e?.message || e }))
     } finally {
-      validatingMtls = false
+      if (seq === mtlsValidateSeq) {
+        validatingMtls = false
+      }
     }
   }
 
@@ -2354,6 +2363,7 @@ rpc.exports = {
     selectedAccount = acc
     isNewAccount = false
     confirmDeleteAccountId = null
+    aShowSecrets = false
     aId = acc.id || ''
     aName = acc.name || ''
     aUsername = acc.username || ''
@@ -2376,6 +2386,7 @@ rpc.exports = {
     selectedAccount = null
     isNewAccount = true
     confirmDeleteAccountId = null
+    aShowSecrets = false
     aId = ''
     aName = 'Account #1'
     aUsername = ''
@@ -2415,6 +2426,15 @@ rpc.exports = {
       toast.success(translate('gateway.toast.accountConfigSaved'))
     } catch (e) {
       toast.error(translate('gateway.toast.accountOpFailed', { err: e?.message || e }))
+      try {
+        const fresh = await app.GetAccountPoolConfig?.()
+        if (fresh && !destroyed) {
+          accountPoolConfig = {
+            strategy: fresh.strategy || 'round_robin',
+            refresh: fresh.refresh || {},
+          }
+        }
+      } catch (_) {}
     } finally {
       savingAccountCfg = false
     }
@@ -2503,13 +2523,16 @@ rpc.exports = {
   // ==================== Sub-tab 7: Managed Signer Workers ====================
   async function loadWorkersAndStatuses(quiet = false) {
     const app = api()
-    if (!app) return
-    if (!quiet) loadingWorkers = true
+    if (!app || destroyed) return
+    if (quiet && workerPollInFlight) return
+    if (quiet) workerPollInFlight = true
+    else loadingWorkers = true
     try {
       const [wList, wStatuses] = await Promise.all([
         app.ListGatewayWorkers?.().catch(() => null),
         app.ListGatewayWorkerStatuses?.().catch(() => null),
       ])
+      if (destroyed) return
       if (Array.isArray(wList)) workers = wList
       if (Array.isArray(wStatuses)) workerStatuses = wStatuses
       if (!isNewWorker && selectedWorker?.id) {
@@ -2518,7 +2541,8 @@ rpc.exports = {
       }
       if (!quiet) await refreshStatus()
     } finally {
-      if (!quiet) loadingWorkers = false
+      if (quiet) workerPollInFlight = false
+      else loadingWorkers = false
     }
   }
 
@@ -2758,30 +2782,38 @@ rpc.exports = {
   onMount(async () => {
     subscribeEvents()
     await loadAllData()
+    if (destroyed) return
     workerPollTimer = setInterval(() => {
-      if (activeTab === 'workers') {
+      if (!destroyed && activeTab === 'workers') {
         loadWorkersAndStatuses(true)
       }
     }, 3000)
     let consumedInitialHandoff = false
     unsubHandoff = gatewayHandoff.subscribe((h) => {
-      if (h) {
+      if (h && !destroyed) {
         consumedInitialHandoff = true
         applyHandoff(h)
       }
     })
-    if (!consumedInitialHandoff && S.pendingPublishFlow) {
+    if (!destroyed && !consumedInitialHandoff && S.pendingPublishFlow) {
       applyHandoff(S.pendingPublishFlow)
     }
   })
 
   onDestroy(() => {
+    destroyed = true
     if (workerPollTimer) {
       clearInterval(workerPollTimer)
       workerPollTimer = null
     }
-    if (unsubHandoff) unsubHandoff()
-    if (unregisterCmds) unregisterCmds()
+    if (unsubHandoff) {
+      unsubHandoff()
+      unsubHandoff = null
+    }
+    if (unregisterCmds) {
+      unregisterCmds()
+      unregisterCmds = null
+    }
     for (const off of unsubs) {
       try { off() } catch (_) {}
     }
@@ -3066,11 +3098,11 @@ rpc.exports = {
           <Button variant="ghost" size="xs" icon="refresh" loading={loadingDocker} on:click={loadDockerBundle}>
             {$t('gateway.dockerDrawer.regenerate')}
           </Button>
-          <Button variant="secondary" size="xs" icon="copy" disabled={!activeDockerContent()} on:click={copyActiveDockerFile}>
-            {$t('gateway.dockerDrawer.copyFile', { file: activeDockerFilename() })}
+          <Button variant="secondary" size="xs" icon="copy" disabled={!activeDockerContent} on:click={copyActiveDockerFile}>
+            {$t('gateway.dockerDrawer.copyFile', { file: activeDockerFilename })}
           </Button>
-          <Button variant="primary" size="xs" icon="download" disabled={!activeDockerContent()} on:click={downloadActiveDockerFile}>
-            {$t('gateway.dockerDrawer.downloadFile', { file: activeDockerFilename() })}
+          <Button variant="primary" size="xs" icon="download" disabled={!activeDockerContent} on:click={downloadActiveDockerFile}>
+            {$t('gateway.dockerDrawer.downloadFile', { file: activeDockerFilename })}
           </Button>
           <Button variant="ghost" size="xs" icon="x" iconOnly on:click={() => (showDockerDrawer = false)} />
         </div>
@@ -3094,7 +3126,7 @@ rpc.exports = {
         </div>
       </div>
 
-      <pre class="openapi-pre mono">{loadingDocker ? $t('gateway.dockerDrawer.loading') : (activeDockerContent() || $t('gateway.dockerDrawer.empty'))}</pre>
+      <pre class="openapi-pre mono">{loadingDocker ? $t('gateway.dockerDrawer.loading') : (activeDockerContent || $t('gateway.dockerDrawer.empty'))}</pre>
     </section>
   {/if}
 
@@ -3734,6 +3766,7 @@ rpc.exports = {
                               type="text"
                               class="cap-input mono"
                               bind:value={rMtlsCertPath}
+                              on:input={() => { mtlsValidateSeq++; mtlsValidation = null; validatingMtls = false }}
                               placeholder={$t('gateway.routes.editor.mtlsCertPlaceholder')}
                             />
                           </label>
@@ -3743,6 +3776,7 @@ rpc.exports = {
                               type="text"
                               class="cap-input mono"
                               bind:value={rMtlsKeyPath}
+                              on:input={() => { mtlsValidateSeq++; mtlsValidation = null; validatingMtls = false }}
                               placeholder={$t('gateway.routes.editor.mtlsKeyPlaceholder')}
                             />
                           </label>

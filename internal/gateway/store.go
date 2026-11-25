@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,11 +22,12 @@ import (
 )
 
 const (
-	fileGatewayConfig = "config.json"
-	fileProxyPool     = "proxies.json"
-	fileDevices       = "devices.json"
-	fileSigners       = "signers.json"
-	fileRoutes        = "routes.json"
+	fileGatewayConfig       = "config.json"
+	fileProxyPool           = "proxies.json"
+	fileDevices             = "devices.json"
+	fileSigners             = "signers.json"
+	fileRoutes              = "routes.json"
+	maxConcurrentWebhooks   = 8
 )
 
 type persistedProxyPool struct {
@@ -34,13 +36,21 @@ type persistedProxyPool struct {
 }
 
 // Manager coordinates cap's Open API Gateway: configuration, Proxy IP Pool,
-// Device Pool, Signer Providers, published ServiceRoutes, invocation ring-buffer
-// logs, JSON persistence under ~/.cap/gateway/, live callbacks, and the embedded
-// HTTP gateway server.
+// Device Pool, Account Pool, Managed Signer Worker Pool, Signer Providers,
+// published ServiceRoutes, TTL Response Cache, Per-Route Circuit Breaker,
+// TLS/mTLS Upstream Transport Pool, invocation ring-buffer logs, JSON
+// persistence under ~/.cap/gateway/, live callbacks, and the embedded HTTP
+// gateway server.
 type Manager struct {
-	dir     string
-	proxies *ProxyPool
-	devices *DevicePool
+	dir        string
+	proxies    *ProxyPool
+	devices    *DevicePool
+	accounts   *AccountPool
+	workers    *WorkerPool
+	signerExec *SignerExecutor
+	cache      *RouteCache
+	circuits   *CircuitBreaker
+	transports *UpstreamTransportPool
 
 	mu      sync.RWMutex
 	cfg     GatewayConfig
@@ -65,11 +75,18 @@ type Manager struct {
 
 	directTransport *http.Transport
 
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	webhookSem      chan struct{}
+	webhookWG       sync.WaitGroup
+
 	totalRequests   atomic.Int64
 	successRequests atomic.Int64
 	errorRequests   atomic.Int64
 	rateLimited     atomic.Int64
 	authFailures    atomic.Int64
+	cacheHits       atomic.Int64
+	cacheMisses     atomic.Int64
 	totalLatencyMs  atomic.Int64
 	invSeq          atomic.Int64
 	inFlight        atomic.Int64
@@ -86,6 +103,9 @@ func NewManager(capDir string) (*Manager, error) {
 	gwDir := filepath.Join(capDir, "gateway")
 	_ = os.MkdirAll(gwDir, 0o755)
 
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	workers := NewWorkerPool(filepath.Join(gwDir, fileWorkers))
+
 	m := &Manager{
 		dir: gwDir,
 		cfg: GatewayConfig{
@@ -96,11 +116,17 @@ func NewManager(capDir string) (*Manager, error) {
 			Strategy:        StrategyRoundRobin,
 			FailoverRetries: DefaultFailoverRetries,
 		}),
-		devices:  NewDevicePool(),
-		signers:  make(map[string]SignerProvider),
-		routes:   make(map[string]ServiceRoute),
-		logs:     make([]InvocationRecord, 0, 64),
-		limiters: make(map[string]*routeRateLimiter),
+		devices:    NewDevicePool(),
+		accounts:   NewAccountPool(filepath.Join(gwDir, fileAccounts), AccountPoolConfig{Strategy: StrategyRoundRobin}),
+		workers:    workers,
+		signerExec: NewSignerExecutor(workers),
+		cache:      NewRouteCache(),
+		circuits:   NewCircuitBreaker(),
+		transports: NewUpstreamTransportPool(),
+		signers:    make(map[string]SignerProvider),
+		routes:     make(map[string]ServiceRoute),
+		logs:       make([]InvocationRecord, 0, 64),
+		limiters:   make(map[string]*routeRateLimiter),
 		directTransport: &http.Transport{
 			MaxIdleConns:          64,
 			MaxIdleConnsPerHost:   16,
@@ -108,6 +134,9 @@ func NewManager(capDir string) (*Manager, error) {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
+		webhookSem:      make(chan struct{}, maxConcurrentWebhooks),
 	}
 
 	m.loadFromDisk()
@@ -127,6 +156,85 @@ func (m *Manager) ProxyPool() *ProxyPool {
 // DevicePool returns the underlying DevicePool instance.
 func (m *Manager) DevicePool() *DevicePool {
 	return m.devices
+}
+
+// AccountPool returns the underlying AccountPool instance.
+func (m *Manager) AccountPool() *AccountPool {
+	return m.accounts
+}
+
+// WorkerPool returns the underlying Managed WorkerPool instance.
+func (m *Manager) WorkerPool() *WorkerPool {
+	return m.workers
+}
+
+// SignerExecutor returns the SignerExecutor wired to this Manager's WorkerPool.
+func (m *Manager) SignerExecutor() *SignerExecutor {
+	return m.signerExec
+}
+
+// SetUpstreamRootCAs configures an optional custom RootCA pool for upstream
+// TLS/mTLS transports (e.g. private internal CAs or test servers).
+func (m *Manager) SetUpstreamRootCAs(pool *x509.CertPool) {
+	m.transports.SetRootCAs(pool)
+}
+
+// ClearRouteCache evicts cached responses for slug (or all routes if slug is empty).
+func (m *Manager) ClearRouteCache(slug string) {
+	m.cache.Clear(slug)
+}
+
+// ResetCircuit resets the circuit breaker state for slug (or all routes if empty).
+func (m *Manager) ResetCircuit(slug string) {
+	m.circuits.Reset(slug)
+}
+
+// CircuitStates returns live snapshots of all tracked route circuit breakers,
+// including configured circuit-protected routes currently in the closed state.
+func (m *Manager) CircuitStates() map[string]CircuitSnapshot {
+	snaps := m.circuits.Snapshots()
+	m.mu.RLock()
+	for _, r := range m.routes {
+		if r.CircuitFailThreshold > 0 {
+			if _, exists := snaps[r.Slug]; !exists {
+				cd := r.CircuitCooldownSec
+				if cd <= 0 {
+					cd = DefaultCircuitCooldownSec
+				}
+				snaps[r.Slug] = CircuitSnapshot{
+					RouteSlug:   r.Slug,
+					State:       CircuitStateClosed,
+					Threshold:   r.CircuitFailThreshold,
+					CooldownSec: cd,
+				}
+			}
+		}
+	}
+	m.mu.RUnlock()
+	return snaps
+}
+
+// PrometheusMetrics returns current gateway metrics in Prometheus text
+// exposition format (`text/plain; version=0.0.4`).
+func (m *Manager) PrometheusMetrics() string {
+	return FormatPrometheusMetrics(m.Stats(), m.CircuitStates())
+}
+
+// ExportDockerBundle generates Dockerfile and docker-compose.yml artifacts for
+// deploying headless `cap gateway serve`.
+func (m *Manager) ExportDockerBundle(listenAddr string) DockerDeployBundle {
+	addr := strings.TrimSpace(listenAddr)
+	if addr == "" {
+		addr = m.GetConfig().ListenAddr
+	}
+	if addr == "" {
+		addr = DefaultListenAddr
+	}
+	return DockerDeployBundle{
+		ListenAddr:    addr,
+		Dockerfile:    GenerateDockerfile(addr),
+		DockerCompose: GenerateDockerCompose(addr),
+	}
 }
 
 // SetCallbacks registers optional real-time callbacks invoked on each route
@@ -156,12 +264,23 @@ func (m *Manager) emitStatus(st GatewayStatus) {
 	}
 }
 
-// Shutdown stops the HTTP server, cancels proxy provider auto-refresh, and
-// closes idle connections across direct and proxied transports.
+// Shutdown stops the HTTP server, shuts down all managed signer worker
+// processes, cancels background auto-refresh and async webhook dispatchers,
+// and closes idle connections across all upstream transports.
 func (m *Manager) Shutdown() error {
+	if m.lifecycleCancel != nil {
+		m.lifecycleCancel()
+	}
 	m.proxies.StopAutoRefresh()
+	if m.workers != nil {
+		m.workers.Shutdown()
+	}
 	err := m.Stop()
+	m.webhookWG.Wait()
 	m.proxies.CloseIdleConnections()
+	if m.transports != nil {
+		m.transports.CloseIdleConnections()
+	}
 	if m.directTransport != nil {
 		m.directTransport.CloseIdleConnections()
 	}
@@ -320,6 +439,66 @@ func (m *Manager) SyncADBDevices(ctx context.Context) ([]DeviceProfile, error) {
 	return synced, err
 }
 
+// ---- Account Pool Management (with persistence) ----
+
+func (m *Manager) GetAccountConfig() AccountPoolConfig {
+	return m.accounts.Config()
+}
+
+func (m *Manager) UpdateAccountConfig(cfg AccountPoolConfig) error {
+	return m.accounts.SetConfig(cfg)
+}
+
+func (m *Manager) ListAccounts() []AccountProfile {
+	return m.accounts.List()
+}
+
+func (m *Manager) GetAccount(id string) (*AccountProfile, bool) {
+	return m.accounts.Get(id)
+}
+
+func (m *Manager) SaveAccount(acc AccountProfile) (*AccountProfile, error) {
+	return m.accounts.Upsert(acc)
+}
+
+func (m *Manager) DeleteAccount(id string) error {
+	return m.accounts.Delete(id)
+}
+
+// ---- Managed Signer Worker Pool Management (with persistence) ----
+
+func (m *Manager) ListWorkers() []ManagedWorkerSpec {
+	return m.workers.ListSpecs()
+}
+
+func (m *Manager) GetWorker(id string) (*ManagedWorkerSpec, bool) {
+	return m.workers.GetSpec(id)
+}
+
+func (m *Manager) SaveWorker(spec ManagedWorkerSpec) (*ManagedWorkerSpec, error) {
+	return m.workers.SaveSpec(spec)
+}
+
+func (m *Manager) DeleteWorker(id string) error {
+	return m.workers.DeleteSpec(id)
+}
+
+func (m *Manager) StartWorker(id string) error {
+	return m.workers.StartWorker(id)
+}
+
+func (m *Manager) StopWorker(id string) error {
+	return m.workers.StopWorker(id)
+}
+
+func (m *Manager) RestartWorker(id string) error {
+	return m.workers.RestartWorker(id)
+}
+
+func (m *Manager) ListWorkerStatuses() []ManagedWorkerStatus {
+	return m.workers.ListWorkerStatuses()
+}
+
 // ---- Signer Provider CRUD ----
 
 func (m *Manager) ListSigners() []SignerProvider {
@@ -398,7 +577,7 @@ func (m *Manager) TestSigner(ctx context.Context, id string, input SignerInput) 
 	}
 	// Allow testing even if temporarily disabled by cloning with Enabled=true.
 	signer.Enabled = true
-	return ExecuteSigner(ctx, signer, input)
+	return m.signerExec.Execute(ctx, signer, input)
 }
 
 // ---- ServiceRoute CRUD & Flow Publishing ----
@@ -472,8 +651,32 @@ func (m *Manager) SaveRoute(r ServiceRoute) (*ServiceRoute, error) {
 	}
 	r.DeviceTags = normalizeTags(r.DeviceTags)
 	r.ProxyTags = normalizeTags(r.ProxyTags)
+	r.AccountTags = normalizeTags(r.AccountTags)
+	r.RefreshRouteSlug = normalizeSlug(r.RefreshRouteSlug)
+	r.RefreshOnStatuses = normalizeStatusCodes(r.RefreshOnStatuses)
+	r.RefreshOnBodySubstr = strings.TrimSpace(r.RefreshOnBodySubstr)
+	r.ChallengeWebhookURL = strings.TrimSpace(r.ChallengeWebhookURL)
+	if r.ChallengeWebhookURL != "" {
+		if _, err := validateWebhookURL(r.ChallengeWebhookURL); err != nil {
+			return nil, fmt.Errorf("invalid challenge_webhook_url: %w", err)
+		}
+	}
+	if strings.TrimSpace(r.TLSProfile) != "" {
+		normTLS, err := NormalizeTLSProfile(r.TLSProfile)
+		if err != nil {
+			return nil, err
+		}
+		r.TLSProfile = normTLS
+	}
+	r.MTLSCertPath = strings.TrimSpace(r.MTLSCertPath)
+	r.MTLSKeyPath = strings.TrimSpace(r.MTLSKeyPath)
+	if (r.MTLSCertPath == "") != (r.MTLSKeyPath == "") {
+		return nil, errors.New("both mtls_cert_path and mtls_key_path must be specified together")
+	}
+	r.CacheKeyFields = normalizePreserveCaseList(r.CacheKeyFields)
 
 	now := nowRFC3339()
+	var prevSlug string
 	m.mu.Lock()
 	for id, existing := range m.routes {
 		if id != r.ID && strings.EqualFold(existing.Slug, r.Slug) {
@@ -481,8 +684,11 @@ func (m *Manager) SaveRoute(r ServiceRoute) (*ServiceRoute, error) {
 			return nil, fmt.Errorf("route slug %q already exists (route %s)", r.Slug, id)
 		}
 	}
-	if prev, exists := m.routes[r.ID]; exists && r.CreatedAt == "" {
-		r.CreatedAt = prev.CreatedAt
+	if prev, exists := m.routes[r.ID]; exists {
+		prevSlug = prev.Slug
+		if r.CreatedAt == "" {
+			r.CreatedAt = prev.CreatedAt
+		}
 	}
 	if r.CreatedAt == "" {
 		r.CreatedAt = now
@@ -491,11 +697,41 @@ func (m *Manager) SaveRoute(r ServiceRoute) (*ServiceRoute, error) {
 	m.routes[r.ID] = cloneServiceRoute(r)
 	m.mu.Unlock()
 
+	if m.cache != nil {
+		m.cache.Clear(r.Slug)
+		if prevSlug != "" && prevSlug != r.Slug {
+			m.cache.Clear(prevSlug)
+		}
+	}
+
 	cp := cloneServiceRoute(r)
 	if err := m.persistRoutes(); err != nil {
 		return &cp, err
 	}
 	return &cp, nil
+}
+
+func normalizePreserveCaseList(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		clean := strings.TrimSpace(it)
+		if clean == "" {
+			continue
+		}
+		if _, dup := seen[clean]; dup {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (m *Manager) DeleteRoute(id string) error {
@@ -512,6 +748,13 @@ func (m *Manager) DeleteRoute(id string) error {
 	m.rlMu.Lock()
 	delete(m.limiters, route.ID)
 	m.rlMu.Unlock()
+
+	if m.cache != nil {
+		m.cache.Clear(route.Slug)
+	}
+	if m.circuits != nil {
+		m.circuits.Reset(route.Slug)
+	}
 
 	return m.persistRoutes()
 }
@@ -719,6 +962,8 @@ func (m *Manager) Stats() GatewayStats {
 
 	proxyTotal, proxyHealthy := m.proxies.Counts()
 	deviceTotal, deviceEnabled := m.devices.Counts()
+	totalAccounts, activeAccounts := m.accounts.Counts()
+	totalWorkers, healthyWorkers := m.workers.Counts()
 
 	m.mu.RLock()
 	signerTotal := len(m.signers)
@@ -754,6 +999,13 @@ func (m *Manager) Stats() GatewayStats {
 		SignerTotal:     signerTotal,
 		RouteTotal:      routeTotal,
 		RouteEnabled:    routeEnabled,
+		TotalAccounts:   totalAccounts,
+		ActiveAccounts:  activeAccounts,
+		TotalWorkers:    totalWorkers,
+		HealthyWorkers:  healthyWorkers,
+		CacheHits:       m.cacheHits.Load(),
+		CacheMisses:     m.cacheMisses.Load(),
+		OpenCircuits:    m.circuits.OpenCount(),
 	}
 }
 
@@ -781,6 +1033,9 @@ func (m *Manager) loadFromDisk() {
 			m.devices.Load(devs)
 		}
 	}
+
+	_ = m.accounts.LoadFromDisk()
+	_ = m.workers.LoadFromDisk()
 
 	if raw, err := os.ReadFile(filepath.Join(m.dir, fileSigners)); err == nil {
 		var list []SignerProvider

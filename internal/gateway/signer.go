@@ -100,12 +100,15 @@ func ValidateSigner(p *SignerProvider) error {
 		return nil
 	case SignerKindHTTP, SignerKindUnidbgHTTP:
 		raw := strings.TrimSpace(p.EndpointURL)
-		if raw == "" {
-			return fmt.Errorf("endpoint_url is required for %s signer", p.Kind)
+		poolID := strings.TrimSpace(p.WorkerPoolID)
+		if raw == "" && poolID == "" {
+			return fmt.Errorf("endpoint_url or worker_pool_id is required for %s signer", p.Kind)
 		}
-		u, err := url.Parse(raw)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("invalid endpoint_url %q", raw)
+		if raw != "" {
+			u, err := url.Parse(raw)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("invalid endpoint_url %q", raw)
+			}
 		}
 		return nil
 	case SignerKindFridaRPC:
@@ -121,9 +124,20 @@ func ValidateSigner(p *SignerProvider) error {
 	}
 }
 
-// ExecuteSigner runs a configured SignerProvider against input and returns the
-// computed SignerOutput (plus measured latency).
-func ExecuteSigner(ctx context.Context, p *SignerProvider, input SignerInput) (*SignerOutput, error) {
+// SignerExecutor runs SignerProviders with optional Managed WorkerPool routing
+// for HTTP / Unidbg HTTP signers.
+type SignerExecutor struct {
+	Workers *WorkerPool
+}
+
+// NewSignerExecutor constructs a SignerExecutor optionally backed by a WorkerPool.
+func NewSignerExecutor(workers *WorkerPool) *SignerExecutor {
+	return &SignerExecutor{Workers: workers}
+}
+
+// Execute runs a configured SignerProvider against input, dynamically routing
+// HTTP/Unidbg HTTP signers across healthy instances when WorkerPoolID is set.
+func (e *SignerExecutor) Execute(ctx context.Context, p *SignerProvider, input SignerInput) (*SignerOutput, error) {
 	if p == nil {
 		return nil, errors.New("signer provider is nil")
 	}
@@ -158,7 +172,23 @@ func ExecuteSigner(ctx context.Context, p *SignerProvider, input SignerInput) (*
 	case SignerKindScript:
 		out, err = runScriptSigner(ctx, p, input)
 	case SignerKindHTTP, SignerKindUnidbgHTTP:
-		out, err = runHTTPSigner(ctx, p, input)
+		endpoint := strings.TrimSpace(p.EndpointURL)
+		var release func()
+		if poolID := strings.TrimSpace(p.WorkerPoolID); poolID != "" {
+			if e == nil || e.Workers == nil {
+				return nil, fmt.Errorf("worker pool %q unavailable for signer %q", poolID, p.Name)
+			}
+			ep, rel, epErr := e.Workers.AcquireHealthyEndpoint(poolID)
+			if epErr != nil {
+				return nil, fmt.Errorf("resolve worker pool %q for signer %q: %w", poolID, p.Name, epErr)
+			}
+			endpoint = ep
+			release = rel
+		}
+		if release != nil {
+			defer release()
+		}
+		out, err = runHTTPSignerEndpoint(ctx, p, endpoint, input)
 	case SignerKindFridaRPC:
 		out, err = runFridaRPCSigner(ctx, p, input)
 	default:
@@ -172,6 +202,12 @@ func ExecuteSigner(ctx context.Context, p *SignerProvider, input SignerInput) (*
 	}
 	out.LatencyMs = time.Since(start).Milliseconds()
 	return out, nil
+}
+
+// ExecuteSigner runs a configured SignerProvider against input and returns the
+// computed SignerOutput (plus measured latency).
+func ExecuteSigner(ctx context.Context, p *SignerProvider, input SignerInput) (*SignerOutput, error) {
+	return (&SignerExecutor{}).Execute(ctx, p, input)
 }
 
 // runBuiltinHMAC computes a deterministic MD5 / SHA1 / SHA256 / HMAC-SHA256
@@ -363,7 +399,11 @@ func execSubprocessSigner(ctx context.Context, binPath string, args []string, ti
 // runHTTPSigner invokes an HTTP or Unidbg HTTP signing microservice with the
 // normalized SignerInput payload and decodes the returned signature fields.
 func runHTTPSigner(ctx context.Context, p *SignerProvider, input SignerInput) (*SignerOutput, error) {
-	endpoint := strings.TrimSpace(p.EndpointURL)
+	return runHTTPSignerEndpoint(ctx, p, p.EndpointURL, input)
+}
+
+func runHTTPSignerEndpoint(ctx context.Context, p *SignerProvider, rawEndpoint string, input SignerInput) (*SignerOutput, error) {
+	endpoint := strings.TrimSpace(rawEndpoint)
 	if endpoint == "" {
 		return nil, errors.New("signer endpoint_url is required")
 	}

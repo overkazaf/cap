@@ -19,11 +19,37 @@ import (
 )
 
 const (
-	// Proxy pool rotation strategies.
+	// Proxy & account pool rotation strategies.
 	StrategyRoundRobin   = "round_robin"
 	StrategyRandom       = "random"
 	StrategyLeastLatency = "least_latency"
 	StrategyStickyDevice = "sticky_device"
+	StrategyLeastUsed    = "least_used"
+
+	// Account lifecycle statuses.
+	AccountStatusActive     = "active"
+	AccountStatusExpired    = "expired"
+	AccountStatusChallenged = "challenged"
+	AccountStatusDisabled   = "disabled"
+
+	// Managed signer worker pool kinds.
+	WorkerKindUnidbgHTTP = "unidbg_http"
+	WorkerKindQilingHTTP = "qiling_http"
+	WorkerKindScriptHTTP = "script_http"
+	WorkerKindCustom     = "custom"
+
+	// Upstream TLS fingerprint profiles.
+	TLSProfileGoDefault     = "go_default"
+	TLSProfileChrome131     = "chrome_131"
+	TLSProfileSafari17      = "safari_17"
+	TLSProfileFirefox132    = "firefox_132"
+	TLSProfileOkHttpAndroid = "okhttp_android"
+	TLSProfileIOSCFNetwork  = "ios_cfnetwork"
+
+	// Per-route circuit breaker states.
+	CircuitStateClosed   = "closed"
+	CircuitStateOpen     = "open"
+	CircuitStateHalfOpen = "half_open"
 
 	// Dynamic IP provider response formats.
 	ProviderFormatLines = "lines"
@@ -46,12 +72,19 @@ const (
 	InjectTargetBodyJSON = "body_json"
 
 	// Operational defaults.
-	DefaultListenAddr       = "127.0.0.1:9090"
-	DefaultMaxLogs          = 500
-	DefaultTimeoutSec       = 15
-	DefaultSignerTimeoutSec = 10
-	DefaultFailoverRetries  = 2
-	DefaultHealthCheckURL   = "http://connectivitycheck.gstatic.com/generate_204"
+	DefaultListenAddr             = "127.0.0.1:9090"
+	DefaultMaxLogs                = 500
+	DefaultTimeoutSec             = 15
+	DefaultSignerTimeoutSec       = 10
+	DefaultFailoverRetries        = 2
+	DefaultHealthCheckURL         = "http://connectivitycheck.gstatic.com/generate_204"
+	DefaultWorkerHealthPath       = "/health"
+	DefaultWorkerSignPath         = "/sign"
+	DefaultWorkerMaxRestarts      = 5
+	DefaultWorkerRestartBackoffMs = 500
+	DefaultCacheMaxEntries        = 512
+	DefaultCircuitCooldownSec     = 30
+	DefaultMaxRefreshAttempts     = 1
 )
 
 // ProxyNode represents one outbound proxy server in the Proxy IP Pool.
@@ -149,6 +182,7 @@ type SignerProvider struct {
 	Runtime       string            `json:"runtime,omitempty"` // "python3"|"node"|"sh"
 	ScriptCode    string            `json:"script_code,omitempty"`
 	EndpointURL   string            `json:"endpoint_url,omitempty"`
+	WorkerPoolID  string            `json:"worker_pool_id,omitempty"`
 	HTTPMethod    string            `json:"http_method,omitempty"`
 	TimeoutSec    int               `json:"timeout_sec,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"`
@@ -173,6 +207,7 @@ type SignerInput struct {
 	Timestamp int64             `json:"timestamp"`
 	Nonce     string            `json:"nonce"`
 	Device    *DeviceProfile    `json:"device,omitempty"`
+	Account   *AccountProfile   `json:"account,omitempty"`
 	Input     map[string]string `json:"input,omitempty"`
 }
 
@@ -186,29 +221,168 @@ type SignerOutput struct {
 	LatencyMs  int64             `json:"latency_ms"`
 }
 
+// AccountRefreshConfig defines defaults for automatic session refresh and
+// non-refreshable challenge alerting.
+type AccountRefreshConfig struct {
+	RefreshRouteSlug    string `json:"refresh_route_slug,omitempty"`
+	RefreshOnStatuses   []int  `json:"refresh_on_statuses,omitempty"` // e.g. [401, 403]
+	RefreshOnBodySubstr string `json:"refresh_on_body_substr,omitempty"`
+	ChallengeWebhookURL string `json:"challenge_webhook_url,omitempty"`
+	MaxRefreshAttempts  int    `json:"max_refresh_attempts,omitempty"`
+}
+
+// AccountPoolConfig configures multi-account rotation and default refresh policy.
+type AccountPoolConfig struct {
+	Strategy string               `json:"strategy"` // "round_robin"|"least_used"|"sticky_device"
+	Refresh  AccountRefreshConfig `json:"refresh,omitempty"`
+}
+
+// AccountProfile represents one authenticated account/session in the Account Pool.
+type AccountProfile struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Username       string            `json:"username,omitempty"`
+	Token          string            `json:"token,omitempty"`
+	RefreshToken   string            `json:"refresh_token,omitempty"`
+	Cookie         string            `json:"cookie,omitempty"`
+	Cookies        map[string]string `json:"cookies,omitempty"`
+	AuthHeaders    map[string]string `json:"auth_headers,omitempty"`
+	Tokens         map[string]string `json:"tokens,omitempty"`
+	Tags           []string          `json:"tags,omitempty"`
+	StickyDeviceID string            `json:"sticky_device_id,omitempty"`
+	StickyProxyID  string            `json:"sticky_proxy_id,omitempty"`
+	Enabled        bool              `json:"enabled"`
+	Status         string            `json:"status,omitempty"` // "active"|"expired"|"challenged"|"disabled"
+	ExpiresAt      string            `json:"expires_at,omitempty"`
+	UseCount       int64             `json:"use_count"`
+	FailCount      int64             `json:"fail_count"`
+	RefreshCount   int64             `json:"refresh_count"`
+	LastUsedAt     string            `json:"last_used_at,omitempty"`
+	LastRefreshed  string            `json:"last_refreshed,omitempty"`
+	LastError      string            `json:"last_error,omitempty"`
+	Notes          string            `json:"notes,omitempty"`
+	CreatedAt      string            `json:"created_at,omitempty"`
+	UpdatedAt      string            `json:"updated_at,omitempty"`
+}
+
+// AccountSelectOptions constrains account acquisition during route execution.
+type AccountSelectOptions struct {
+	Tags           []string
+	ExplicitID     string
+	DeviceID       string
+	Strategy       string
+	IncludeExpired bool
+}
+
+// ManagedWorkerSpec configures a pool of locally supervised HTTP signer worker
+// processes bound to consecutive loopback ports (`127.0.0.1:<BasePort+i>`).
+type ManagedWorkerSpec struct {
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Kind             string            `json:"kind"` // "unidbg_http"|"qiling_http"|"script_http"|"custom"
+	Command          string            `json:"command"`
+	Args             []string          `json:"args,omitempty"`
+	WorkDir          string            `json:"work_dir,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	BasePort         int               `json:"base_port"`
+	Instances        int               `json:"instances"` // 1..8
+	HealthPath       string            `json:"health_path,omitempty"`
+	SignPath         string            `json:"sign_path,omitempty"`
+	AutoRestart      bool              `json:"auto_restart"`
+	MaxRestarts      int               `json:"max_restarts,omitempty"`
+	RestartBackoffMs int               `json:"restart_backoff_ms,omitempty"`
+	Enabled          bool              `json:"enabled"`
+	Description      string            `json:"description,omitempty"`
+	CreatedAt        string            `json:"created_at,omitempty"`
+	UpdatedAt        string            `json:"updated_at,omitempty"`
+}
+
+// ManagedWorkerInstance reports live runtime and health telemetry for one worker process.
+type ManagedWorkerInstance struct {
+	Index      int    `json:"index"`
+	Port       int    `json:"port"`
+	Endpoint   string `json:"endpoint"`
+	SignURL    string `json:"sign_url"`
+	PID        int    `json:"pid,omitempty"`
+	Running    bool   `json:"running"`
+	Healthy    bool   `json:"healthy"`
+	InFlight   int64  `json:"in_flight"`
+	Restarts   int    `json:"restarts"`
+	LatencyMs  int64  `json:"latency_ms,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
+	LastProbe  string `json:"last_probe,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
+	StderrTail string `json:"stderr_tail,omitempty"`
+}
+
+// ManagedWorkerStatus summarizes a ManagedWorkerSpec and all of its instances.
+type ManagedWorkerStatus struct {
+	Spec             ManagedWorkerSpec       `json:"spec"`
+	Running          bool                    `json:"running"`
+	HealthyInstances int                     `json:"healthy_instances"`
+	TotalInstances   int                     `json:"total_instances"`
+	Instances        []ManagedWorkerInstance `json:"instances"`
+}
+
+// CircuitSnapshot captures the live circuit breaker state for a route.
+type CircuitSnapshot struct {
+	RouteSlug           string `json:"route_slug"`
+	State               string `json:"state"` // "closed"|"open"|"half_open"
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	Threshold           int    `json:"threshold"`
+	CooldownSec         int    `json:"cooldown_sec"`
+	OpenedAt            string `json:"opened_at,omitempty"`
+	NextProbeAt         string `json:"next_probe_at,omitempty"`
+	LastFailure         string `json:"last_failure,omitempty"`
+	TripCount           int64  `json:"trip_count"`
+}
+
+// DockerDeployBundle holds generated container deployment files for headless
+// `cap gateway serve` operation.
+type DockerDeployBundle struct {
+	ListenAddr    string `json:"listen_addr"`
+	Dockerfile    string `json:"dockerfile"`
+	DockerCompose string `json:"docker_compose"`
+}
+
 // ServiceRoute publishes an upstream reverse-engineered API endpoint behind
 // the embedded Open API Gateway at `/gw/{slug}`.
 type ServiceRoute struct {
-	ID             string            `json:"id"`
-	Slug           string            `json:"slug"`
-	Name           string            `json:"name"`
-	Description    string            `json:"description,omitempty"`
-	Enabled        bool              `json:"enabled"`
-	UpstreamMethod string            `json:"upstream_method"`
-	UpstreamURL    string            `json:"upstream_url"` // supports {{input.x}}, {{device.oaid}}, etc.
-	StaticHeaders  map[string]string `json:"static_headers,omitempty"`
-	StaticQuery    map[string]string `json:"static_query,omitempty"`
-	BodyTemplate   string            `json:"body_template,omitempty"`
-	SignerID       string            `json:"signer_id,omitempty"`
-	DeviceTags     []string          `json:"device_tags,omitempty"`
-	ProxyTags      []string          `json:"proxy_tags,omitempty"`
-	RequireProxy   bool              `json:"require_proxy"`
-	RequireDevice  bool              `json:"require_device"`
-	RateLimitRPS   float64           `json:"rate_limit_rps,omitempty"`
-	TimeoutSec     int               `json:"timeout_sec,omitempty"`
-	SourceFlowID   string            `json:"source_flow_id,omitempty"`
-	CreatedAt      string            `json:"created_at,omitempty"`
-	UpdatedAt      string            `json:"updated_at,omitempty"`
+	ID                   string            `json:"id"`
+	Slug                 string            `json:"slug"`
+	Name                 string            `json:"name"`
+	Description          string            `json:"description,omitempty"`
+	Enabled              bool              `json:"enabled"`
+	UpstreamMethod       string            `json:"upstream_method"`
+	UpstreamURL          string            `json:"upstream_url"` // supports {{input.x}}, {{device.oaid}}, {{account.token}}, etc.
+	StaticHeaders        map[string]string `json:"static_headers,omitempty"`
+	StaticQuery          map[string]string `json:"static_query,omitempty"`
+	BodyTemplate         string            `json:"body_template,omitempty"`
+	SignerID             string            `json:"signer_id,omitempty"`
+	DeviceTags           []string          `json:"device_tags,omitempty"`
+	ProxyTags            []string          `json:"proxy_tags,omitempty"`
+	RequireProxy         bool              `json:"require_proxy"`
+	RequireDevice        bool              `json:"require_device"`
+	AccountTags          []string          `json:"account_tags,omitempty"`
+	RequireAccount       bool              `json:"require_account,omitempty"`
+	AutoRefresh          bool              `json:"auto_refresh,omitempty"`
+	RefreshRouteSlug     string            `json:"refresh_route_slug,omitempty"`
+	RefreshOnStatuses    []int             `json:"refresh_on_statuses,omitempty"`
+	RefreshOnBodySubstr  string            `json:"refresh_on_body_substr,omitempty"`
+	ChallengeWebhookURL  string            `json:"challenge_webhook_url,omitempty"`
+	TLSProfile           string            `json:"tls_profile,omitempty"` // "go_default"|"chrome_131"|"safari_17"|"firefox_132"|"okhttp_android"|"ios_cfnetwork"
+	MTLSCertPath         string            `json:"mtls_cert_path,omitempty"`
+	MTLSKeyPath          string            `json:"mtls_key_path,omitempty"`
+	CacheTTLSec          int               `json:"cache_ttl_sec,omitempty"`
+	CacheKeyFields       []string          `json:"cache_key_fields,omitempty"`
+	CacheMaxEntries      int               `json:"cache_max_entries,omitempty"`
+	CircuitFailThreshold int               `json:"circuit_fail_threshold,omitempty"`
+	CircuitCooldownSec   int               `json:"circuit_cooldown_sec,omitempty"`
+	RateLimitRPS         float64           `json:"rate_limit_rps,omitempty"`
+	TimeoutSec           int               `json:"timeout_sec,omitempty"`
+	SourceFlowID         string            `json:"source_flow_id,omitempty"`
+	CreatedAt            string            `json:"created_at,omitempty"`
+	UpdatedAt            string            `json:"updated_at,omitempty"`
 }
 
 // GatewayConfig holds runtime settings for the embedded Open API Gateway.
@@ -230,24 +404,30 @@ type GatewayStatus struct {
 
 // InvocationRecord captures telemetry for a single gateway route execution.
 type InvocationRecord struct {
-	ID          string `json:"id"`
-	Timestamp   string `json:"timestamp"`
-	RouteID     string `json:"route_id,omitempty"`
-	RouteSlug   string `json:"route_slug"`
-	Method      string `json:"method"`
-	UpstreamURL string `json:"upstream_url"`
-	StatusCode  int    `json:"status_code"`
-	LatencyMs   int64  `json:"latency_ms"`
-	ProxyID     string `json:"proxy_id,omitempty"`
-	ProxyName   string `json:"proxy_name,omitempty"`
-	DeviceID    string `json:"device_id,omitempty"`
-	DeviceName  string `json:"device_name,omitempty"`
-	SignerID    string `json:"signer_id,omitempty"`
-	SignerMs    int64  `json:"signer_ms,omitempty"`
-	Retries     int    `json:"retries,omitempty"`
-	OK          bool   `json:"ok"`
-	Error       string `json:"error,omitempty"`
-	ClientIP    string `json:"client_ip,omitempty"`
+	ID               string `json:"id"`
+	Timestamp        string `json:"timestamp"`
+	RouteID          string `json:"route_id,omitempty"`
+	RouteSlug        string `json:"route_slug"`
+	Method           string `json:"method"`
+	UpstreamURL      string `json:"upstream_url"`
+	StatusCode       int    `json:"status_code"`
+	LatencyMs        int64  `json:"latency_ms"`
+	ProxyID          string `json:"proxy_id,omitempty"`
+	ProxyName        string `json:"proxy_name,omitempty"`
+	DeviceID         string `json:"device_id,omitempty"`
+	DeviceName       string `json:"device_name,omitempty"`
+	AccountID        string `json:"account_id,omitempty"`
+	AccountName      string `json:"account_name,omitempty"`
+	SignerID         string `json:"signer_id,omitempty"`
+	SignerMs         int64  `json:"signer_ms,omitempty"`
+	Retries          int    `json:"retries,omitempty"`
+	CacheHit         bool   `json:"cache_hit,omitempty"`
+	CircuitTripped   bool   `json:"circuit_tripped,omitempty"`
+	RefreshTriggered bool   `json:"refresh_triggered,omitempty"`
+	TLSProfile       string `json:"tls_profile,omitempty"`
+	OK               bool   `json:"ok"`
+	Error            string `json:"error,omitempty"`
+	ClientIP         string `json:"client_ip,omitempty"`
 }
 
 // GatewayStats summarizes gateway health, traffic, and resource pool metrics.
@@ -268,40 +448,55 @@ type GatewayStats struct {
 	SignerTotal     int     `json:"signer_total"`
 	RouteTotal      int     `json:"route_total"`
 	RouteEnabled    int     `json:"route_enabled"`
+	TotalAccounts   int     `json:"total_accounts"`
+	ActiveAccounts  int     `json:"active_accounts"`
+	TotalWorkers    int     `json:"total_workers"`
+	HealthyWorkers  int     `json:"healthy_workers"`
+	CacheHits       int64   `json:"cache_hits"`
+	CacheMisses     int64   `json:"cache_misses"`
+	OpenCircuits    int     `json:"open_circuits"`
 }
 
 // TestInvokeRequest specifies inputs for direct route testing via InvokeRoute.
 type TestInvokeRequest struct {
-	RouteSlug string            `json:"route_slug,omitempty"`
-	Method    string            `json:"method,omitempty"`
-	Input     map[string]string `json:"input,omitempty"`
-	Query     map[string]string `json:"query,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Body      string            `json:"body,omitempty"`
-	DeviceID  string            `json:"device_id,omitempty"`
-	ProxyID   string            `json:"proxy_id,omitempty"`
-	Raw       bool              `json:"raw,omitempty"`
+	RouteSlug   string            `json:"route_slug,omitempty"`
+	Method      string            `json:"method,omitempty"`
+	Input       map[string]string `json:"input,omitempty"`
+	Query       map[string]string `json:"query,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Body        string            `json:"body,omitempty"`
+	DeviceID    string            `json:"device_id,omitempty"`
+	ProxyID     string            `json:"proxy_id,omitempty"`
+	AccountID   string            `json:"account_id,omitempty"`
+	BypassCache bool              `json:"bypass_cache,omitempty"`
+	Raw         bool              `json:"raw,omitempty"`
 }
 
 // TestInvokeResult is the response envelope returned by both InvokeRoute and
 // HTTP calls to `/gw/{slug}` (unless `?raw=1` passthrough is requested).
 type TestInvokeResult struct {
-	OK            bool              `json:"ok"`
-	Status        int               `json:"status"`
-	LatencyMs     int64             `json:"latency_ms"`
-	SignerMs      int64             `json:"signer_ms,omitempty"`
-	UpstreamURL   string            `json:"upstream_url,omitempty"`
-	Proxy         string            `json:"proxy,omitempty"`
-	ProxyID       string            `json:"proxy_id,omitempty"`
-	Device        string            `json:"device,omitempty"`
-	DeviceID      string            `json:"device_id,omitempty"`
-	Headers       map[string]string `json:"headers,omitempty"`
-	Body          string            `json:"body,omitempty"`
-	Data          any               `json:"data,omitempty"`
-	Error         string            `json:"error,omitempty"`
-	Retries       int               `json:"retries,omitempty"`
-	SignedParams  map[string]string `json:"signed_params,omitempty"`
-	SignedHeaders map[string]string `json:"signed_headers,omitempty"`
+	OK               bool              `json:"ok"`
+	Status           int               `json:"status"`
+	LatencyMs        int64             `json:"latency_ms"`
+	SignerMs         int64             `json:"signer_ms,omitempty"`
+	UpstreamURL      string            `json:"upstream_url,omitempty"`
+	Proxy            string            `json:"proxy,omitempty"`
+	ProxyID          string            `json:"proxy_id,omitempty"`
+	Device           string            `json:"device,omitempty"`
+	DeviceID         string            `json:"device_id,omitempty"`
+	Account          string            `json:"account,omitempty"`
+	AccountID        string            `json:"account_id,omitempty"`
+	CacheHit         bool              `json:"cache_hit,omitempty"`
+	CircuitTripped   bool              `json:"circuit_tripped,omitempty"`
+	RefreshTriggered bool              `json:"refresh_triggered,omitempty"`
+	TLSProfile       string            `json:"tls_profile,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
+	Body             string            `json:"body,omitempty"`
+	Data             any               `json:"data,omitempty"`
+	Error            string            `json:"error,omitempty"`
+	Retries          int               `json:"retries,omitempty"`
+	SignedParams     map[string]string `json:"signed_params,omitempty"`
+	SignedHeaders    map[string]string `json:"signed_headers,omitempty"`
 }
 
 var (
@@ -472,6 +667,15 @@ func hasAllTags(itemTags, reqTags []string) bool {
 	return true
 }
 
+func cloneIntSlice(s []int) []int {
+	if s == nil {
+		return nil
+	}
+	cp := make([]int, len(s))
+	copy(cp, s)
+	return cp
+}
+
 func cloneProxyNode(n ProxyNode) ProxyNode {
 	n.Tags = cloneStringSlice(n.Tags)
 	return n
@@ -486,6 +690,25 @@ func cloneDeviceProfile(d DeviceProfile) DeviceProfile {
 	return d
 }
 
+func cloneAccountProfile(a AccountProfile) AccountProfile {
+	a.Tags = cloneStringSlice(a.Tags)
+	a.Cookies = cloneStringMap(a.Cookies)
+	a.AuthHeaders = cloneStringMap(a.AuthHeaders)
+	a.Tokens = cloneStringMap(a.Tokens)
+	return a
+}
+
+func cloneAccountPoolConfig(c AccountPoolConfig) AccountPoolConfig {
+	c.Refresh.RefreshOnStatuses = cloneIntSlice(c.Refresh.RefreshOnStatuses)
+	return c
+}
+
+func cloneManagedWorkerSpec(w ManagedWorkerSpec) ManagedWorkerSpec {
+	w.Args = cloneStringSlice(w.Args)
+	w.Env = cloneStringMap(w.Env)
+	return w
+}
+
 func cloneSignerProvider(s SignerProvider) SignerProvider {
 	s.Headers = cloneStringMap(s.Headers)
 	s.OutputMapping = cloneStringMap(s.OutputMapping)
@@ -497,6 +720,9 @@ func cloneServiceRoute(r ServiceRoute) ServiceRoute {
 	r.StaticQuery = cloneStringMap(r.StaticQuery)
 	r.DeviceTags = cloneStringSlice(r.DeviceTags)
 	r.ProxyTags = cloneStringSlice(r.ProxyTags)
+	r.AccountTags = cloneStringSlice(r.AccountTags)
+	r.RefreshOnStatuses = cloneIntSlice(r.RefreshOnStatuses)
+	r.CacheKeyFields = cloneStringSlice(r.CacheKeyFields)
 	return r
 }
 

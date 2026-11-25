@@ -217,11 +217,12 @@ func (m *Manager) ListenAddr() string {
 }
 
 // Handler builds the HTTP handler serving `/health`, `/metrics`,
-// `/openapi.json`, and `/gw/{slug}` with CORS support.
+// `/metrics/prometheus`, `/openapi.json`, and `/gw/{slug}` with CORS support.
 func (m *Manager) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", m.handleHealth)
 	mux.HandleFunc("/metrics", m.handleMetrics)
+	mux.HandleFunc("/metrics/prometheus", m.handlePrometheusMetrics)
 	mux.HandleFunc("/openapi.json", m.handleOpenAPI)
 	mux.HandleFunc("/gw/", m.handleGatewayRoute)
 	return m.withCORS(mux)
@@ -242,7 +243,7 @@ func (m *Manager) withCORS(next http.Handler) http.Handler {
 			}
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Cap-Device-ID, X-Cap-Proxy-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Cap-Device-ID, X-Cap-Proxy-ID, X-Cap-Account-ID, Cache-Control")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -312,6 +313,9 @@ func (m *Manager) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"routes_enabled":  st.RouteEnabled,
 		"proxies_healthy": st.ProxyHealthy,
 		"devices_enabled": st.DeviceEnabled,
+		"accounts_active": st.ActiveAccounts,
+		"workers_healthy": st.HealthyWorkers,
+		"open_circuits":   st.OpenCircuits,
 		"timestamp":       nowRFC3339(),
 	})
 }
@@ -327,6 +331,23 @@ func (m *Manager) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m.Stats())
+}
+
+func (m *Manager) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !m.authenticateRequest(r) {
+		m.authFailures.Add(1)
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized: invalid or missing API key")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte(m.PrometheusMetrics()))
+	}
 }
 
 func (m *Manager) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
@@ -411,7 +432,7 @@ func (m *Manager) handleGatewayRoute(w http.ResponseWriter, r *http.Request) {
 		templateInputs[k] = struct{}{}
 	}
 	for k, vals := range rawQuery {
-		if k == "raw" || k == "api_key" || k == "_device_id" || k == "_proxy_id" {
+		if k == "raw" || k == "api_key" || k == "_device_id" || k == "_proxy_id" || k == "_account_id" {
 			continue
 		}
 		val := ""
@@ -449,19 +470,35 @@ func (m *Manager) handleGatewayRoute(w http.ResponseWriter, r *http.Request) {
 	if proxyPin == "" {
 		proxyPin = strings.TrimSpace(rawQuery.Get("_proxy_id"))
 	}
+	accountPin := strings.TrimSpace(r.Header.Get("X-Cap-Account-ID"))
+	if accountPin == "" {
+		accountPin = strings.TrimSpace(rawQuery.Get("_account_id"))
+	}
+
+	ccHeader := strings.ToLower(r.Header.Get("Cache-Control"))
+	bypassCache := strings.Contains(ccHeader, "no-cache") || strings.Contains(ccHeader, "no-store")
 
 	invokeReq := TestInvokeRequest{
-		RouteSlug: route.Slug,
-		Input:     inputMap,
-		Query:     extraQuery,
-		Headers:   fwdHeaders,
-		Body:      bodyStr,
-		DeviceID:  devicePin,
-		ProxyID:   proxyPin,
-		Raw:       rawMode,
+		RouteSlug:   route.Slug,
+		Input:       inputMap,
+		Query:       extraQuery,
+		Headers:     fwdHeaders,
+		Body:        bodyStr,
+		DeviceID:    devicePin,
+		ProxyID:     proxyPin,
+		AccountID:   accountPin,
+		BypassCache: bypassCache,
+		Raw:         rawMode,
 	}
 
 	res, httpStatus := m.executeRoutePipeline(r.Context(), route, invokeReq, clientIPFromRequest(r))
+
+	if cacheHdr := lookupMapFold(res.Headers, "X-Cap-Cache"); cacheHdr != "" {
+		w.Header().Set("X-Cap-Cache", cacheHdr)
+	}
+	if res.CircuitTripped {
+		w.Header().Set("X-Cap-Circuit", "open")
+	}
 
 	if rawMode && res.Error == "" {
 		for k, v := range res.Headers {
@@ -502,11 +539,90 @@ func (m *Manager) InvokeRoute(ctx context.Context, slug string, req TestInvokeRe
 	return res, nil
 }
 
+type refreshCtxKey struct{}
+
+type refreshCtxState struct {
+	depth   int
+	visited map[string]bool
+}
+
+func getRefreshCtxState(ctx context.Context) *refreshCtxState {
+	if ctx == nil {
+		return nil
+	}
+	st, _ := ctx.Value(refreshCtxKey{}).(*refreshCtxState)
+	return st
+}
+
+func isRefreshCall(ctx context.Context) bool {
+	st := getRefreshCtxState(ctx)
+	return st != nil && st.depth > 0
+}
+
+func canTriggerRefresh(ctx context.Context, currentSlug, targetRefreshSlug string, maxAttempts int) bool {
+	target := normalizeSlug(targetRefreshSlug)
+	cur := normalizeSlug(currentSlug)
+	if target == "" || strings.EqualFold(cur, target) {
+		return false
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultMaxRefreshAttempts
+	}
+	st := getRefreshCtxState(ctx)
+	if st == nil {
+		return true
+	}
+	if st.depth >= maxAttempts {
+		return false
+	}
+	if st.visited[strings.ToLower(target)] {
+		return false
+	}
+	return true
+}
+
+func withRefreshContext(ctx context.Context, currentSlug, targetRefreshSlug string) context.Context {
+	prev := getRefreshCtxState(ctx)
+	visited := make(map[string]bool)
+	depth := 1
+	if prev != nil {
+		depth = prev.depth + 1
+		for k, v := range prev.visited {
+			visited[k] = v
+		}
+	}
+	if c := normalizeSlug(currentSlug); c != "" {
+		visited[strings.ToLower(c)] = true
+	}
+	if t := normalizeSlug(targetRefreshSlug); t != "" {
+		visited[strings.ToLower(t)] = true
+	}
+	return context.WithValue(ctx, refreshCtxKey{}, &refreshCtxState{
+		depth:   depth,
+		visited: visited,
+	})
+}
+
+type upstreamAttemptOutcome struct {
+	resp             *http.Response
+	body             []byte
+	redactedFinalURL string
+	signedParams     map[string]string
+	signedHeaders    map[string]string
+	retriesUsed      int
+	errCode          int
+	errMsg           string
+	upstreamFailure  bool
+}
+
 // executeRoutePipeline implements the full gateway execution chain:
-// Acquire Device -> Acquire Proxy IP (honoring device sticky proxy) -> Render
-// URL/Headers/Body -> Call Signer & inject signature -> Forward to Upstream
-// (with failover retries across healthy proxies) -> Record InvocationRecord &
-// emit live callback.
+// Route TTL Cache -> Per-Route Circuit Breaker -> Acquire Device -> Acquire
+// Account -> Acquire Proxy IP (honoring sticky bindings) -> Render URL/Headers/
+// Body (precedence: static -> device -> account -> request -> signer) -> Call
+// SignerExecutor (supporting Managed Worker Pools) -> Forward to Upstream over
+// TLS/mTLS profile transport (with proxy failover) -> Singleflight Auto-Refresh
+// + Retry ONCE on 401/403/body match -> Async Challenge Webhook -> Circuit
+// state update -> Cache store -> Record InvocationRecord & emit live callback.
 func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute, req TestInvokeRequest, clientIP string) (*TestInvokeResult, int) {
 	start := time.Now()
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
@@ -517,12 +633,18 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		method = http.MethodGet
 	}
 
+	tlsProfile, err := NormalizeTLSProfile(route.TLSProfile)
+	if err != nil {
+		tlsProfile = TLSProfileGoDefault
+	}
+
 	rec := InvocationRecord{
-		RouteID:   route.ID,
-		RouteSlug: route.Slug,
-		Method:    method,
-		SignerID:  route.SignerID,
-		ClientIP:  clientIP,
+		RouteID:    route.ID,
+		RouteSlug:  route.Slug,
+		Method:     method,
+		SignerID:   route.SignerID,
+		TLSProfile: tlsProfile,
+		ClientIP:   clientIP,
 	}
 
 	var secrets []string
@@ -532,7 +654,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		}
 	}
 
-	finishErr := func(httpCode int, errMsg string) (*TestInvokeResult, int) {
+	finishErr := func(httpCode int, errMsg string, extraHeaders map[string]string) (*TestInvokeResult, int) {
 		safeErr := redactSecrets(errMsg, secrets...)
 		elapsed := time.Since(start).Milliseconds()
 		rec.LatencyMs = elapsed
@@ -541,18 +663,80 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		rec.Error = safeErr
 		m.recordInvocation(rec)
 		return &TestInvokeResult{
-			OK:          false,
-			Status:      httpCode,
-			LatencyMs:   elapsed,
-			SignerMs:    rec.SignerMs,
-			UpstreamURL: rec.UpstreamURL,
-			Proxy:       rec.ProxyName,
-			ProxyID:     rec.ProxyID,
-			Device:      rec.DeviceName,
-			DeviceID:    rec.DeviceID,
-			Retries:     rec.Retries,
-			Error:       safeErr,
+			OK:               false,
+			Status:           httpCode,
+			LatencyMs:        elapsed,
+			SignerMs:         rec.SignerMs,
+			UpstreamURL:      rec.UpstreamURL,
+			Proxy:            rec.ProxyName,
+			ProxyID:          rec.ProxyID,
+			Device:           rec.DeviceName,
+			DeviceID:         rec.DeviceID,
+			Account:          rec.AccountName,
+			AccountID:        rec.AccountID,
+			CacheHit:         rec.CacheHit,
+			CircuitTripped:   rec.CircuitTripped,
+			RefreshTriggered: rec.RefreshTriggered,
+			TLSProfile:       rec.TLSProfile,
+			Headers:          extraHeaders,
+			Retries:          rec.Retries,
+			Error:            safeErr,
 		}, httpCode
+	}
+
+	// Step 0a: Route TTL Response Cache lookup (when CacheTTLSec > 0 and not inside a refresh call)
+	cacheEnabled := route.CacheTTLSec > 0 && !isRefreshCall(ctx)
+	var cacheKey string
+	bypassCache := req.BypassCache ||
+		cacheControlHasDirective(req.Headers, "no-cache") ||
+		cacheControlHasDirective(req.Headers, "no-store")
+	noStore := cacheControlHasDirective(req.Headers, "no-store")
+
+	if cacheEnabled {
+		cacheKey = BuildCacheKey(route, method, req)
+		if !bypassCache {
+			if cached, hit := m.cache.Get(route.Slug, cacheKey); hit {
+				m.cacheHits.Add(1)
+				elapsed := time.Since(start).Milliseconds()
+				rec.CacheHit = true
+				rec.StatusCode = cached.status
+				rec.UpstreamURL = cached.upstreamURL
+				rec.LatencyMs = elapsed
+				rec.OK = true
+				m.recordInvocation(rec)
+
+				hdrs := cloneStringMap(cached.headers)
+				if hdrs == nil {
+					hdrs = make(map[string]string)
+				}
+				setHeaderFold(hdrs, "X-Cap-Cache", "HIT")
+				return &TestInvokeResult{
+					OK:          true,
+					Status:      cached.status,
+					LatencyMs:   elapsed,
+					UpstreamURL: cached.upstreamURL,
+					CacheHit:    true,
+					TLSProfile:  rec.TLSProfile,
+					Headers:     hdrs,
+					Body:        cached.body,
+					Data:        cached.data,
+				}, http.StatusOK
+			}
+		}
+		m.cacheMisses.Add(1)
+	}
+
+	// Step 0b: Per-Route Circuit Breaker check
+	if route.CircuitFailThreshold > 0 {
+		allowed, _ := m.circuits.Allow(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec)
+		if !allowed {
+			rec.CircuitTripped = true
+			return finishErr(
+				http.StatusServiceUnavailable,
+				fmt.Sprintf("circuit breaker open for route %q", route.Slug),
+				map[string]string{"X-Cap-Circuit": "open"},
+			)
+		}
 	}
 
 	// Step 1: Acquire Device (if required, tagged, explicitly pinned, or referenced in templates)
@@ -566,7 +750,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		dev, err := m.devices.Acquire(route.DeviceTags, req.DeviceID)
 		if err != nil {
 			if route.RequireDevice || strings.TrimSpace(req.DeviceID) != "" {
-				return finishErr(http.StatusServiceUnavailable, fmt.Sprintf("acquire device: %v", err))
+				return finishErr(http.StatusServiceUnavailable, fmt.Sprintf("acquire device: %v", err), nil)
 			}
 		} else {
 			device = dev
@@ -575,8 +759,61 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		}
 	}
 
-	// Step 2: Acquire initial Proxy IP (honoring explicit pin or device sticky proxy / region)
+	// Step 2: Acquire Account (if required, tagged, explicitly pinned, or referenced in templates)
+	poolRefreshCfg := m.accounts.Config().Refresh
+	refreshSlug := route.RefreshRouteSlug
+	if refreshSlug == "" {
+		refreshSlug = poolRefreshCfg.RefreshRouteSlug
+	}
+	webhookURL := route.ChallengeWebhookURL
+	if webhookURL == "" {
+		webhookURL = poolRefreshCfg.ChallengeWebhookURL
+	}
+
+	var account *AccountProfile
+	needAccount := route.RequireAccount ||
+		strings.TrimSpace(req.AccountID) != "" ||
+		len(route.AccountTags) > 0 ||
+		routeUsesAccountTemplates(route)
+
+	if needAccount {
+		deviceID := ""
+		if device != nil {
+			deviceID = device.ID
+		}
+		acc, err := m.accounts.Acquire(AccountSelectOptions{
+			Tags:           route.AccountTags,
+			ExplicitID:     req.AccountID,
+			DeviceID:       deviceID,
+			IncludeExpired: (route.AutoRefresh && refreshSlug != "") || isRefreshCall(ctx),
+		})
+		if err != nil {
+			if route.RequireAccount || strings.TrimSpace(req.AccountID) != "" {
+				return finishErr(http.StatusServiceUnavailable, fmt.Sprintf("acquire account: %v", err), nil)
+			}
+		} else {
+			account = acc
+			rec.AccountID = acc.ID
+			rec.AccountName = acc.Name
+			for _, sec := range accountSecrets(acc) {
+				trackSecret(sec)
+			}
+			// If account specifies a sticky device and none was acquired yet, try to bind it.
+			if device == nil && strings.TrimSpace(acc.StickyDeviceID) != "" {
+				if dev, devErr := m.devices.Acquire(nil, acc.StickyDeviceID); devErr == nil {
+					device = dev
+					rec.DeviceID = dev.ID
+					rec.DeviceName = dev.Name
+				}
+			}
+		}
+	}
+
+	// Step 3: Acquire initial Proxy IP (honoring explicit pin, device sticky proxy, or account sticky proxy)
 	stickyProxyID, stickyRegion := m.devices.StickyProxyFor(device)
+	if stickyProxyID == "" && account != nil && strings.TrimSpace(account.StickyProxyID) != "" {
+		stickyProxyID = strings.TrimSpace(account.StickyProxyID)
+	}
 	if strings.TrimSpace(req.ProxyID) != "" {
 		stickyProxyID = strings.TrimSpace(req.ProxyID)
 	}
@@ -602,7 +839,7 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		pn, err := m.proxies.Select(proxyOpts)
 		if err != nil {
 			if route.RequireProxy || strings.TrimSpace(req.ProxyID) != "" {
-				return finishErr(http.StatusBadGateway, fmt.Sprintf("acquire proxy: %v", err))
+				return finishErr(http.StatusBadGateway, fmt.Sprintf("acquire proxy: %v", err), nil)
 			}
 			// Pool has no eligible proxies and proxy is optional -> fall back to direct.
 			wantProxy = false
@@ -614,309 +851,590 @@ func (m *Manager) executeRoutePipeline(ctx context.Context, route *ServiceRoute,
 		}
 	}
 
-	// Step 3: Render URL / Headers / Body with TemplateContext
-	now := time.Now()
-	tplCtx := TemplateContext{
-		Input:       req.Input,
-		Device:      device,
-		Timestamp:   now.Unix(),
-		TimestampMs: now.UnixMilli(),
-		Nonce:       randomHex(8),
-	}
+	// Step 4 & 5 encapsulated so singleflight auto-refresh can cleanly re-render,
+	// re-sign, and replay the upstream request ONCE with refreshed credentials.
+	attemptUpstream := func(activeAcc *AccountProfile) upstreamAttemptOutcome {
+		now := time.Now()
+		tplCtx := TemplateContext{
+			Input:       req.Input,
+			Device:      device,
+			Account:     activeAcc,
+			Timestamp:   now.Unix(),
+			TimestampMs: now.UnixMilli(),
+			Nonce:       randomHex(8),
+		}
 
-	parsedURL, err := RenderURLTemplate(route.UpstreamURL, tplCtx)
-	if err != nil {
-		return finishErr(http.StatusBadRequest, fmt.Sprintf("invalid rendered upstream URL: %v", err))
-	}
-	if parsedURL.User != nil {
-		if pw, ok := parsedURL.User.Password(); ok {
-			trackSecret(pw)
-		}
-	}
-
-	q := parsedURL.Query()
-	for k, v := range route.StaticQuery {
-		q.Set(k, RenderTemplate(v, tplCtx))
-	}
-	for k, v := range req.Query {
-		q.Set(k, v)
-	}
-	parsedURL.RawQuery = q.Encode()
-
-	headers := make(map[string]string)
-	// Base headers from acquired device fingerprint & session.
-	if device != nil {
-		if device.Fingerprint.UserAgent != "" {
-			setHeaderFold(headers, "User-Agent", device.Fingerprint.UserAgent)
-		}
-		if device.Fingerprint.Locale != "" {
-			setHeaderFold(headers, "Accept-Language", strings.ReplaceAll(device.Fingerprint.Locale, "_", "-"))
-		}
-		for k, v := range device.Fingerprint.ExtraHeaders {
-			setHeaderFold(headers, k, v)
-		}
-		for k, v := range device.AuthHeaders {
-			setHeaderFold(headers, k, v)
-		}
-		if len(device.Cookies) > 0 {
-			setHeaderFold(headers, "Cookie", formatCookieHeader(device.Cookies))
-		}
-	}
-	// Overlay route static headers (rendered).
-	for k, v := range route.StaticHeaders {
-		if isHopByHopOrAutoHeader(k) {
-			continue
-		}
-		setHeaderFold(headers, k, RenderTemplate(v, tplCtx))
-	}
-	// Overlay caller request headers.
-	for k, v := range req.Headers {
-		if isHopByHopOrAutoHeader(k) || isGatewayInternalHeader(k) {
-			continue
-		}
-		setHeaderFold(headers, k, v)
-	}
-
-	var renderedBody string
-	if strings.TrimSpace(route.BodyTemplate) != "" {
-		trimmedTpl := strings.TrimSpace(route.BodyTemplate)
-		ct := strings.ToLower(lookupMapFold(headers, "Content-Type"))
-		if strings.HasPrefix(trimmedTpl, "{") || strings.HasPrefix(trimmedTpl, "[") || strings.Contains(ct, "json") {
-			renderedBody = RenderJSONTemplate(route.BodyTemplate, tplCtx)
-		} else {
-			renderedBody = RenderTemplate(route.BodyTemplate, tplCtx)
-		}
-	} else {
-		renderedBody = req.Body
-	}
-
-	// Step 4: Call Signer & inject signature
-	var signedParams map[string]string
-	var signedHeaders map[string]string
-	if strings.TrimSpace(route.SignerID) != "" {
-		signer, ok := m.GetSigner(route.SignerID)
-		if !ok {
-			return finishErr(http.StatusBadGateway, fmt.Sprintf("signer %q not found", route.SignerID))
-		}
-		if !signer.Enabled {
-			return finishErr(http.StatusBadGateway, fmt.Sprintf("signer %q is disabled", signer.Name))
-		}
-		trackSecret(signer.HMACSecret)
-
-		flatQuery := make(map[string]string)
-		for k, vals := range parsedURL.Query() {
-			if len(vals) > 0 {
-				flatQuery[k] = vals[0]
+		parsedURL, err := RenderURLTemplate(route.UpstreamURL, tplCtx)
+		if err != nil {
+			return upstreamAttemptOutcome{
+				errCode: http.StatusBadRequest,
+				errMsg:  fmt.Sprintf("invalid rendered upstream URL: %v", err),
 			}
 		}
-		signerIn := SignerInput{
-			Method:    method,
-			URL:       parsedURL.String(),
-			Path:      parsedURL.Path,
-			Query:     flatQuery,
-			Headers:   cloneStringMap(headers),
-			Body:      renderedBody,
-			Timestamp: tplCtx.Timestamp,
-			Nonce:     tplCtx.Nonce,
-			Device:    device,
-			Input:     cloneStringMap(req.Input),
+		if parsedURL.User != nil {
+			if pw, ok := parsedURL.User.Password(); ok {
+				trackSecret(pw)
+			}
 		}
 
-		sigOut, sigErr := ExecuteSigner(ctx, signer, signerIn)
-		if sigErr != nil {
-			return finishErr(http.StatusBadGateway, fmt.Sprintf("signer %q failed: %v", signer.Name, sigErr))
+		q := parsedURL.Query()
+		for k, v := range route.StaticQuery {
+			q.Set(k, RenderTemplate(v, tplCtx))
 		}
-		rec.SignerMs = sigOut.LatencyMs
-
-		beforeQuery := parsedURL.Query()
-		beforeHeaders := cloneStringMap(headers)
-		parsedURL, headers, renderedBody, err = ApplySignature(signer, sigOut, parsedURL, headers, renderedBody)
-		if err != nil {
-			return finishErr(http.StatusBadGateway, fmt.Sprintf("apply signature: %v", err))
+		for k, v := range req.Query {
+			q.Set(k, v)
 		}
-		signedParams = diffQueryParams(beforeQuery, parsedURL.Query())
-		signedHeaders = diffStringMaps(beforeHeaders, headers)
-	}
+		parsedURL.RawQuery = q.Encode()
 
-	finalURL := parsedURL.String()
-	redactedFinalURL := parsedURL.Redacted()
-	rec.UpstreamURL = redactedFinalURL
+		// Header precedence (case-insensitive):
+		// 1. static route headers -> 2. device headers -> 3. account headers -> 4. dynamic request headers -> 5. signer headers
+		headers := make(map[string]string)
 
-	// Step 5: Forward to Upstream (with failover retries across healthy proxies)
-	timeoutSec := route.TimeoutSec
-	if timeoutSec <= 0 {
-		timeoutSec = DefaultTimeoutSec
-	}
-	timeout := time.Duration(timeoutSec) * time.Second
-
-	maxRetries := 0
-	if wantProxy && strings.TrimSpace(req.ProxyID) == "" {
-		maxRetries = m.proxies.Config().FailoverRetries
-		if maxRetries < 0 {
-			maxRetries = 0
+		// 1. Static route headers (rendered)
+		for k, v := range route.StaticHeaders {
+			if isHopByHopOrAutoHeader(k) {
+				continue
+			}
+			setHeaderFold(headers, k, RenderTemplate(v, tplCtx))
 		}
-	}
 
-	triedProxies := make(map[string]bool)
-	currentProxy := initialProxy
+		// 2. Device headers
+		if device != nil {
+			if device.Fingerprint.UserAgent != "" {
+				setHeaderFold(headers, "User-Agent", device.Fingerprint.UserAgent)
+			}
+			if device.Fingerprint.Locale != "" {
+				setHeaderFold(headers, "Accept-Language", strings.ReplaceAll(device.Fingerprint.Locale, "_", "-"))
+			}
+			for k, v := range device.Fingerprint.ExtraHeaders {
+				setHeaderFold(headers, k, v)
+			}
+			for k, v := range device.AuthHeaders {
+				setHeaderFold(headers, k, v)
+			}
+			if len(device.Cookies) > 0 {
+				setHeaderFold(headers, "Cookie", formatCookieHeader(device.Cookies))
+			}
+		}
 
-	var (
-		upstreamResp *http.Response
-		upstreamBody []byte
-		lastErr      error
-		retriesUsed  int
-	)
+		// 3. Account headers (AuthHeaders, Cookie, and Bearer Token when not custom-templated)
+		if activeAcc != nil {
+			for k, v := range activeAcc.AuthHeaders {
+				if isHopByHopOrAutoHeader(k) {
+					continue
+				}
+				setHeaderFold(headers, k, v)
+			}
+			if cookieVal := activeAcc.EffectiveCookie(); cookieVal != "" && !staticHeaderUsesAccountTemplate(route, "Cookie") {
+				setHeaderFold(headers, "Cookie", cookieVal)
+			}
+			if tok := activeAcc.EffectiveToken(); tok != "" &&
+				!hasKeyFold(activeAcc.AuthHeaders, "Authorization") &&
+				!staticHeaderUsesAccountTemplate(route, "Authorization") {
+				authVal := tok
+				if !strings.Contains(tok, " ") {
+					authVal = "Bearer " + tok
+				}
+				setHeaderFold(headers, "Authorization", authVal)
+			}
+		}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			// Select next healthy proxy excluding previously failed ones.
-			nextProxy, selErr := m.proxies.Select(ProxySelectOptions{
-				Tags:       route.ProxyTags,
-				Region:     stickyRegion,
-				ExcludeIDs: triedProxies,
-			})
-			if selErr != nil {
-				// Retry without region restriction if region-specific proxies exhausted.
-				if stickyRegion != "" {
+		// 4. Caller dynamic request headers
+		for k, v := range req.Headers {
+			if isHopByHopOrAutoHeader(k) || isGatewayInternalHeader(k) {
+				continue
+			}
+			setHeaderFold(headers, k, v)
+		}
+
+		var renderedBody string
+		if strings.TrimSpace(route.BodyTemplate) != "" {
+			trimmedTpl := strings.TrimSpace(route.BodyTemplate)
+			ct := strings.ToLower(lookupMapFold(headers, "Content-Type"))
+			if strings.HasPrefix(trimmedTpl, "{") || strings.HasPrefix(trimmedTpl, "[") || strings.Contains(ct, "json") {
+				renderedBody = RenderJSONTemplate(route.BodyTemplate, tplCtx)
+			} else {
+				renderedBody = RenderTemplate(route.BodyTemplate, tplCtx)
+			}
+		} else {
+			renderedBody = req.Body
+		}
+
+		// 5. Call SignerExecutor & inject signature
+		var signedParams map[string]string
+		var signedHeaders map[string]string
+		if strings.TrimSpace(route.SignerID) != "" {
+			signer, ok := m.GetSigner(route.SignerID)
+			if !ok {
+				return upstreamAttemptOutcome{
+					errCode: http.StatusBadGateway,
+					errMsg:  fmt.Sprintf("signer %q not found", route.SignerID),
+				}
+			}
+			if !signer.Enabled {
+				return upstreamAttemptOutcome{
+					errCode: http.StatusBadGateway,
+					errMsg:  fmt.Sprintf("signer %q is disabled", signer.Name),
+				}
+			}
+			trackSecret(signer.HMACSecret)
+
+			flatQuery := make(map[string]string)
+			for k, vals := range parsedURL.Query() {
+				if len(vals) > 0 {
+					flatQuery[k] = vals[0]
+				}
+			}
+			signerIn := SignerInput{
+				Method:    method,
+				URL:       parsedURL.String(),
+				Path:      parsedURL.Path,
+				Query:     flatQuery,
+				Headers:   cloneStringMap(headers),
+				Body:      renderedBody,
+				Timestamp: tplCtx.Timestamp,
+				Nonce:     tplCtx.Nonce,
+				Device:    device,
+				Account:   activeAcc,
+				Input:     cloneStringMap(req.Input),
+			}
+
+			sigOut, sigErr := m.signerExec.Execute(ctx, signer, signerIn)
+			if sigErr != nil {
+				return upstreamAttemptOutcome{
+					errCode: http.StatusBadGateway,
+					errMsg:  fmt.Sprintf("signer %q failed: %v", signer.Name, sigErr),
+				}
+			}
+			rec.SignerMs = sigOut.LatencyMs
+
+			beforeQuery := parsedURL.Query()
+			beforeHeaders := cloneStringMap(headers)
+			parsedURL, headers, renderedBody, err = ApplySignature(signer, sigOut, parsedURL, headers, renderedBody)
+			if err != nil {
+				return upstreamAttemptOutcome{
+					errCode: http.StatusBadGateway,
+					errMsg:  fmt.Sprintf("apply signature: %v", err),
+				}
+			}
+			signedParams = diffQueryParams(beforeQuery, parsedURL.Query())
+			signedHeaders = diffStringMaps(beforeHeaders, headers)
+		}
+
+		finalURL := parsedURL.String()
+		redactedFinalURL := parsedURL.Redacted()
+		rec.UpstreamURL = redactedFinalURL
+
+		// Forward to Upstream (with failover retries across healthy proxies & TLS/mTLS profile)
+		timeoutSec := route.TimeoutSec
+		if timeoutSec <= 0 {
+			timeoutSec = DefaultTimeoutSec
+		}
+		timeout := time.Duration(timeoutSec) * time.Second
+
+		maxRetries := 0
+		if wantProxy && strings.TrimSpace(req.ProxyID) == "" {
+			maxRetries = m.proxies.Config().FailoverRetries
+			if maxRetries < 0 {
+				maxRetries = 0
+			}
+		}
+
+		triedProxies := make(map[string]bool)
+		currentProxy := initialProxy
+
+		var (
+			upstreamResp *http.Response
+			upstreamBody []byte
+			lastErr      error
+			retriesUsed  int
+		)
+
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if attempt > 0 {
+				nextProxy, selErr := m.proxies.Select(ProxySelectOptions{
+					Tags:       route.ProxyTags,
+					Region:     stickyRegion,
+					ExcludeIDs: triedProxies,
+				})
+				if selErr != nil && stickyRegion != "" {
 					nextProxy, selErr = m.proxies.Select(ProxySelectOptions{
 						Tags:       route.ProxyTags,
 						ExcludeIDs: triedProxies,
 					})
 				}
+				if selErr != nil {
+					break
+				}
+				currentProxy = nextProxy
+				retriesUsed++
 			}
-			if selErr != nil {
-				break
-			}
-			currentProxy = nextProxy
-			retriesUsed++
-		}
 
-		var transport http.RoundTripper = m.directTransport
-		if wantProxy && currentProxy != nil {
-			trackSecret(currentProxy.Password)
-			rec.ProxyID = currentProxy.ID
-			rec.ProxyName = currentProxy.Name
-			tr, trErr := m.proxies.TransportFor(currentProxy)
+			var activeProxy *ProxyNode
+			if wantProxy && currentProxy != nil {
+				activeProxy = currentProxy
+				trackSecret(currentProxy.Password)
+				rec.ProxyID = currentProxy.ID
+				rec.ProxyName = currentProxy.Name
+			}
+
+			transport, trErr := m.transportForRoute(activeProxy, route)
 			if trErr != nil {
 				lastErr = trErr
-				triedProxies[currentProxy.ID] = true
-				m.proxies.RecordResult(currentProxy.ID, false, 0, trErr)
-				continue
+				if activeProxy != nil {
+					triedProxies[activeProxy.ID] = true
+					m.proxies.RecordResult(activeProxy.ID, false, 0, trErr)
+					continue
+				}
+				break
 			}
-			transport = tr
-		}
 
-		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-		var bodyReader io.Reader
-		if renderedBody != "" {
-			bodyReader = bytes.NewBufferString(renderedBody)
-		}
-		upReq, reqErr := http.NewRequestWithContext(attemptCtx, method, finalURL, bodyReader)
-		if reqErr != nil {
-			cancel()
-			return finishErr(http.StatusBadRequest, fmt.Sprintf("build upstream request: %v", reqErr))
-		}
-		for k, v := range headers {
-			upReq.Header.Set(k, v)
-		}
-
-		client := &http.Client{
-			Transport: transport,
-			Timeout:   timeout,
-		}
-
-		hopStart := time.Now()
-		resp, doErr := client.Do(upReq)
-		hopMs := time.Since(hopStart).Milliseconds()
-		if hopMs <= 0 {
-			hopMs = 1
-		}
-
-		if doErr != nil {
-			cancel()
-			lastErr = doErr
-			if wantProxy && currentProxy != nil {
-				triedProxies[currentProxy.ID] = true
-				m.proxies.RecordResult(currentProxy.ID, false, hopMs, doErr)
-				continue
+			attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+			var bodyReader io.Reader
+			if renderedBody != "" {
+				bodyReader = bytes.NewBufferString(renderedBody)
 			}
+			upReq, reqErr := http.NewRequestWithContext(attemptCtx, method, finalURL, bodyReader)
+			if reqErr != nil {
+				cancel()
+				return upstreamAttemptOutcome{
+					errCode: http.StatusBadRequest,
+					errMsg:  fmt.Sprintf("build upstream request: %v", reqErr),
+				}
+			}
+			for k, v := range headers {
+				upReq.Header.Set(k, v)
+			}
+
+			client := &http.Client{
+				Transport: transport,
+				Timeout:   timeout,
+			}
+
+			hopStart := time.Now()
+			resp, doErr := client.Do(upReq)
+			hopMs := time.Since(hopStart).Milliseconds()
+			if hopMs <= 0 {
+				hopMs = 1
+			}
+
+			if doErr != nil {
+				cancel()
+				lastErr = doErr
+				if activeProxy != nil {
+					triedProxies[activeProxy.ID] = true
+					m.proxies.RecordResult(activeProxy.ID, false, hopMs, doErr)
+					continue
+				}
+				break
+			}
+
+			bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamRespBytes))
+			resp.Body.Close()
+			cancel()
+
+			if readErr != nil {
+				lastErr = readErr
+				if activeProxy != nil {
+					triedProxies[activeProxy.ID] = true
+					m.proxies.RecordResult(activeProxy.ID, false, hopMs, readErr)
+					continue
+				}
+				break
+			}
+
+			if activeProxy != nil {
+				m.proxies.RecordResult(activeProxy.ID, true, hopMs, nil)
+			}
+			upstreamResp = resp
+			upstreamBody = bodyBytes
+			lastErr = nil
 			break
 		}
 
-		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamRespBytes))
-		resp.Body.Close()
-		cancel()
-
-		if readErr != nil {
-			lastErr = readErr
-			if wantProxy && currentProxy != nil {
-				triedProxies[currentProxy.ID] = true
-				m.proxies.RecordResult(currentProxy.ID, false, hopMs, readErr)
-				continue
+		if lastErr != nil || upstreamResp == nil {
+			errMsg := "upstream request failed"
+			if lastErr != nil {
+				errMsg = fmt.Sprintf("upstream request failed: %v", lastErr)
 			}
-			break
+			return upstreamAttemptOutcome{
+				redactedFinalURL: redactedFinalURL,
+				retriesUsed:      retriesUsed,
+				errCode:          http.StatusBadGateway,
+				errMsg:           errMsg,
+				upstreamFailure:  true,
+			}
 		}
 
-		if wantProxy && currentProxy != nil {
-			m.proxies.RecordResult(currentProxy.ID, true, hopMs, nil)
+		return upstreamAttemptOutcome{
+			resp:             upstreamResp,
+			body:             upstreamBody,
+			redactedFinalURL: redactedFinalURL,
+			signedParams:     signedParams,
+			signedHeaders:    signedHeaders,
+			retriesUsed:      retriesUsed,
 		}
-		upstreamResp = resp
-		upstreamBody = bodyBytes
-		lastErr = nil
-		break
 	}
 
-	rec.Retries = retriesUsed
+	outcome := attemptUpstream(account)
+	rec.Retries = outcome.retriesUsed
 
-	if lastErr != nil || upstreamResp == nil {
-		errMsg := "upstream request failed"
-		if lastErr != nil {
-			errMsg = fmt.Sprintf("upstream request failed: %v", lastErr)
+	if outcome.errMsg != "" || outcome.resp == nil {
+		if outcome.upstreamFailure && route.CircuitFailThreshold > 0 {
+			m.circuits.RecordFailure(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec, redactSecrets(outcome.errMsg, secrets...))
 		}
-		return finishErr(http.StatusBadGateway, errMsg)
+		code := outcome.errCode
+		if code <= 0 {
+			code = http.StatusBadGateway
+		}
+		return finishErr(code, outcome.errMsg, nil)
 	}
 
-	// Step 6: Build response envelope & record telemetry
-	respHeaders := make(map[string]string, len(upstreamResp.Header))
-	for k, vals := range upstreamResp.Header {
+	// Step 5b: Singleflight Auto-Refresh on 401/403 (or body match) and Retry ONCE
+	maxRefreshAttempts := poolRefreshCfg.MaxRefreshAttempts
+	if maxRefreshAttempts <= 0 {
+		maxRefreshAttempts = DefaultMaxRefreshAttempts
+	}
+	matchedRefresh := shouldTriggerRefresh(route, poolRefreshCfg, outcome.resp.StatusCode, outcome.body)
+	var refreshErr error
+	if route.AutoRefresh && account != nil && matchedRefresh && canTriggerRefresh(ctx, route.Slug, refreshSlug, maxRefreshAttempts) {
+		seenRefreshCount := account.RefreshCount
+		seenToken := account.EffectiveToken()
+		seenCookie := account.EffectiveCookie()
+		devID := ""
+		if device != nil {
+			devID = device.ID
+		}
+
+		refreshedAcc, rErr := m.accounts.RefreshSingleflight(
+			ctx,
+			account.ID,
+			seenRefreshCount,
+			seenToken,
+			seenCookie,
+			func(rCtx context.Context) (AccountCredentialUpdate, error) {
+				guardedCtx := withRefreshContext(rCtx, route.Slug, refreshSlug)
+				refreshReq := TestInvokeRequest{
+					RouteSlug: refreshSlug,
+					AccountID: account.ID,
+					DeviceID:  devID,
+					Input: map[string]string{
+						"account_id":    account.ID,
+						"username":      account.Username,
+						"refresh_token": account.RefreshToken,
+					},
+				}
+				rRes, invErr := m.InvokeRoute(guardedCtx, refreshSlug, refreshReq)
+				if invErr != nil {
+					return AccountCredentialUpdate{}, fmt.Errorf("refresh route %q failed: %w", refreshSlug, invErr)
+				}
+				return extractCredentialsFromRefreshResult(rRes, time.Now())
+			},
+		)
+		if rErr != nil {
+			refreshErr = rErr
+		} else if refreshedAcc != nil {
+			rec.RefreshTriggered = true
+			account = refreshedAcc
+			for _, sec := range accountSecrets(refreshedAcc) {
+				trackSecret(sec)
+			}
+			retryOutcome := attemptUpstream(refreshedAcc)
+			rec.Retries += retryOutcome.retriesUsed
+			if retryOutcome.errMsg != "" || retryOutcome.resp == nil {
+				if retryOutcome.upstreamFailure && route.CircuitFailThreshold > 0 {
+					m.circuits.RecordFailure(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec, redactSecrets(retryOutcome.errMsg, secrets...))
+				}
+				code := retryOutcome.errCode
+				if code <= 0 {
+					code = http.StatusBadGateway
+				}
+				return finishErr(code, retryOutcome.errMsg, nil)
+			}
+			outcome = retryOutcome
+		}
+	}
+
+	// Step 5c: Non-refreshable challenge / risk-control webhook alerting (never bypasses CAPTCHAs)
+	if challengeReason, challenged := classifyChallengeOutcome(outcome.resp.StatusCode, outcome.body, refreshErr, rec.RefreshTriggered); challenged {
+		if account != nil && (challengeReason != "" && (outcome.resp.StatusCode == http.StatusForbidden || outcome.resp.StatusCode == http.StatusTooManyRequests || outcome.resp.StatusCode == http.StatusUnavailableForLegalReasons || strings.Contains(challengeReason, "challenge"))) {
+			_ = m.accounts.MarkChallenged(account.ID, challengeReason)
+		}
+		if webhookURL != "" {
+			m.dispatchChallengeWebhookAsync(webhookURL, challengeWebhookPayload{
+				Event:       "gateway.challenge_detected",
+				Timestamp:   nowRFC3339(),
+				RouteID:     route.ID,
+				RouteSlug:   route.Slug,
+				AccountID:   rec.AccountID,
+				AccountName: rec.AccountName,
+				DeviceID:    rec.DeviceID,
+				ProxyID:     rec.ProxyID,
+				StatusCode:  outcome.resp.StatusCode,
+				UpstreamURL: outcome.redactedFinalURL,
+				Reason:      challengeReason,
+				BodyPreview: string(outcome.body),
+			}, secrets)
+		}
+	}
+
+	// Step 5d: Update Circuit Breaker from upstream response status
+	if route.CircuitFailThreshold > 0 {
+		if outcome.resp.StatusCode >= 500 {
+			m.circuits.RecordFailure(route.Slug, route.CircuitFailThreshold, route.CircuitCooldownSec, fmt.Sprintf("upstream HTTP %d", outcome.resp.StatusCode))
+		} else {
+			m.circuits.RecordSuccess(route.Slug)
+		}
+	}
+
+	// Step 6: Build response envelope, update cache & record telemetry
+	respHeaders := make(map[string]string, len(outcome.resp.Header)+1)
+	for k, vals := range outcome.resp.Header {
 		if len(vals) > 0 {
 			respHeaders[k] = strings.Join(vals, ", ")
 		}
 	}
 
 	var parsedData any
-	if trimmed := bytes.TrimSpace(upstreamBody); len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+	if trimmed := bytes.TrimSpace(outcome.body); len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 		var tmp any
 		if json.Unmarshal(trimmed, &tmp) == nil {
 			parsedData = tmp
 		}
 	}
 
+	if cacheEnabled {
+		if outcome.resp.StatusCode >= 200 && outcome.resp.StatusCode < 300 && !noStore {
+			m.cache.Set(route.Slug, cacheKey, cachedRouteEntry{
+				status:      outcome.resp.StatusCode,
+				headers:     respHeaders,
+				body:        string(outcome.body),
+				data:        parsedData,
+				upstreamURL: outcome.redactedFinalURL,
+			}, time.Duration(route.CacheTTLSec)*time.Second, route.CacheMaxEntries)
+		}
+		setHeaderFold(respHeaders, "X-Cap-Cache", "MISS")
+	}
+
 	elapsed := time.Since(start).Milliseconds()
-	ok := upstreamResp.StatusCode >= 200 && upstreamResp.StatusCode < 500
-	rec.StatusCode = upstreamResp.StatusCode
+	ok := outcome.resp.StatusCode >= 200 && outcome.resp.StatusCode < 500
+	rec.StatusCode = outcome.resp.StatusCode
 	rec.LatencyMs = elapsed
 	rec.OK = ok
 	m.recordInvocation(rec)
 
 	res := &TestInvokeResult{
-		OK:            ok,
-		Status:        upstreamResp.StatusCode,
-		LatencyMs:     elapsed,
-		SignerMs:      rec.SignerMs,
-		UpstreamURL:   redactedFinalURL,
-		Proxy:         rec.ProxyName,
-		ProxyID:       rec.ProxyID,
-		Device:        rec.DeviceName,
-		DeviceID:      rec.DeviceID,
-		Headers:       respHeaders,
-		Body:          string(upstreamBody),
-		Data:          parsedData,
-		Retries:       retriesUsed,
-		SignedParams:  signedParams,
-		SignedHeaders: signedHeaders,
+		OK:               ok,
+		Status:           outcome.resp.StatusCode,
+		LatencyMs:        elapsed,
+		SignerMs:         rec.SignerMs,
+		UpstreamURL:      outcome.redactedFinalURL,
+		Proxy:            rec.ProxyName,
+		ProxyID:          rec.ProxyID,
+		Device:           rec.DeviceName,
+		DeviceID:         rec.DeviceID,
+		Account:          rec.AccountName,
+		AccountID:        rec.AccountID,
+		CacheHit:         false,
+		CircuitTripped:   false,
+		RefreshTriggered: rec.RefreshTriggered,
+		TLSProfile:       rec.TLSProfile,
+		Headers:          respHeaders,
+		Body:             string(outcome.body),
+		Data:             parsedData,
+		Retries:          rec.Retries,
+		SignedParams:     outcome.signedParams,
+		SignedHeaders:    outcome.signedHeaders,
 	}
 	return res, http.StatusOK
+}
+
+func (m *Manager) transportForRoute(proxy *ProxyNode, route *ServiceRoute) (*http.Transport, error) {
+	needCustomTLS := strings.TrimSpace(route.TLSProfile) != "" &&
+		!strings.EqualFold(strings.TrimSpace(route.TLSProfile), TLSProfileGoDefault)
+	needMTLS := strings.TrimSpace(route.MTLSCertPath) != "" || strings.TrimSpace(route.MTLSKeyPath) != ""
+	hasCustomRoot := m.transports != nil && m.transports.HasCustomRootCAs()
+
+	if !needCustomTLS && !needMTLS && !hasCustomRoot {
+		if proxy != nil {
+			return m.proxies.TransportFor(proxy)
+		}
+		return m.directTransport, nil
+	}
+	return m.transports.TransportFor(proxy, route.TLSProfile, route.MTLSCertPath, route.MTLSKeyPath)
+}
+
+func shouldTriggerRefresh(route *ServiceRoute, poolCfg AccountRefreshConfig, statusCode int, body []byte) bool {
+	statuses := route.RefreshOnStatuses
+	if len(statuses) == 0 {
+		statuses = poolCfg.RefreshOnStatuses
+	}
+	if len(statuses) == 0 {
+		statuses = []int{http.StatusUnauthorized}
+	}
+	for _, s := range statuses {
+		if statusCode == s {
+			return true
+		}
+	}
+	substr := strings.TrimSpace(route.RefreshOnBodySubstr)
+	if substr == "" {
+		substr = strings.TrimSpace(poolCfg.RefreshOnBodySubstr)
+	}
+	if substr != "" && bytes.Contains(body, []byte(substr)) {
+		return true
+	}
+	return false
+}
+
+func classifyChallengeOutcome(statusCode int, body []byte, refreshErr error, refreshTriggered bool) (string, bool) {
+	if reason, ok := detectChallengeBody(body); ok {
+		return reason, true
+	}
+	if statusCode == http.StatusUnavailableForLegalReasons {
+		return fmt.Sprintf("upstream returned HTTP %d (restricted/challenge)", statusCode), true
+	}
+	if statusCode == http.StatusForbidden && (refreshTriggered || refreshErr != nil) {
+		return "upstream returned HTTP 403 after refresh attempt", true
+	}
+	if refreshErr != nil && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
+		return fmt.Sprintf("session refresh failed on HTTP %d: %v", statusCode, refreshErr), true
+	}
+	return "", false
+}
+
+func staticHeaderUsesAccountTemplate(route *ServiceRoute, headerName string) bool {
+	if route == nil {
+		return false
+	}
+	val := lookupMapFold(route.StaticHeaders, headerName)
+	if val == "" {
+		return false
+	}
+	return TemplateUsesAccount(val)
+}
+
+func (m *Manager) dispatchChallengeWebhookAsync(webhookURL string, payload challengeWebhookPayload, secrets []string) {
+	if m.lifecycleCtx != nil && m.lifecycleCtx.Err() != nil {
+		return
+	}
+	secCopy := cloneStringSlice(secrets)
+	select {
+	case m.webhookSem <- struct{}{}:
+	default:
+		// Bound concurrent webhook dispatches under traffic spikes.
+		return
+	}
+	m.webhookWG.Add(1)
+	go func() {
+		defer m.webhookWG.Done()
+		defer func() { <-m.webhookSem }()
+		baseCtx := m.lifecycleCtx
+		if baseCtx == nil {
+			baseCtx = context.Background()
+		}
+		_ = sendChallengeWebhook(baseCtx, webhookURL, payload, secCopy)
+	}()
 }
 
 // OpenAPISpec generates a valid OpenAPI 3.0.3 specification map describing all
@@ -1099,9 +1617,24 @@ func routeUsesDeviceTemplates(route *ServiceRoute) bool {
 	return TemplateUsesDevice(sources...)
 }
 
+func routeUsesAccountTemplates(route *ServiceRoute) bool {
+	if route == nil {
+		return false
+	}
+	sources := make([]string, 0, 2+len(route.StaticHeaders)+len(route.StaticQuery))
+	sources = append(sources, route.UpstreamURL, route.BodyTemplate)
+	for _, v := range route.StaticHeaders {
+		sources = append(sources, v)
+	}
+	for _, v := range route.StaticQuery {
+		sources = append(sources, v)
+	}
+	return TemplateUsesAccount(sources...)
+}
+
 func isGatewayInternalHeader(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "x-api-key", "x-cap-device-id", "x-cap-proxy-id":
+	case "x-api-key", "x-cap-device-id", "x-cap-proxy-id", "x-cap-account-id":
 		return true
 	default:
 		return false

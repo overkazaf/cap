@@ -25,3 +25,13 @@ func killProcGroup(cmd *exec.Cmd) error {
 	}
 	return nil
 }
+
+func killProcGroupPID(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+		return syscall.Kill(pid, syscall.SIGKILL)
+	}
+	return nil
+}

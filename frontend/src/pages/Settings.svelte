@@ -454,7 +454,7 @@
             </div>
             <div class="stat-tile">
               <span class="stat-k">{$t('tools.settings.proxy.caStorePath')}</span>
-              <span class="stat-v mono">~/.cap/ca.crt</span>
+              <span class="stat-v mono">~/.cap/cap-ca.crt</span>
             </div>
           </div>
 

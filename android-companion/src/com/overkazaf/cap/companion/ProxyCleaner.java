@@ -8,6 +8,7 @@ import android.provider.Settings;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
@@ -103,14 +104,28 @@ public final class ProxyCleaner {
         String[] paths = {
                 "/system/bin/su",
                 "/system/xbin/su",
+                "/system_ext/bin/su",
+                "/debug_ramdisk/su",
+                "/vendor/bin/su",
+                "/product/bin/su",
+                "/odm/bin/su",
                 "/sbin/su",
                 "/su/bin/su",
                 "/data/adb/magisk/su",
-                "/data/adb/ksu/bin/su"
+                "/data/adb/ksu/bin/su",
+                "/data/adb/ap/bin/su"
         };
         for (String p : paths) {
             if (new File(p).exists()) {
                 return true;
+            }
+        }
+        String pathEnv = System.getenv("PATH");
+        if (pathEnv != null && !pathEnv.isEmpty()) {
+            for (String dir : pathEnv.split(":")) {
+                if (dir != null && !dir.isEmpty() && new File(dir, "su").exists()) {
+                    return true;
+                }
             }
         }
         return false;
@@ -174,6 +189,30 @@ public final class ProxyCleaner {
         }
     }
 
+    public static File savePrivateCertBytes(Context ctx, byte[] certBytes) {
+        if (ctx == null || certBytes == null || certBytes.length == 0) {
+            return null;
+        }
+        File out = new File(ctx.getApplicationContext().getFilesDir(), "cap-ca.crt");
+        FileOutputStream fos = null;
+        try {
+            fos = new FileOutputStream(out, false);
+            fos.write(certBytes);
+            fos.flush();
+            return out;
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed caching CA cert into app-private storage: " + t.getMessage());
+            return null;
+        } finally {
+            if (fos != null) {
+                try {
+                    fos.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
     public static File findCertFile(Context ctx, String preferredPath) {
         if (preferredPath != null && !preferredPath.trim().isEmpty()) {
             File f = new File(preferredPath.trim());
@@ -182,6 +221,10 @@ public final class ProxyCleaner {
             }
         }
         if (ctx != null) {
+            File privateCert = new File(ctx.getApplicationContext().getFilesDir(), "cap-ca.crt");
+            if (privateCert.isFile() && privateCert.canRead()) {
+                return privateCert;
+            }
             File extDir = ctx.getExternalFilesDir(null);
             if (extDir != null) {
                 File appCert = new File(extDir, "cap-ca.crt");

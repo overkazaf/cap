@@ -69,7 +69,7 @@ func newAndroidConnectCmd() *cobra.Command {
 					return fmt.Errorf("ensure CA certificate: %w", err)
 				}
 			} else {
-				certFile = filepath.Join(defaultCapDir(), "ca.crt")
+				certFile = filepath.Join(defaultCapDir(), "cap-ca.crt")
 			}
 
 			res, err := android.SetupDetailed(android.SetupOptions{
@@ -143,7 +143,7 @@ func newAndroidStatusCmd() *cobra.Command {
 		Short: "Show Android device identity, proxy, CA cert, and Companion Guard status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
-			certPath := filepath.Join(defaultCapDir(), "ca.crt")
+			certPath := filepath.Join(defaultCapDir(), "cap-ca.crt")
 
 			st, err := android.GetDeviceStatus(serial, certPath)
 			if err != nil {
@@ -360,10 +360,12 @@ func renderCertStatusLine(out io.Writer, styled bool, th tui.Theme, cs android.C
 
 func formatCertStatusBadge(th tui.Theme, cs android.CertStatus) string {
 	var badge string
-	switch cs.Store {
-	case "system":
+	switch {
+	case cs.NeedsReboot && !cs.Installed:
+		badge = th.Bold(th.Warn, "▲ "+i18n.T("cli.android.cert.system")+" (reboot)")
+	case cs.Installed && cs.Store == "system":
 		badge = th.Bold(th.Success, "✓ "+i18n.T("cli.android.cert.system"))
-	case "user":
+	case cs.Installed && cs.Store == "user":
 		badge = th.Bold(th.Warn, "● "+i18n.T("cli.android.cert.user"))
 	default:
 		badge = th.Fg(th.Danger, "✗ "+i18n.T("cli.android.cert.none"))

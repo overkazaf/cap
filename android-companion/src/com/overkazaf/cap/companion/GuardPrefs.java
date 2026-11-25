@@ -21,6 +21,9 @@ public final class GuardPrefs {
     private static final String KEY_LAST_CLEANUP_TS = "last_cleanup_ts";
     private static final String KEY_LAST_CLEANUP_REASON = "last_cleanup_reason";
     private static final String KEY_LAST_CLEANUP_OK = "last_cleanup_ok";
+    private static final String KEY_CERT_HASH = "cert_hash";
+    private static final String KEY_CERT_FP = "cert_fp";
+    private static final String KEY_CERT_SUBJECT = "cert_subject";
 
     private GuardPrefs() {}
 
@@ -104,5 +107,31 @@ public final class GuardPrefs {
 
     public static boolean getLastCleanupOk(Context ctx) {
         return prefs(ctx).getBoolean(KEY_LAST_CLEANUP_OK, false);
+    }
+
+    public static void saveCertMeta(Context ctx, String hash, String fingerprint, String subject) {
+        SharedPreferences.Editor ed = prefs(ctx).edit();
+        if (hash != null && !hash.trim().isEmpty()) {
+            ed.putString(KEY_CERT_HASH, hash.trim());
+        }
+        if (fingerprint != null && !fingerprint.trim().isEmpty()) {
+            ed.putString(KEY_CERT_FP, fingerprint.trim());
+        }
+        if (subject != null && !subject.trim().isEmpty()) {
+            ed.putString(KEY_CERT_SUBJECT, subject.trim());
+        }
+        ed.apply();
+    }
+
+    public static String getCertHash(Context ctx) {
+        return prefs(ctx).getString(KEY_CERT_HASH, "");
+    }
+
+    public static String getCertFingerprint(Context ctx) {
+        return prefs(ctx).getString(KEY_CERT_FP, "");
+    }
+
+    public static String getCertSubject(Context ctx) {
+        return prefs(ctx).getString(KEY_CERT_SUBJECT, "");
     }
 }

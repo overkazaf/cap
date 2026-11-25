@@ -277,7 +277,7 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 			case strings.Contains(sh, "===CAP_PKG==="):
 				pkgSection := "Unable to find package: " + CompanionPackage
 				if companionInstalled {
-					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=1\n  versionName=1.0.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
+					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=2\n  versionName=1.1.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
 				}
 				svcSection := "  (nothing)"
 				if watchdogStarted {
@@ -406,7 +406,7 @@ func TestInstallCACertNonRootedCompanionFlow(t *testing.T) {
 				return "su: not found", os.ErrNotExist
 			}
 			if strings.HasPrefix(sh, "dumpsys package "+CompanionPackage) {
-				return "Package [" + CompanionPackage + "]\n  versionCode=1\n  versionName=1.0.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
+				return "Package [" + CompanionPackage + "]\n  versionCode=2\n  versionName=1.1.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
 			}
 			if strings.Contains(sh, CompanionActivity) && strings.Contains(sh, "--ez install_cert true") {
 				launchedCompanion = true
@@ -512,5 +512,215 @@ func TestBuildBindMountScript_HTTPToolkitAndroid14Compliance(t *testing.T) {
 	// Must never bind-mount /data/local/tmp directly onto /system or /apex
 	if strings.Contains(script, `mount --bind "$TMPDIR"`) || strings.Contains(script, `mount --bind "$STAGE"`) {
 		t.Errorf("BuildBindMountScript must mount tmpfs rather than bind-mounting /data/local/tmp")
+	}
+}
+
+func TestCertHashFilenameMatchesOpenSSLAndSupportsDER(t *testing.T) {
+	certPath := filepath.Join("testdata", "test-ca.crt")
+	if _, err := os.Stat(certPath); err != nil {
+		t.Skip("testdata/test-ca.crt not available")
+	}
+	// Verified via: openssl x509 -in internal/android/testdata/test-ca.crt -noout -subject_hash_old -> 28fca1f7
+	if got := CertHashFilename(certPath); got != "28fca1f7.0" {
+		t.Fatalf("CertHashFilename(test-ca.crt) = %q, want 28fca1f7.0", got)
+	}
+
+	// Verify raw DER file parsing fallback produces the exact same subject_hash_old
+	cert, err := parseCertFile(certPath)
+	if err != nil {
+		t.Fatalf("parseCertFile failed: %v", err)
+	}
+	derPath := filepath.Join(t.TempDir(), "test-ca.der")
+	if err := os.WriteFile(derPath, cert.Raw, 0o644); err != nil {
+		t.Fatalf("write DER cert: %v", err)
+	}
+	if got := CertHashFilename(derPath); got != "28fca1f7.0" {
+		t.Fatalf("CertHashFilename(DER) = %q, want 28fca1f7.0", got)
+	}
+}
+
+func TestParseCompanionCertBroadcast(t *testing.T) {
+	const hash = "d7932d1e.0"
+	tests := []struct {
+		name        string
+		output      string
+		wantOK      bool
+		wantInstall bool
+		wantStore   string
+		wantMethod  string
+	}{
+		{
+			name:        "android 14+ system store via AndroidCAStore",
+			output:      `Broadcasting: Intent { ... }` + "\n" + `Broadcast completed: result=-1, data="installed=true;store=system;method=android_ca_store_system;alias=system:d7932d1e.0;hash=d7932d1e.0;apex_dir=true;legacy_only=false;fp_mismatch=false;file_ready=false"`,
+			wantOK:      true,
+			wantInstall: true,
+			wantStore:   "system",
+			wantMethod:  "apex",
+		},
+		{
+			name:        "non-rooted user store via AndroidCAStore",
+			output:      `Broadcast completed: result=-1, data="installed=true;store=user;method=android_ca_store_user;alias=user:d7932d1e.0;hash=d7932d1e.0;apex_dir=true;legacy_only=false;fp_mismatch=false;file_ready=true"`,
+			wantOK:      true,
+			wantInstall: true,
+			wantStore:   "user",
+			wantMethod:  "user",
+		},
+		{
+			name:        "fingerprint mismatch",
+			output:      `Broadcast completed: result=-1, data="installed=false;store=none;method=none;hash=d7932d1e.0;apex_dir=true;legacy_only=false;fp_mismatch=true"`,
+			wantOK:      true,
+			wantInstall: false,
+			wantStore:   "none",
+			wantMethod:  "fingerprint_mismatch",
+		},
+		{
+			name:        "legacy system only",
+			output:      `Broadcast completed: result=-1, data="installed=false;store=none;method=legacy_system_only;hash=d7932d1e.0;apex_dir=true;legacy_only=true;fp_mismatch=false"`,
+			wantOK:      true,
+			wantInstall: false,
+			wantStore:   "none",
+			wantMethod:  "legacy_system_only",
+		},
+		{
+			name:   "empty or missing receiver output",
+			output: `Broadcast completed: result=0`,
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ParseCompanionCertBroadcast(hash, tt.output)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v (got=%+v)", ok, tt.wantOK, got)
+			}
+			if !ok {
+				return
+			}
+			if got.Installed != tt.wantInstall || got.Store != tt.wantStore || got.Method != tt.wantMethod || got.Hash != hash {
+				t.Errorf("got %+v, want installed=%v store=%q method=%q hash=%q",
+					got, tt.wantInstall, tt.wantStore, tt.wantMethod, hash)
+			}
+		})
+	}
+}
+
+func TestCheckCertStatusRootProbeRunsOnLegacySystemOnly(t *testing.T) {
+	certPath := filepath.Join("testdata", "test-ca.crt")
+	if _, err := os.Stat(certPath); err != nil {
+		t.Skip("testdata/test-ca.crt not available")
+	}
+
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	rootProbed := false
+	adbExecFunc = func(args ...string) (string, error) {
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		if len(cmdArgs) > 0 && cmdArgs[0] == "shell" {
+			sh := strings.Join(cmdArgs[1:], " ")
+			switch {
+			case strings.Contains(sh, "echo HAS_APEX_DIR"):
+				// Unprivileged adb shell sees legacy /system only (cannot see zygote ns or /data/misc/user/0)
+				return "HAS_APEX_DIR\nSYSTEM\n", nil
+			case sh == "su -c id":
+				return "uid=0(root) gid=0(root)", nil
+			case strings.Contains(sh, "su --mount-master") && strings.Contains(sh, "cacerts-added"):
+				rootProbed = true
+				return "APEX\n", nil
+			}
+		}
+		return "", nil
+	}
+
+	st := CheckCertStatus("PIXEL14", certPath)
+	if !rootProbed {
+		t.Fatalf("expected root probe to run even when initial probe returned legacy_system_only")
+	}
+	if !st.Installed || st.Store != "system" || st.Method != "apex" {
+		t.Fatalf("expected APEX system cert after root namespace probe, got %+v", st)
+	}
+}
+
+func TestCheckCertStatusNonRootedCompanionFallback(t *testing.T) {
+	certPath := filepath.Join("testdata", "test-ca.crt")
+	if _, err := os.Stat(certPath); err != nil {
+		t.Skip("testdata/test-ca.crt not available")
+	}
+
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	adbExecFunc = func(args ...string) (string, error) {
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		if len(cmdArgs) > 0 && cmdArgs[0] == "shell" {
+			sh := strings.Join(cmdArgs[1:], " ")
+			switch {
+			case strings.Contains(sh, "echo HAS_APEX_DIR"):
+				// Non-rooted adb shell cannot read /data/misc/user/0/cacerts-added
+				return "HAS_APEX_DIR\n", nil
+			case sh == "su -c id":
+				return "su: not found", os.ErrNotExist
+			case strings.Contains(sh, CompanionCertReceiver) && strings.Contains(sh, companionActionCheckCert):
+				return `Broadcast completed: result=-1, data="installed=true;store=user;method=android_ca_store_user;alias=user:28fca1f7.0;hash=28fca1f7.0;apex_dir=true"`, nil
+			}
+		}
+		return "", nil
+	}
+
+	st := CheckCertStatus("NONROOT14", certPath)
+	if !st.Installed || st.Store != "user" || st.Method != "user" || st.Hash != "28fca1f7.0" {
+		t.Fatalf("expected non-rooted companion AndroidCAStore user cert detection, got %+v", st)
+	}
+}
+
+func TestInstallCompanionReplacesOnSignatureMismatch(t *testing.T) {
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	uninstalled := false
+	installAttempts := 0
+	adbExecFunc = func(args ...string) (string, error) {
+		if len(args) == 1 && args[0] == "devices" {
+			return "List of devices attached\nDEV1\tdevice\n", nil
+		}
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		switch cmdArgs[0] {
+		case "shell":
+			sh := strings.Join(cmdArgs[1:], " ")
+			if strings.Contains(sh, "===CAP_PKG===") {
+				// Old versionCode=1 triggers upgrade to CompanionVersionCode=2
+				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=1\n  versionName=1.0.0\n===CAP_SVC===\n===CAP_WL===\n", nil
+			}
+			return "", nil
+		case "install":
+			installAttempts++
+			if !uninstalled {
+				return "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Signatures do not match previously installed version]", os.ErrPermission
+			}
+			return "Success", nil
+		case "uninstall":
+			if len(cmdArgs) >= 2 && cmdArgs[1] == CompanionPackage {
+				uninstalled = true
+				return "Success", nil
+			}
+		}
+		return "", nil
+	}
+
+	if err := InstallCompanion("DEV1"); err != nil {
+		t.Fatalf("InstallCompanion failed on signature mismatch recovery: %v", err)
+	}
+	if !uninstalled || installAttempts < 3 {
+		t.Fatalf("expected uninstall + reinstall recovery, uninstalled=%v attempts=%d", uninstalled, installAttempts)
 	}
 }

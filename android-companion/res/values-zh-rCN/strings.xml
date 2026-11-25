@@ -27,8 +27,14 @@
     <string name="value_missing_perm">未授权 — 请通过 Cap 重新连接</string>
     <string name="value_watchdog_running">运行中（失联计数 %1$d/%2$d）</string>
     <string name="value_watchdog_stopped">未运行</string>
-    <string name="value_cert_ready">已就绪 (/sdcard/Download/cap-ca.crt)</string>
-    <string name="value_cert_missing">尚未推送</string>
+    <string name="value_cert_system">已安装 · 系统级信任 (%1$s)</string>
+    <string name="value_cert_system_plain">已安装 · 系统级信任</string>
+    <string name="value_cert_user">已安装 · 用户级证书 (%1$s)</string>
+    <string name="value_cert_user_plain">已安装 · 用户级证书</string>
+    <string name="value_cert_mismatch">检测到旧版证书（指纹不匹配），请重新安装</string>
+    <string name="value_cert_legacy_only">仅在旧版 /system（未注入 Android 14+ APEX）</string>
+    <string name="value_cert_ready">未安装 · 证书已就绪，点击下方安装</string>
+    <string name="value_cert_missing">未安装（系统/用户信任库均未检测到）</string>
 
     <string name="btn_restore_network">断开并清理代理</string>
     <string name="btn_install_cert">安装 CA 证书</string>
@@ -49,7 +55,9 @@
 
     <string name="toast_cleaned">代理已清理，网络已恢复</string>
     <string name="toast_clean_failed">无法清理代理（缺少 WRITE_SECURE_SETTINGS 权限）</string>
-    <string name="toast_cert_not_found">未找到 CA 证书文件 /sdcard/Download/cap-ca.crt</string>
+    <string name="toast_cert_not_found">未找到待安装证书文件，请通过桌面端 Cap 推送或安装</string>
+    <string name="toast_cert_already_installed">Cap MITM CA 证书已在信任库生效</string>
+    <string name="toast_cert_verified">已检测到 Cap MITM CA 证书安装生效</string>
     <string name="toast_cert_launched">请按系统提示完成 Cap MITM CA 证书安装</string>
     <string name="toast_cert_failed">启动证书安装失败：%1$s</string>
 

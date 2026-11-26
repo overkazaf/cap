@@ -216,8 +216,12 @@ func TestBuildTeardownCommandsAndIptablesScript(t *testing.T) {
 	}
 
 	script := BuildTeardownIptablesScript("9988", "9988", "")
+	if strings.Contains(script, "pkill -f") {
+		t.Errorf("teardown iptables script must NOT use self-killing `pkill -f`:\n%s", script)
+	}
 	for _, needle := range []string{
-		"pkill -f cap-redir",
+		"pkill -x cap-redir",
+		"pidof cap-redir",
 		"while iptables -t nat -D OUTPUT -p tcp --dport 80 -j REDIRECT --to-port 9988",
 		"while iptables -t nat -D OUTPUT -p tcp --dport 443 -j REDIRECT --to-port 9988",
 		"while iptables -t nat -D OUTPUT -p tcp --dport 80 -j REDIRECT --to-port 9999",
@@ -277,7 +281,7 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 			case strings.Contains(sh, "===CAP_PKG==="):
 				pkgSection := "Unable to find package: " + CompanionPackage
 				if companionInstalled {
-					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=5\n  versionName=1.3.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
+					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=6\n  versionName=1.3.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
 				}
 				svcSection := "  (nothing)"
 				if watchdogStarted {
@@ -327,7 +331,7 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 				return "Stopping service", nil
 			case strings.Contains(sh, "cat "+redirPortStateFile):
 				return "9988", nil
-			case strings.Contains(sh, "pkill -f cap-redir"):
+			case strings.Contains(sh, "pkill -x cap-redir"):
 				return "OK", nil
 			default:
 				return "", nil
@@ -406,7 +410,7 @@ func TestInstallCACertNonRootedCompanionFlow(t *testing.T) {
 				return "su: not found", os.ErrNotExist
 			}
 			if strings.HasPrefix(sh, "dumpsys package "+CompanionPackage) {
-				return "Package [" + CompanionPackage + "]\n  versionCode=5\n  versionName=1.3.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
+				return "Package [" + CompanionPackage + "]\n  versionCode=6\n  versionName=1.3.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
 			}
 			if strings.Contains(sh, CompanionActivity) && strings.Contains(sh, "--ez install_cert true") {
 				launchedCompanion = true
@@ -918,8 +922,8 @@ func TestParseProxySettingEdgeCases(t *testing.T) {
 }
 
 func TestCompanionVersionAndAPITokenSync(t *testing.T) {
-	if CompanionVersionCode != 5 || CompanionVersionName != "1.3.0" {
-		t.Fatalf("CompanionVersion = (%d, %q), want (5, \"1.3.0\")", CompanionVersionCode, CompanionVersionName)
+	if CompanionVersionCode != 6 || CompanionVersionName != "1.3.1" {
+		t.Fatalf("CompanionVersion = (%d, %q), want (6, \"1.3.1\")", CompanionVersionCode, CompanionVersionName)
 	}
 
 	certPath := filepath.Join("testdata", "test-ca.crt")
@@ -951,7 +955,7 @@ func TestCompanionVersionAndAPITokenSync(t *testing.T) {
 			sh := strings.Join(cmdArgs[1:], " ")
 			switch {
 			case strings.Contains(sh, "===CAP_PKG==="):
-				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=5\n  versionName=1.3.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n===CAP_SVC===\n===CAP_WL===\n", nil
+				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=6\n  versionName=1.3.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n===CAP_SVC===\n===CAP_WL===\n", nil
 			case strings.Contains(sh, companionActionStart):
 				startCmd = sh
 				return "Starting service", nil

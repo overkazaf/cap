@@ -244,10 +244,15 @@ public class MainActivity extends Activity {
             if (intent != null && intent.getBooleanExtra(ProxyGuardService.EXTRA_CLEANUP_DONE, false)) {
                 serviceCleanupBusy = false;
                 boolean ok = intent.getBooleanExtra(ProxyGuardService.EXTRA_CLEANUP_OK, false);
-                Toast.makeText(
-                        MainActivity.this,
-                        ok ? R.string.toast_cleaned : R.string.toast_clean_failed,
-                        Toast.LENGTH_SHORT).show();
+                String detail = intent.getStringExtra(ProxyGuardService.EXTRA_CLEANUP_DETAIL);
+                if (ok) {
+                    Toast.makeText(MainActivity.this, R.string.toast_cleaned, Toast.LENGTH_SHORT).show();
+                } else {
+                    String msg = (detail != null && !detail.isEmpty())
+                            ? detail
+                            : getString(R.string.toast_clean_failed);
+                    Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                }
             }
             requestRefresh(false, false);
             if (activeTab == TAB_TRAFFIC && isResumed && !trafficPaused) {
@@ -1967,7 +1972,7 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-        return "1.3.0";
+        return "1.3.1";
     }
 
     private void runIo(Runnable task) {
@@ -2328,7 +2333,11 @@ public class MainActivity extends Activity {
                 }
             } catch (Throwable t) {
                 serviceCleanupBusy = false;
-                Toast.makeText(this, R.string.toast_clean_failed, Toast.LENGTH_SHORT).show();
+                String errMsg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+                Toast.makeText(
+                        this,
+                        getString(R.string.toast_clean_failed_detail, errMsg),
+                        Toast.LENGTH_LONG).show();
                 requestRefresh(false, false);
             }
             return;
@@ -2341,8 +2350,10 @@ public class MainActivity extends Activity {
         runIo(new Runnable() {
             @Override
             public void run() {
-                final boolean ok = ProxyCleaner.cleanup(MainActivity.this, modeToClean, redirPort);
-                GuardPrefs.recordCleanup(MainActivity.this, getString(R.string.reason_manual), ok);
+                final ProxyCleaner.CleanupResult res = ProxyCleaner.cleanupDetailed(
+                        MainActivity.this, modeToClean, redirPort);
+                GuardPrefs.recordCleanup(MainActivity.this, getString(R.string.reason_manual), res.ok);
+                final String message = res.formatFailureMessage(MainActivity.this);
                 mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
@@ -2352,8 +2363,8 @@ public class MainActivity extends Activity {
                         localCleanupBusy = false;
                         Toast.makeText(
                                 MainActivity.this,
-                                ok ? R.string.toast_cleaned : R.string.toast_clean_failed,
-                                Toast.LENGTH_SHORT).show();
+                                message,
+                                res.ok ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
                         requestRefresh(false, false);
                     }
                 });

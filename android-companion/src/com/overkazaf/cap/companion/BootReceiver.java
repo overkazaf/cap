@@ -72,7 +72,9 @@ public class BootReceiver extends BroadcastReceiver {
                                     GuardPrefs.getRedirPort(context));
                             String reason = context.getString(isBoot ? R.string.reason_boot : R.string.reason_update);
                             GuardPrefs.recordCleanup(context, reason, ok);
-                            ProxyGuardService.postRestoredNotification(context, reason);
+                            if (ok) {
+                                ProxyGuardService.postRestoredNotification(context, reason);
+                            }
                         }
                     } finally {
                         pendingResult.finish();

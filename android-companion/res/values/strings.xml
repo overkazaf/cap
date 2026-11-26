@@ -113,6 +113,11 @@
     <string name="toast_refreshed">Status refreshed</string>
     <string name="toast_cleaned">Proxy cleared — network restored</string>
     <string name="toast_clean_failed">Could not clear proxy (grant WRITE_SECURE_SETTINGS or root)</string>
+    <string name="toast_clean_failed_perm">Could not clear proxy: grant WRITE_SECURE_SETTINGS below or via ADB</string>
+    <string name="toast_clean_failed_no_root">Could not clear VPN/iptables rules: Root (su) not detected</string>
+    <string name="toast_clean_failed_su_denied">Could not clear proxy: Root denied — grant superuser to Cap Guard in Magisk/KernelSU</string>
+    <string name="toast_clean_failed_su_timeout">Could not clear proxy: Root request timed out — approve superuser prompt and retry</string>
+    <string name="toast_clean_failed_detail">Could not clear proxy: %1$s</string>
     <string name="toast_watchdog_started">Watchdog started for %1$s</string>
     <string name="toast_watchdog_start_failed">Could not start watchdog: %1$s</string>
     <string name="toast_copied">Copied to clipboard</string>

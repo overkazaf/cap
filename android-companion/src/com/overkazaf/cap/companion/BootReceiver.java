@@ -6,9 +6,9 @@ import android.content.Intent;
 import android.util.Log;
 
 /**
- * Clears stale Android proxy settings after a device reboot (or when a running
+ * Clears stale Cap proxy settings after a device reboot (or when a running
  * Cap Guard session was interrupted by an app upgrade) if the desktop proxy is
- * no longer reachable.
+ * no longer reachable. Never stomps unrelated user-configured proxies.
  */
 public class BootReceiver extends BroadcastReceiver {
     private static final String TAG = "CapGuardBoot";
@@ -23,6 +23,7 @@ public class BootReceiver extends BroadcastReceiver {
         }
 
         final boolean wasActive = GuardPrefs.isActive(context);
+        final boolean hasStaleVpn = ProxyCleaner.hasStaleVpnMarker();
         final String currentGlobalProxy = ProxyCleaner.getGlobalHttpProxy(context);
 
         // On app upgrade, only recover if a Cap Guard session was actually active
@@ -30,32 +31,57 @@ public class BootReceiver extends BroadcastReceiver {
         if (isUpdate && !wasActive) {
             return;
         }
-        if (!wasActive && currentGlobalProxy.isEmpty()) {
+
+        // On boot, only touch settings that belong to Cap: either a Cap session was active,
+        // a stale cap-redir marker exists, or the global proxy matches Cap's saved host:port.
+        final String savedHost = GuardPrefs.getProxyHost(context);
+        final int savedPort = GuardPrefs.getProxyPort(context);
+        final boolean matchesSavedCapProxy = !currentGlobalProxy.isEmpty()
+                && !savedHost.isEmpty()
+                && currentGlobalProxy.equals(savedHost + ":" + savedPort);
+
+        if (!wasActive && !hasStaleVpn && !matchesSavedCapProxy) {
             return;
         }
 
         final PendingResult pendingResult = goAsync();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    String host = GuardPrefs.getProxyHost(context);
-                    int port = GuardPrefs.getProxyPort(context);
-                    boolean reachable = !host.isEmpty() && ProxyCleaner.isProxyReachable(host, port, 1500);
-                    if (!reachable && (wasActive || !currentGlobalProxy.isEmpty())) {
-                        Log.i(TAG, "Stale proxy detected on " + (isBoot ? "boot" : "update") + "; restoring network");
-                        boolean ok = ProxyCleaner.cleanup(
-                                context,
-                                GuardPrefs.getMode(context),
-                                GuardPrefs.getRedirPort(context));
-                        String reason = context.getString(isBoot ? R.string.reason_boot : R.string.reason_update);
-                        GuardPrefs.recordCleanup(context, reason, ok);
-                        ProxyGuardService.postRestoredNotification(context, reason);
+        try {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        String probeHost = savedHost;
+                        int probePort = savedPort;
+                        if (probeHost.isEmpty()) {
+                            ProxyCleaner.HostPort parsed = ProxyCleaner.parseProxyHostPort(currentGlobalProxy);
+                            if (parsed != null) {
+                                probeHost = parsed.host;
+                                probePort = parsed.port;
+                            }
+                        }
+                        boolean reachable = !probeHost.isEmpty()
+                                && ProxyCleaner.isProxyReachable(probeHost, probePort, 1500);
+                        if (!reachable) {
+                            Log.i(TAG, "Stale Cap proxy detected on " + (isBoot ? "boot" : "update") + "; restoring network");
+                            String cleanupMode = wasActive
+                                    ? GuardPrefs.getMode(context)
+                                    : (hasStaleVpn ? "vpn" : "proxy");
+                            boolean ok = ProxyCleaner.cleanup(
+                                    context,
+                                    cleanupMode,
+                                    GuardPrefs.getRedirPort(context));
+                            String reason = context.getString(isBoot ? R.string.reason_boot : R.string.reason_update);
+                            GuardPrefs.recordCleanup(context, reason, ok);
+                            ProxyGuardService.postRestoredNotification(context, reason);
+                        }
+                    } finally {
+                        pendingResult.finish();
                     }
-                } finally {
-                    pendingResult.finish();
                 }
-            }
-        }, "cap-guard-boot-check").start();
+            }, "cap-guard-boot-check").start();
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed starting boot check thread: " + t.getMessage());
+            pendingResult.finish();
+        }
     }
 }

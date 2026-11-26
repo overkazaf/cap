@@ -54,62 +54,67 @@ public class CertStatusReceiver extends BroadcastReceiver {
         final boolean ordered = isOrderedBroadcast();
         final PendingResult pendingResult = goAsync();
 
-        EXECUTOR.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    String expectedHash = initialHash;
-                    String expectedFp = initialFp;
+        try {
+            EXECUTOR.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        String expectedHash = initialHash;
+                        String expectedFp = initialFp;
 
-                    // ACTION_CHECK_CERT is strictly read-only; only ACTION_SYNC_CERT persists cert bytes/metadata.
-                    if (isSync) {
-                        if (certB64 != null) {
-                            String trimmedB64 = certB64.trim();
-                            if (!trimmedB64.isEmpty() && trimmedB64.length() <= MAX_CERT_B64_CHARS) {
-                                try {
-                                    byte[] certBytes = Base64.decode(trimmedB64, Base64.DEFAULT);
-                                    if (certBytes != null && certBytes.length > 0 && certBytes.length <= MAX_CERT_BYTES) {
-                                        X509Certificate parsed = CertInspector.parseCertBytes(certBytes);
-                                        if (parsed != null) {
-                                            ProxyCleaner.savePrivateCertBytes(appCtx, certBytes);
-                                            if (expectedHash.isEmpty()) {
-                                                expectedHash = CertInspector.computeSubjectHashOld(parsed);
+                        // ACTION_CHECK_CERT is strictly read-only; only ACTION_SYNC_CERT persists cert bytes/metadata.
+                        if (isSync) {
+                            if (certB64 != null) {
+                                String trimmedB64 = certB64.trim();
+                                if (!trimmedB64.isEmpty() && trimmedB64.length() <= MAX_CERT_B64_CHARS) {
+                                    try {
+                                        byte[] certBytes = Base64.decode(trimmedB64, Base64.DEFAULT);
+                                        if (certBytes != null && certBytes.length > 0 && certBytes.length <= MAX_CERT_BYTES) {
+                                            X509Certificate parsed = CertInspector.parseCertBytes(certBytes);
+                                            if (parsed != null) {
+                                                ProxyCleaner.savePrivateCertBytes(appCtx, certBytes);
+                                                if (expectedHash.isEmpty()) {
+                                                    expectedHash = CertInspector.computeSubjectHashOld(parsed);
+                                                }
+                                                if (expectedFp == null || expectedFp.trim().isEmpty()) {
+                                                    expectedFp = CertInspector.computeSha256Fingerprint(parsed);
+                                                }
+                                                GuardPrefs.saveCertMeta(
+                                                        appCtx,
+                                                        expectedHash,
+                                                        expectedFp,
+                                                        CertInspector.extractCommonName(parsed));
+                                            } else {
+                                                Log.w(TAG, "Ignoring invalid X.509 cert_b64 payload in ACTION_SYNC_CERT");
                                             }
-                                            if (expectedFp == null || expectedFp.trim().isEmpty()) {
-                                                expectedFp = CertInspector.computeSha256Fingerprint(parsed);
-                                            }
-                                            GuardPrefs.saveCertMeta(
-                                                    appCtx,
-                                                    expectedHash,
-                                                    expectedFp,
-                                                    CertInspector.extractCommonName(parsed));
-                                        } else {
-                                            Log.w(TAG, "Ignoring invalid X.509 cert_b64 payload in ACTION_SYNC_CERT");
                                         }
+                                    } catch (Throwable t) {
+                                        Log.w(TAG, "Failed decoding cert_b64 in broadcast: " + t.getMessage());
                                     }
-                                } catch (Throwable t) {
-                                    Log.w(TAG, "Failed decoding cert_b64 in broadcast: " + t.getMessage());
                                 }
+                            } else if (!expectedHash.isEmpty() || (expectedFp != null && !expectedFp.trim().isEmpty())) {
+                                GuardPrefs.saveCertMeta(appCtx, expectedHash, expectedFp, null);
                             }
-                        } else if (!expectedHash.isEmpty() || (expectedFp != null && !expectedFp.trim().isEmpty())) {
-                            GuardPrefs.saveCertMeta(appCtx, expectedHash, expectedFp, null);
+
+                            Intent statusChanged = new Intent(ProxyGuardService.ACTION_STATUS_CHANGED);
+                            statusChanged.setPackage(appCtx.getPackageName());
+                            appCtx.sendBroadcast(statusChanged);
                         }
 
-                        Intent statusChanged = new Intent(ProxyGuardService.ACTION_STATUS_CHANGED);
-                        statusChanged.setPackage(appCtx.getPackageName());
-                        appCtx.sendBroadcast(statusChanged);
+                        CertInspector.CertCheckResult res = CertInspector.inspect(appCtx, expectedHash, expectedFp, certPath);
+                        if (ordered) {
+                            pendingResult.setResult(Activity.RESULT_OK, res.toKeyValueString(), null);
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "CertStatusReceiver failed: " + t.getMessage());
+                    } finally {
+                        pendingResult.finish();
                     }
-
-                    CertInspector.CertCheckResult res = CertInspector.inspect(appCtx, expectedHash, expectedFp, certPath);
-                    if (ordered) {
-                        pendingResult.setResult(Activity.RESULT_OK, res.toKeyValueString(), null);
-                    }
-                } catch (Throwable t) {
-                    Log.w(TAG, "CertStatusReceiver failed: " + t.getMessage());
-                } finally {
-                    pendingResult.finish();
                 }
-            }
-        });
+            });
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed scheduling CertStatusReceiver worker: " + t.getMessage());
+            pendingResult.finish();
+        }
     }
 }

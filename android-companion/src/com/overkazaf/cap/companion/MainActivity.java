@@ -116,8 +116,10 @@ public class MainActivity extends Activity {
     // Live state
     private String pendingCertPath;
     private UiSnapshot latestSnapshot;
-    private boolean proxyBusy = false;
+    private boolean localCleanupBusy = false;
+    private boolean serviceCleanupBusy = false;
     private boolean refreshBusy = false;
+    private boolean pendingManualToast = false;
 
     private static final class UiSnapshot {
         boolean serviceRunning;
@@ -144,7 +146,7 @@ public class MainActivity extends Activity {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent != null && intent.getBooleanExtra(ProxyGuardService.EXTRA_CLEANUP_DONE, false)) {
-                proxyBusy = false;
+                serviceCleanupBusy = false;
                 boolean ok = intent.getBooleanExtra(ProxyGuardService.EXTRA_CLEANUP_OK, false);
                 Toast.makeText(
                         MainActivity.this,
@@ -182,6 +184,9 @@ public class MainActivity extends Activity {
             registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
             registerReceiver(statusReceiver, filter);
+        }
+        if (serviceCleanupBusy && !ProxyGuardService.isServiceRunning() && !ProxyGuardService.isCleanupInProgress()) {
+            serviceCleanupBusy = false;
         }
         requestRefresh(false, false);
     }
@@ -564,6 +569,7 @@ public class MainActivity extends Activity {
         final String certPathSnapshot = pendingCertPath;
         if (manualFeedback) {
             refreshBusy = true;
+            pendingManualToast = true;
             styleButton(refreshBtn, getString(R.string.btn_refreshing), cardColor, textMuted, borderColor, false);
         }
 
@@ -578,12 +584,13 @@ public class MainActivity extends Activity {
                             return;
                         }
                         latestSnapshot = snap;
-                        if (manualFeedback) {
+                        if (refreshBusy) {
                             refreshBusy = false;
                             styleButton(refreshBtn, getString(R.string.btn_refresh), cardColor, textPrimary, borderColor, true);
                         }
                         renderSnapshot(snap);
-                        if (manualFeedback) {
+                        if (pendingManualToast) {
+                            pendingManualToast = false;
                             Toast.makeText(MainActivity.this, R.string.toast_refreshed, Toast.LENGTH_SHORT).show();
                         }
                         if (verifyCertToast && snap.certStatus != null && snap.certStatus.installed) {
@@ -727,7 +734,11 @@ public class MainActivity extends Activity {
         }
 
         // State-aware Proxy & Watchdog Buttons
-        if (proxyBusy) {
+        if (serviceCleanupBusy && !snap.serviceRunning && !ProxyGuardService.isCleanupInProgress()) {
+            serviceCleanupBusy = false;
+        }
+        boolean busy = localCleanupBusy || serviceCleanupBusy || ProxyGuardService.isCleanupInProgress();
+        if (busy) {
             startWatchdogBtn.setVisibility(View.GONE);
             styleButton(proxyActionBtn, getString(R.string.btn_working), disabledBg, disabledText, Color.TRANSPARENT, false);
         } else if (snap.serviceRunning) {
@@ -863,7 +874,7 @@ public class MainActivity extends Activity {
     }
 
     private void onProxyActionClicked() {
-        if (proxyBusy) {
+        if (localCleanupBusy || serviceCleanupBusy || ProxyGuardService.isCleanupInProgress()) {
             return;
         }
         UiSnapshot snap = latestSnapshot;
@@ -875,10 +886,9 @@ public class MainActivity extends Activity {
             return;
         }
 
-        proxyBusy = true;
-        renderSnapshot(snap);
-
         if (ProxyGuardService.isServiceRunning()) {
+            serviceCleanupBusy = true;
+            renderSnapshot(snap);
             try {
                 Intent stopIntent = new Intent(this, ProxyGuardService.class);
                 stopIntent.setAction(ProxyGuardService.ACTION_RESTORE);
@@ -888,13 +898,15 @@ public class MainActivity extends Activity {
                     startService(stopIntent);
                 }
             } catch (Throwable t) {
-                proxyBusy = false;
+                serviceCleanupBusy = false;
                 Toast.makeText(this, R.string.toast_clean_failed, Toast.LENGTH_SHORT).show();
                 requestRefresh(false, false);
             }
             return;
         }
 
+        localCleanupBusy = true;
+        renderSnapshot(snap);
         final String modeToClean = snap.staleVpn ? "vpn" : "proxy";
         final String redirPort = snap.redirPort;
         ioExecutor.execute(new Runnable() {
@@ -908,7 +920,7 @@ public class MainActivity extends Activity {
                         if (isFinishing() || isDestroyed()) {
                             return;
                         }
-                        proxyBusy = false;
+                        localCleanupBusy = false;
                         Toast.makeText(
                                 MainActivity.this,
                                 ok ? R.string.toast_cleaned : R.string.toast_clean_failed,
@@ -1107,16 +1119,7 @@ public class MainActivity extends Activity {
         openAppDetailsSettings();
     }
 
-    private void onNotifRowClicked() {
-        UiSnapshot snap = latestSnapshot;
-        if (snap != null && snap.notificationsEnabled) {
-            return;
-        }
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_POST_NOTIFICATIONS);
-            return;
-        }
+    private void openAppNotificationSettings() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
@@ -1127,6 +1130,19 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {
         }
         openAppDetailsSettings();
+    }
+
+    private void onNotifRowClicked() {
+        UiSnapshot snap = latestSnapshot;
+        if (snap != null && snap.notificationsEnabled) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_POST_NOTIFICATIONS);
+            return;
+        }
+        openAppNotificationSettings();
     }
 
     private void openAppDetailsSettings() {
@@ -1153,6 +1169,11 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_POST_NOTIFICATIONS) {
+            if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED
+                    && !shouldShowRequestPermissionRationale("android.permission.POST_NOTIFICATIONS")) {
+                openAppNotificationSettings();
+            }
             requestRefresh(false, false);
         }
     }

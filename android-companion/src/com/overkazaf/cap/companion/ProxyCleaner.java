@@ -192,7 +192,7 @@ public final class ProxyCleaner {
             }
         }
 
-        return cleared || (needVpnRoot && rootCleaned);
+        return needVpnRoot ? (cleared && rootCleaned) : cleared;
     }
 
     public static boolean clearGlobalProxy(Context ctx) {

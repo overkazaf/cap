@@ -47,6 +47,7 @@ public class ProxyGuardService extends Service {
     public static final String EXTRA_MISS_THRESHOLD = "miss_threshold";
     public static final String EXTRA_CERT_HASH = "cert_hash";
     public static final String EXTRA_CERT_FP = "cert_fp";
+    public static final String EXTRA_API_TOKEN = "api_token";
     public static final String EXTRA_CLEANUP_DONE = "cleanup_done";
     public static final String EXTRA_CLEANUP_OK = "cleanup_ok";
 
@@ -167,6 +168,10 @@ public class ProxyGuardService extends Service {
             String certFp = intent.getStringExtra(EXTRA_CERT_FP);
             if ((certHash != null && !certHash.trim().isEmpty()) || (certFp != null && !certFp.trim().isEmpty())) {
                 GuardPrefs.saveCertMeta(this, certHash, certFp, null);
+            }
+            String apiToken = intent.getStringExtra(EXTRA_API_TOKEN);
+            if (apiToken != null && !apiToken.trim().isEmpty()) {
+                GuardPrefs.saveApiToken(this, apiToken);
             }
         } else {
             // Restarted by system — restore saved session

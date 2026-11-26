@@ -125,4 +125,94 @@
     <string name="toast_cert_failed">打开证书安装界面失败：%1$s</string>
 
     <string name="footer_hint">Cap 代理守护持续监测桌面端代理连通性。当 USB 拔出、Wi-Fi 断开或桌面端异常退出时，将自动清理手机代理，防止断网。</string>
+
+    <!-- 2-Tab Navigation -->
+    <string name="tab_guard">守护</string>
+    <string name="tab_traffic">流量</string>
+
+    <!-- Traffic Live Status & Metrics -->
+    <string name="traffic_status_live">实时抓取中 · %1$s</string>
+    <string name="traffic_status_paused">已暂停 · %1$s</string>
+    <string name="traffic_status_offline">代理未连接 · %1$s</string>
+    <string name="traffic_status_unauth">Token 未配对</string>
+    <string name="traffic_status_no_endpoint">未检测到代理端点</string>
+    <string name="traffic_status_error">接口异常</string>
+    <string name="traffic_status_connecting">正在连接…</string>
+
+    <string name="traffic_metric_flows">总流量</string>
+    <string name="traffic_metric_rps">Req/s</string>
+    <string name="traffic_metric_bytes">流量大小</string>
+
+    <string name="traffic_btn_pause">暂停</string>
+    <string name="traffic_btn_resume">继续</string>
+    <string name="traffic_btn_clear">清空</string>
+    <string name="traffic_btn_config">设置</string>
+
+    <!-- Traffic Search & Filter Chips -->
+    <string name="traffic_search_hint">搜索域名、路径、方法…</string>
+    <string name="traffic_chip_all">全部</string>
+    <string name="traffic_chip_get">GET</string>
+    <string name="traffic_chip_post">POST</string>
+    <string name="traffic_chip_errors">4xx/5xx</string>
+    <string name="traffic_chip_https">HTTPS</string>
+
+    <!-- Traffic Empty & Error States -->
+    <string name="traffic_empty_title">暂无抓包记录</string>
+    <string name="traffic_empty_filtered_title">无匹配的请求记录</string>
+    <string name="traffic_empty_hint">正在监听 %1$s，打开任意 App 发起网络请求即可实时查看。</string>
+    <string name="traffic_empty_filtered_hint">请尝试清空搜索关键词或切换筛选标签查看全部流量。</string>
+    <string name="traffic_err_no_endpoint_title">未配置代理地址</string>
+    <string name="traffic_err_no_endpoint_hint">请先在桌面端 Cap 开启手机代理，或点击下方手动配置代理地址。</string>
+    <string name="traffic_err_unauth_title">Token 未配对或已失效</string>
+    <string name="traffic_err_unauth_hint">请从桌面端 Cap 重新连接以自动同步 X-Cap-Token，或点击下方手动配置。</string>
+    <string name="traffic_err_offline_title">代理未连接</string>
+    <string name="traffic_err_offline_hint">无法连接 %1$s，请确认桌面端 Cap 正在运行且 USB 转发或 Wi-Fi 畅通。</string>
+    <string name="traffic_err_api_title">流量接口异常</string>
+    <string name="traffic_btn_open_config">配置代理与 Token</string>
+    <string name="traffic_btn_retry">立即重试</string>
+
+    <!-- Traffic Config Dialog -->
+    <string name="dialog_traffic_config_title">流量代理与 Token 配置</string>
+    <string name="dialog_traffic_auto_endpoint">自动检测：%1$s</string>
+    <string name="dialog_traffic_endpoint_label">自定义代理地址（host:port，留空自动检测）</string>
+    <string name="dialog_traffic_endpoint_hint">例如 127.0.0.1:8080</string>
+    <string name="dialog_traffic_token_label">X-Cap-Token（桌面端连接时自动同步）</string>
+    <string name="dialog_traffic_token_hint">粘贴 Companion Token…</string>
+    <string name="dialog_traffic_save">保存</string>
+    <string name="dialog_traffic_reset">恢复自动</string>
+    <string name="dialog_cancel">取消</string>
+
+    <string name="toast_traffic_config_saved">流量配置已保存</string>
+    <string name="toast_traffic_endpoint_invalid">代理地址格式无效，请使用 host:port（如 127.0.0.1:8080）</string>
+    <string name="toast_traffic_cleared">已清空抓包列表</string>
+    <string name="toast_traffic_clear_failed">清空失败：%1$s</string>
+
+    <!-- Flow Detail Dialog -->
+    <string name="detail_tab_overview">概览</string>
+    <string name="detail_tab_request">请求</string>
+    <string name="detail_tab_response">响应</string>
+    <string name="detail_loading">正在加载请求详情…</string>
+    <string name="detail_load_failed">加载详情失败：%1$s</string>
+    <string name="detail_section_req_headers">请求头</string>
+    <string name="detail_section_resp_headers">响应头</string>
+    <string name="detail_section_req_body">请求体</string>
+    <string name="detail_section_resp_body">响应体</string>
+    <string name="detail_empty_headers">（无头部信息）</string>
+    <string name="detail_empty_body">（空内容）</string>
+    <string name="detail_badge_truncated">已截断</string>
+    <string name="detail_badge_binary">二进制</string>
+    <string name="detail_btn_copy_url">复制 URL</string>
+    <string name="detail_btn_copy_curl">复制 cURL</string>
+    <string name="detail_field_url">URL</string>
+    <string name="detail_field_method">方法</string>
+    <string name="detail_field_status">状态码</string>
+    <string name="detail_field_scheme">协议</string>
+    <string name="detail_field_host">主机</string>
+    <string name="detail_field_path">路径</string>
+    <string name="detail_field_content_type">内容类型</string>
+    <string name="detail_field_latency">耗时</string>
+    <string name="detail_field_req_size">请求大小</string>
+    <string name="detail_field_resp_size">响应大小</string>
+    <string name="detail_field_time">时间</string>
+    <string name="detail_field_error">错误</string>
 </resources>

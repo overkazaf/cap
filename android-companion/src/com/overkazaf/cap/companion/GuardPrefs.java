@@ -24,6 +24,8 @@ public final class GuardPrefs {
     private static final String KEY_CERT_HASH = "cert_hash";
     private static final String KEY_CERT_FP = "cert_fp";
     private static final String KEY_CERT_SUBJECT = "cert_subject";
+    private static final String KEY_API_TOKEN = "api_token";
+    private static final String KEY_CUSTOM_TRAFFIC_ENDPOINT = "custom_traffic_endpoint";
 
     private GuardPrefs() {}
 
@@ -140,5 +142,58 @@ public final class GuardPrefs {
 
     public static String getCertSubject(Context ctx) {
         return prefs(ctx).getString(KEY_CERT_SUBJECT, "");
+    }
+
+    /**
+     * Persists a non-empty companion API token received via ADB intent/broadcast.
+     * Ignores empty/null inputs so missing extras never wipe a paired token.
+     */
+    public static void saveApiToken(Context ctx, String token) {
+        if (token == null) {
+            return;
+        }
+        String trimmed = token.trim();
+        if (!trimmed.isEmpty()) {
+            prefs(ctx).edit().putString(KEY_API_TOKEN, trimmed).apply();
+        }
+    }
+
+    /**
+     * Explicitly sets (or clears when empty) the companion API token from the UI dialog.
+     */
+    public static void setApiToken(Context ctx, String token) {
+        String trimmed = token == null ? "" : token.trim();
+        prefs(ctx).edit().putString(KEY_API_TOKEN, trimmed).apply();
+    }
+
+    public static String getApiToken(Context ctx) {
+        return prefs(ctx).getString(KEY_API_TOKEN, "");
+    }
+
+    /**
+     * Explicitly sets (or clears when empty) a manual proxy host:port override for the Traffic tab.
+     */
+    public static void setCustomTrafficEndpoint(Context ctx, String endpoint) {
+        String trimmed = endpoint == null ? "" : endpoint.trim();
+        prefs(ctx).edit().putString(KEY_CUSTOM_TRAFFIC_ENDPOINT, trimmed).apply();
+    }
+
+    public static String getCustomTrafficEndpoint(Context ctx) {
+        return prefs(ctx).getString(KEY_CUSTOM_TRAFFIC_ENDPOINT, "");
+    }
+
+    /**
+     * Updates remembered proxy host/port without modifying active watchdog session state.
+     */
+    public static void saveProxyTarget(Context ctx, String host, int port) {
+        if (host == null || host.trim().isEmpty()) {
+            return;
+        }
+        SharedPreferences.Editor ed = prefs(ctx).edit();
+        ed.putString(KEY_PROXY_HOST, host.trim());
+        if (port > 0 && port <= 65535) {
+            ed.putInt(KEY_PROXY_PORT, port);
+        }
+        ed.apply();
     }
 }

@@ -33,6 +33,9 @@ public class CertStatusReceiver extends BroadcastReceiver {
     public static final String EXTRA_EXPECTED_FP = "expected_fp";
     public static final String EXTRA_CERT_PATH = "cert_path";
     public static final String EXTRA_CERT_B64 = "cert_b64";
+    public static final String EXTRA_API_TOKEN = "api_token";
+    public static final String EXTRA_PROXY_HOST = "proxy_host";
+    public static final String EXTRA_PROXY_PORT = "proxy_port";
 
     @Override
     public void onReceive(final Context context, final Intent intent) {
@@ -51,6 +54,9 @@ public class CertStatusReceiver extends BroadcastReceiver {
         final String initialFp = intent.getStringExtra(EXTRA_EXPECTED_FP);
         final String certPath = intent.getStringExtra(EXTRA_CERT_PATH);
         final String certB64 = isSync ? intent.getStringExtra(EXTRA_CERT_B64) : null;
+        final String apiToken = isSync ? intent.getStringExtra(EXTRA_API_TOKEN) : null;
+        final String proxyHost = isSync ? intent.getStringExtra(EXTRA_PROXY_HOST) : null;
+        final int proxyPort = isSync ? readIntExtra(intent, EXTRA_PROXY_PORT, -1) : -1;
         final boolean ordered = isOrderedBroadcast();
         final PendingResult pendingResult = goAsync();
 
@@ -96,6 +102,13 @@ public class CertStatusReceiver extends BroadcastReceiver {
                                 GuardPrefs.saveCertMeta(appCtx, expectedHash, expectedFp, null);
                             }
 
+                            if (apiToken != null && !apiToken.trim().isEmpty()) {
+                                GuardPrefs.saveApiToken(appCtx, apiToken);
+                            }
+                            if (proxyHost != null && !proxyHost.trim().isEmpty()) {
+                                GuardPrefs.saveProxyTarget(appCtx, proxyHost, proxyPort);
+                            }
+
                             Intent statusChanged = new Intent(ProxyGuardService.ACTION_STATUS_CHANGED);
                             statusChanged.setPackage(appCtx.getPackageName());
                             appCtx.sendBroadcast(statusChanged);
@@ -116,5 +129,16 @@ public class CertStatusReceiver extends BroadcastReceiver {
             Log.w(TAG, "Failed scheduling CertStatusReceiver worker: " + t.getMessage());
             pendingResult.finish();
         }
+    }
+
+    private static int readIntExtra(Intent intent, String key, int fallback) {
+        String s = intent.getStringExtra(key);
+        if (s != null && !s.trim().isEmpty()) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return intent.getIntExtra(key, fallback);
     }
 }

@@ -281,7 +281,7 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 			case strings.Contains(sh, "===CAP_PKG==="):
 				pkgSection := "Unable to find package: " + CompanionPackage
 				if companionInstalled {
-					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=6\n  versionName=1.3.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
+					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=7\n  versionName=1.3.2\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
 				}
 				svcSection := "  (nothing)"
 				if watchdogStarted {
@@ -410,7 +410,7 @@ func TestInstallCACertNonRootedCompanionFlow(t *testing.T) {
 				return "su: not found", os.ErrNotExist
 			}
 			if strings.HasPrefix(sh, "dumpsys package "+CompanionPackage) {
-				return "Package [" + CompanionPackage + "]\n  versionCode=6\n  versionName=1.3.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
+				return "Package [" + CompanionPackage + "]\n  versionCode=7\n  versionName=1.3.2\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
 			}
 			if strings.Contains(sh, CompanionActivity) && strings.Contains(sh, "--ez install_cert true") {
 				launchedCompanion = true
@@ -922,8 +922,8 @@ func TestParseProxySettingEdgeCases(t *testing.T) {
 }
 
 func TestCompanionVersionAndAPITokenSync(t *testing.T) {
-	if CompanionVersionCode != 6 || CompanionVersionName != "1.3.1" {
-		t.Fatalf("CompanionVersion = (%d, %q), want (6, \"1.3.1\")", CompanionVersionCode, CompanionVersionName)
+	if CompanionVersionCode != 7 || CompanionVersionName != "1.3.2" {
+		t.Fatalf("CompanionVersion = (%d, %q), want (7, \"1.3.2\")", CompanionVersionCode, CompanionVersionName)
 	}
 
 	certPath := filepath.Join("testdata", "test-ca.crt")
@@ -955,7 +955,7 @@ func TestCompanionVersionAndAPITokenSync(t *testing.T) {
 			sh := strings.Join(cmdArgs[1:], " ")
 			switch {
 			case strings.Contains(sh, "===CAP_PKG==="):
-				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=6\n  versionName=1.3.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n===CAP_SVC===\n===CAP_WL===\n", nil
+				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=7\n  versionName=1.3.2\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n===CAP_SVC===\n===CAP_WL===\n", nil
 			case strings.Contains(sh, companionActionStart):
 				startCmd = sh
 				return "Starting service", nil
@@ -1014,5 +1014,39 @@ func TestCompanionVersionAndAPITokenSync(t *testing.T) {
 	}
 	if strings.Contains(startCmd, "api_token") {
 		t.Errorf("expected api_token extra omitted when token is empty: %q", startCmd)
+	}
+}
+
+func TestSetupADBReverseCalledBySetupAndSync(t *testing.T) {
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	var reverseCalls []string
+	adbExecFunc = func(args ...string) (string, error) {
+		if len(args) == 1 && args[0] == "devices" {
+			return "List of devices attached\nREV1\tdevice\n", nil
+		}
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		if len(cmdArgs) > 0 && cmdArgs[0] == "reverse" {
+			reverseCalls = append(reverseCalls, strings.Join(cmdArgs, " "))
+			return "", nil
+		}
+		return "", nil
+	}
+
+	if err := SetupADBReverse("REV1", "8080"); err != nil {
+		t.Fatalf("SetupADBReverse failed: %v", err)
+	}
+	if err := SetupADBReverse("REV1", "notaport"); err == nil {
+		t.Fatalf("expected SetupADBReverse to reject invalid port")
+	}
+	if err := SyncCompanionConfig("REV1", "10.0.0.2", "9090"); err != nil {
+		t.Fatalf("SyncCompanionConfig failed: %v", err)
+	}
+	if len(reverseCalls) != 2 || reverseCalls[0] != "reverse tcp:8080 tcp:8080" || reverseCalls[1] != "reverse tcp:9090 tcp:9090" {
+		t.Fatalf("unexpected reverse calls: %v", reverseCalls)
 	}
 }

@@ -205,6 +205,48 @@ public final class TrafficClient {
         return bareHost + ":" + port;
     }
 
+    /**
+     * Returns the USB ADB-reverse loopback fallback endpoint ({@code 127.0.0.1:<port>})
+     * for a non-loopback primary endpoint, or empty string if {@code primaryEndpoint}
+     * is invalid or already points to loopback.
+     */
+    public static String loopbackFallbackEndpoint(String primaryEndpoint) {
+        String norm = normalizeEndpoint(primaryEndpoint);
+        if (norm.isEmpty()) {
+            return "";
+        }
+        int colon = norm.lastIndexOf(':');
+        if (colon <= 0 || colon >= norm.length() - 1) {
+            return "";
+        }
+        String host = norm.substring(0, colon);
+        String port = norm.substring(colon + 1);
+        if ("127.0.0.1".equals(host)
+                || "localhost".equalsIgnoreCase(host)
+                || "[::1]".equals(host)
+                || "::1".equals(host)) {
+            return "";
+        }
+        return "127.0.0.1:" + port;
+    }
+
+    /**
+     * Produces a concise single-line error reason suitable for status hints and toasts.
+     */
+    public static String formatErrorBrief(String rawError) {
+        if (rawError == null) {
+            return "";
+        }
+        String clean = rawError.replace('\r', ' ').replace('\n', ' ').trim();
+        while (clean.contains("  ")) {
+            clean = clean.replace("  ", " ");
+        }
+        if (clean.length() > 96) {
+            clean = clean.substring(0, 93) + "...";
+        }
+        return clean;
+    }
+
     public static FlowsResult fetchFlows(
             String endpoint,
             String apiToken,

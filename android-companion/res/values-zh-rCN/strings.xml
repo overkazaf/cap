@@ -68,6 +68,8 @@
     <string name="btn_stop_and_clean">停止守护并清理代理</string>
     <string name="btn_clear_proxy">清理残留代理</string>
     <string name="btn_start_watchdog">启动代理守护</string>
+    <string name="btn_reconnect_proxy">重试连接代理</string>
+    <string name="btn_reconnecting_proxy">正在连接代理…</string>
     <string name="btn_proxy_idle">当前无活跃代理</string>
     <string name="btn_working">处理中…</string>
 
@@ -120,6 +122,9 @@
     <string name="toast_clean_failed_detail">无法清理代理：%1$s</string>
     <string name="toast_watchdog_started">已启动守护：%1$s</string>
     <string name="toast_watchdog_start_failed">启动守护失败：%1$s</string>
+    <string name="toast_proxy_reconnected">已重新连接代理：%1$s</string>
+    <string name="toast_proxy_reconnect_unreachable">无法连接桌面端 Cap（已尝试 %1$s），请确认 Cap 正在运行且 USB 转发或 Wi-Fi 畅通</string>
+    <string name="toast_proxy_reconnect_failed">写入系统代理失败（%1$s），请检查安全设置权限</string>
     <string name="toast_copied">已复制到剪贴板</string>
     <string name="toast_root_grant_ok">已通过 Root 授予安全设置权限</string>
     <string name="toast_root_grant_failed">Root 授权失败，请改用 ADB 命令授权</string>
@@ -143,6 +148,7 @@
     <string name="traffic_status_no_endpoint">未检测到代理端点</string>
     <string name="traffic_status_error">接口异常</string>
     <string name="traffic_status_connecting">正在连接…</string>
+    <string name="traffic_status_retrying">正在重试 · %1$s…</string>
 
     <string name="traffic_metric_flows">总流量</string>
     <string name="traffic_metric_rps">Req/s</string>
@@ -172,9 +178,12 @@
     <string name="traffic_err_unauth_hint">请从桌面端 Cap 重新连接以自动同步 X-Cap-Token，或点击下方手动配置。</string>
     <string name="traffic_err_offline_title">代理未连接</string>
     <string name="traffic_err_offline_hint">无法连接 %1$s，请确认桌面端 Cap 正在运行且 USB 转发或 Wi-Fi 畅通。</string>
+    <string name="traffic_err_offline_detail">无法连接 %1$s。\n原因：%2$s · 上次检测 %3$s\n请确认桌面端 Cap 正在运行且 USB 转发或 Wi-Fi 畅通。</string>
     <string name="traffic_err_api_title">流量接口异常</string>
+    <string name="traffic_err_api_detail">%1$s · 上次检测 %2$s</string>
     <string name="traffic_btn_open_config">配置代理与 Token</string>
     <string name="traffic_btn_retry">立即重试</string>
+    <string name="traffic_btn_retrying">重试中…</string>
 
     <!-- Traffic Config Dialog -->
     <string name="dialog_traffic_config_title">流量代理与 Token 配置</string>
@@ -191,6 +200,8 @@
     <string name="toast_traffic_endpoint_invalid">代理地址格式无效，请使用 host:port（如 127.0.0.1:8080）</string>
     <string name="toast_traffic_cleared">已清空抓包列表</string>
     <string name="toast_traffic_clear_failed">清空失败：%1$s</string>
+    <string name="toast_traffic_connected">已连接 Cap 代理：%1$s</string>
+    <string name="toast_traffic_retry_failed">仍无法连接（%1$s）：%2$s</string>
 
     <!-- Flow Detail Dialog -->
     <string name="detail_tab_overview">概览</string>

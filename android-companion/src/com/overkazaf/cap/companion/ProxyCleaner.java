@@ -175,6 +175,72 @@ public final class ProxyCleaner {
         }
     }
 
+    public static boolean isLoopbackHost(String host) {
+        if (host == null) {
+            return false;
+        }
+        String h = host.trim();
+        if (h.startsWith("[") && h.endsWith("]") && h.length() > 2) {
+            h = h.substring(1, h.length() - 1);
+        }
+        return "127.0.0.1".equals(h) || "localhost".equalsIgnoreCase(h) || "::1".equals(h);
+    }
+
+    /**
+     * Probes the primary host:port and, when allowed and non-loopback, falls back
+     * to {@code 127.0.0.1:<port>} (USB adb reverse tunnel). Returns the first
+     * reachable target, or {@code null} if unreachable.
+     */
+    public static HostPort findReachableProxy(
+            String primaryHost, int primaryPort, boolean allowLoopbackFallback, int timeoutMs) {
+        if (primaryPort <= 0 || primaryPort > 65535) {
+            return null;
+        }
+        String trimmedHost = primaryHost == null ? "" : primaryHost.trim();
+        if (!trimmedHost.isEmpty() && isProxyReachable(trimmedHost, primaryPort, timeoutMs)) {
+            return new HostPort(trimmedHost, primaryPort);
+        }
+        if (allowLoopbackFallback && !isLoopbackHost(trimmedHost)) {
+            if (isProxyReachable("127.0.0.1", primaryPort, timeoutMs)) {
+                return new HostPort("127.0.0.1", primaryPort);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Writes Android's global HTTP proxy setting using WRITE_SECURE_SETTINGS and
+     * verifies the setting took effect. Clears stale auxiliary proxy keys first.
+     */
+    public static boolean setGlobalProxy(Context ctx, String host, int port) {
+        if (ctx == null || host == null || host.trim().isEmpty() || port <= 0 || port > 65535) {
+            return false;
+        }
+        if (!hasWriteSecureSettings(ctx)) {
+            Log.w(TAG, "Cannot set global proxy: WRITE_SECURE_SETTINGS not granted");
+            return false;
+        }
+        String cleanHost = host.trim();
+        String target = cleanHost.contains(":") && !cleanHost.startsWith("[")
+                ? "[" + cleanHost + "]:" + port
+                : cleanHost + ":" + port;
+        try {
+            ContentResolver cr = ctx.getContentResolver();
+            clearSingleGlobalKey(cr, "global_http_proxy_host");
+            clearSingleGlobalKey(cr, "global_http_proxy_port");
+            clearSingleGlobalKey(cr, "global_http_proxy_exclusion_list");
+            Settings.Global.putString(cr, Settings.Global.HTTP_PROXY, target);
+            String current = getGlobalHttpProxy(ctx);
+            return target.equals(current);
+        } catch (SecurityException se) {
+            Log.w(TAG, "SecurityException setting global proxy: " + se.getMessage());
+            return false;
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed setting global proxy: " + t.getMessage());
+            return false;
+        }
+    }
+
     public static final class CleanupResult {
         public static final int REASON_NONE = 0;
         public static final int REASON_NO_SECURE_SETTINGS = 1;

@@ -142,6 +142,7 @@ public class ProxyGuardService extends Service {
                 // the temporary stopping notification can never linger.
                 if (!sCleanupInProgress) {
                     stopForegroundCompat();
+                    broadcastStatusChanged(false, false);
                     stopSelf(lastStartId);
                 }
                 return START_NOT_STICKY;

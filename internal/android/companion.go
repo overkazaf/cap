@@ -14,9 +14,9 @@ const (
 	// CompanionPackage is the Android application ID of the embedded Cap Guard APK.
 	CompanionPackage = "com.overkazaf.cap.companion"
 	// CompanionVersionCode is the versionCode baked into the embedded APK.
-	CompanionVersionCode = 6
+	CompanionVersionCode = 7
 	// CompanionVersionName is the versionName baked into the embedded APK.
-	CompanionVersionName = "1.3.1"
+	CompanionVersionName = "1.3.2"
 	// CompanionService is the full component name of ProxyGuardService.
 	CompanionService = CompanionPackage + "/.ProxyGuardService"
 	// CompanionActivity is the full component name of MainActivity.
@@ -139,6 +139,28 @@ func companionAPIToken() string {
 	return strings.TrimSpace(companionAPITokenFunc())
 }
 
+// SetupADBReverse creates a best-effort USB reverse tunnel (`adb reverse tcp:<port> tcp:<port>`)
+// so the Companion APK (and loopback proxy reconnection) can reach the desktop Cap proxy
+// over USB even when device Wi-Fi is disconnected or isolated.
+func SetupADBReverse(serial, port string) error {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		port = "8080"
+	}
+	if n, err := strconv.Atoi(port); err != nil || n <= 0 || n > 65535 {
+		return fmt.Errorf("invalid reverse port: %q", port)
+	}
+	resolved, err := GetDeviceSerial(serial)
+	if err != nil {
+		return err
+	}
+	spec := "tcp:" + port
+	if out, err := AdbCmd(resolved, "reverse", spec, spec); err != nil {
+		return fmt.Errorf("adb reverse %s: %v (%s)", spec, err, out)
+	}
+	return nil
+}
+
 // SyncCompanionConfig pushes the host's companion API token (and optional
 // proxyHost/proxyPort) silently into the Companion APK via ACTION_SYNC_CERT
 // so the Traffic tab stays paired with the host proxy.
@@ -146,6 +168,9 @@ func SyncCompanionConfig(serial, proxyHost, proxyPort string) error {
 	resolved, err := GetDeviceSerial(serial)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(proxyPort) != "" {
+		_ = SetupADBReverse(resolved, proxyPort)
 	}
 	return syncCompanionConfig(resolved, proxyHost, proxyPort)
 }

@@ -100,6 +100,7 @@ public class MainActivity extends Activity {
     private static final int DETAIL_TAB_RESPONSE = 2;
 
     private static final long TRAFFIC_POLL_INTERVAL_MS = 1500L;
+    private static final long TRAFFIC_POLL_OFFLINE_INTERVAL_MS = 3500L;
     private static final long SEARCH_DEBOUNCE_MS = 250L;
     private static final int DEFAULT_FLOW_LIMIT = 80;
     private static final int ERROR_FILTER_FLOW_LIMIT = 200;
@@ -178,12 +179,14 @@ public class MainActivity extends Activity {
     private TextView trafficEmptyTitle;
     private TextView trafficEmptyHint;
     private Button trafficEmptyActionBtn;
+    private Button trafficEmptySecondaryBtn;
 
     // Live Guard state
     private String pendingCertPath;
     private UiSnapshot latestSnapshot;
     private boolean localCleanupBusy = false;
     private boolean serviceCleanupBusy = false;
+    private boolean proxyConnectBusy = false;
     private boolean refreshBusy = false;
     private boolean pendingManualToast = false;
 
@@ -192,10 +195,13 @@ public class MainActivity extends Activity {
     private int activeTab = TAB_GUARD;
     private boolean trafficPaused = false;
     private boolean trafficPollInFlight = false;
+    private boolean manualTrafficRetryActive = false;
     private boolean trafficClearBusy = false;
     private int selectedChip = CHIP_ALL;
     private String searchQuery = "";
     private String lastResolvedEndpoint = "";
+    private volatile String stickyLoopbackEndpoint = "";
+    private long lastTrafficAttemptTs = 0L;
     private TrafficClient.FlowsResult latestTrafficResult;
     private AlertDialog activeDialog;
 
@@ -203,7 +209,7 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             if (activeTab == TAB_TRAFFIC && isResumed && !trafficPaused) {
-                executeTrafficPoll(false);
+                executeTrafficPoll(false, false);
             }
         }
     };
@@ -224,6 +230,7 @@ public class MainActivity extends Activity {
         String globalProxy = "";
         String guardHost = "";
         int guardPort = 8080;
+        String customEndpoint = "";
         String guardMode = "proxy";
         String redirPort = "9999";
         int missCount;
@@ -994,6 +1001,23 @@ public class MainActivity extends Activity {
         trafficEmptyActionBtn.setVisibility(View.GONE);
         trafficEmptyContainer.addView(trafficEmptyActionBtn, eaLp);
 
+        trafficEmptySecondaryBtn = createActionButton(
+                getString(R.string.traffic_btn_open_config),
+                cardColor,
+                textPrimary,
+                borderColor);
+        LinearLayout.LayoutParams eaSecLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        eaSecLp.topMargin = dp(8);
+        trafficEmptySecondaryBtn.setVisibility(View.GONE);
+        trafficEmptySecondaryBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openTrafficConfigDialog();
+            }
+        });
+        trafficEmptyContainer.addView(trafficEmptySecondaryBtn, eaSecLp);
+
         listArea.addView(trafficEmptyContainer, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
@@ -1060,17 +1084,39 @@ public class MainActivity extends Activity {
         mainHandler.removeCallbacks(searchDebounceRunnable);
         trafficGen.incrementAndGet();
         trafficPollInFlight = false;
+        manualTrafficRetryActive = false;
     }
 
     private void triggerTrafficPollNow(boolean oneShotEvenIfPaused) {
+        triggerTrafficPollNow(oneShotEvenIfPaused, false);
+    }
+
+    private void triggerTrafficPollNow(boolean oneShotEvenIfPaused, boolean manualRetry) {
         mainHandler.removeCallbacks(trafficPollRunnable);
         trafficGen.incrementAndGet();
         trafficPollInFlight = false;
-        executeTrafficPoll(oneShotEvenIfPaused);
+        if (manualRetry) {
+            if (trafficPaused) {
+                trafficPaused = false;
+            }
+            manualTrafficRetryActive = true;
+            String epDisplay = !lastResolvedEndpoint.isEmpty()
+                    ? lastResolvedEndpoint
+                    : getString(R.string.value_none);
+            setTrafficStatus(Color.parseColor("#3B82F6"), getString(R.string.traffic_status_retrying, epDisplay));
+            if (trafficEmptyActionBtn != null && trafficEmptyActionBtn.getVisibility() == View.VISIBLE) {
+                styleButton(trafficEmptyActionBtn, getString(R.string.traffic_btn_retrying),
+                        disabledBg, disabledText, Color.TRANSPARENT, false);
+            }
+        }
+        executeTrafficPoll(oneShotEvenIfPaused, manualRetry);
     }
 
-    private void executeTrafficPoll(final boolean oneShotEvenIfPaused) {
+    private void executeTrafficPoll(final boolean oneShotEvenIfPaused, final boolean manualRetry) {
         if (isFinishing() || isDestroyed() || !isResumed || activeTab != TAB_TRAFFIC) {
+            if (manualRetry) {
+                manualTrafficRetryActive = false;
+            }
             return;
         }
         if (trafficPaused && !oneShotEvenIfPaused) {
@@ -1089,7 +1135,8 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 Context appCtx = getApplicationContext();
-                final String endpoint = resolveTrafficEndpoint(appCtx);
+                final String customEp = GuardPrefs.getCustomTrafficEndpoint(appCtx);
+                final String primaryEndpoint = resolveTrafficEndpoint(appCtx);
                 final String token = GuardPrefs.getApiToken(appCtx);
 
                 String methodFilter = "";
@@ -1106,8 +1153,43 @@ public class MainActivity extends Activity {
                     limit = ERROR_FILTER_FLOW_LIMIT;
                 }
 
-                final TrafficClient.FlowsResult result = TrafficClient.fetchFlows(
-                        endpoint, token, limit, 0L, methodFilter, searchSnapshot, "", schemeFilter);
+                String activeEndpoint = primaryEndpoint;
+                TrafficClient.FlowsResult result;
+
+                String cachedSticky = customEp.isEmpty() ? stickyLoopbackEndpoint : "";
+                String loopbackCandidate = customEp.isEmpty()
+                        ? TrafficClient.loopbackFallbackEndpoint(primaryEndpoint)
+                        : "";
+
+                if (!cachedSticky.isEmpty() && !loopbackCandidate.isEmpty()) {
+                    // Reuse working USB loopback tunnel without paying a LAN timeout every poll.
+                    result = TrafficClient.fetchFlows(
+                            cachedSticky, token, limit, 0L, methodFilter, searchSnapshot, "", schemeFilter);
+                    if (result.ok || result.errorKind == TrafficClient.ErrorKind.UNAUTHORIZED) {
+                        activeEndpoint = cachedSticky;
+                    } else {
+                        stickyLoopbackEndpoint = "";
+                        result = TrafficClient.fetchFlows(
+                                primaryEndpoint, token, limit, 0L, methodFilter, searchSnapshot, "", schemeFilter);
+                        activeEndpoint = primaryEndpoint;
+                    }
+                } else {
+                    result = TrafficClient.fetchFlows(
+                            primaryEndpoint, token, limit, 0L, methodFilter, searchSnapshot, "", schemeFilter);
+                    if (!result.ok
+                            && result.errorKind == TrafficClient.ErrorKind.OFFLINE
+                            && !loopbackCandidate.isEmpty()) {
+                        TrafficClient.FlowsResult fb = TrafficClient.fetchFlows(
+                                loopbackCandidate, token, limit, 0L, methodFilter, searchSnapshot, "", schemeFilter);
+                        if (fb.ok || fb.errorKind == TrafficClient.ErrorKind.UNAUTHORIZED) {
+                            result = fb;
+                            activeEndpoint = loopbackCandidate;
+                            stickyLoopbackEndpoint = loopbackCandidate;
+                        }
+                    } else if (result.ok) {
+                        stickyLoopbackEndpoint = "";
+                    }
+                }
 
                 if (result.ok && chipSnapshot == CHIP_ERRORS) {
                     List<TrafficClient.FlowSummary> errorsOnly = new ArrayList<TrafficClient.FlowSummary>();
@@ -1120,6 +1202,10 @@ public class MainActivity extends Activity {
                     result.flows = errorsOnly;
                 }
 
+                final String resolvedEndpoint = activeEndpoint;
+                final TrafficClient.FlowsResult finalResult = result;
+                final long attemptTs = System.currentTimeMillis();
+
                 mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
@@ -1127,18 +1213,55 @@ public class MainActivity extends Activity {
                             return;
                         }
                         trafficPollInFlight = false;
-                        lastResolvedEndpoint = endpoint;
-                        latestTrafficResult = result;
+                        manualTrafficRetryActive = false;
+                        lastTrafficAttemptTs = attemptTs;
+                        lastResolvedEndpoint = resolvedEndpoint;
+                        latestTrafficResult = finalResult;
                         renderTrafficState();
 
+                        if (manualRetry) {
+                            String epShown = !resolvedEndpoint.isEmpty()
+                                    ? resolvedEndpoint
+                                    : getString(R.string.value_none);
+                            if (finalResult.ok) {
+                                Toast.makeText(
+                                        MainActivity.this,
+                                        getString(R.string.toast_traffic_connected, epShown),
+                                        Toast.LENGTH_SHORT).show();
+                            } else if (finalResult.errorKind == TrafficClient.ErrorKind.UNAUTHORIZED) {
+                                Toast.makeText(
+                                        MainActivity.this,
+                                        R.string.traffic_err_unauth_title,
+                                        Toast.LENGTH_SHORT).show();
+                            } else if (finalResult.errorKind != TrafficClient.ErrorKind.NO_PROXY_ENDPOINT) {
+                                String brief = TrafficClient.formatErrorBrief(finalResult.errorMessage);
+                                if (brief.isEmpty()) {
+                                    brief = String.valueOf(finalResult.errorKind);
+                                }
+                                Toast.makeText(
+                                        MainActivity.this,
+                                        getString(R.string.toast_traffic_retry_failed, epShown, brief),
+                                        Toast.LENGTH_LONG).show();
+                            }
+                        }
+
                         if (activeTab == TAB_TRAFFIC && isResumed && !trafficPaused && trafficGen.get() == gen) {
+                            long delay = finalResult.ok ? TRAFFIC_POLL_INTERVAL_MS : TRAFFIC_POLL_OFFLINE_INTERVAL_MS;
                             mainHandler.removeCallbacks(trafficPollRunnable);
-                            mainHandler.postDelayed(trafficPollRunnable, TRAFFIC_POLL_INTERVAL_MS);
+                            mainHandler.postDelayed(trafficPollRunnable, delay);
                         }
                     }
                 });
             }
         });
+    }
+
+    private String effectiveTrafficEndpoint(Context appCtx) {
+        String custom = GuardPrefs.getCustomTrafficEndpoint(appCtx);
+        if (custom.isEmpty() && !stickyLoopbackEndpoint.isEmpty()) {
+            return stickyLoopbackEndpoint;
+        }
+        return resolveTrafficEndpoint(appCtx);
     }
 
     private String resolveTrafficEndpoint(Context appCtx) {
@@ -1204,6 +1327,7 @@ public class MainActivity extends Activity {
                         ? getString(R.string.traffic_empty_filtered_hint)
                         : getString(R.string.traffic_empty_hint, epDisplay));
                 trafficEmptyActionBtn.setVisibility(View.GONE);
+                trafficEmptySecondaryBtn.setVisibility(View.GONE);
             } else {
                 trafficEmptyContainer.setVisibility(View.GONE);
                 trafficListView.setVisibility(View.VISIBLE);
@@ -1217,28 +1341,38 @@ public class MainActivity extends Activity {
         trafficEmptyContainer.setVisibility(View.VISIBLE);
         updateTrafficCountBadge(0);
 
+        String attemptTime = lastTrafficAttemptTs > 0
+                ? TrafficClient.formatTimestamp(lastTrafficAttemptTs)
+                : "--:--:--";
+        String briefErr = TrafficClient.formatErrorBrief(res.errorMessage);
+
         if (res.errorKind == TrafficClient.ErrorKind.NO_PROXY_ENDPOINT) {
             setTrafficStatus(Color.parseColor("#64748B"), getString(R.string.traffic_status_no_endpoint));
             trafficEmptyTitle.setText(R.string.traffic_err_no_endpoint_title);
             trafficEmptyHint.setText(R.string.traffic_err_no_endpoint_hint);
-            showEmptyAction(getString(R.string.traffic_btn_open_config), true);
+            showEmptyAction(getString(R.string.traffic_btn_open_config), true, false);
         } else if (res.errorKind == TrafficClient.ErrorKind.UNAUTHORIZED) {
             setTrafficStatus(Color.parseColor("#F59E0B"), getString(R.string.traffic_status_unauth));
             trafficEmptyTitle.setText(R.string.traffic_err_unauth_title);
             trafficEmptyHint.setText(R.string.traffic_err_unauth_hint);
-            showEmptyAction(getString(R.string.traffic_btn_open_config), true);
+            showEmptyAction(getString(R.string.traffic_btn_open_config), true, false);
         } else if (res.errorKind == TrafficClient.ErrorKind.OFFLINE) {
             setTrafficStatus(Color.parseColor("#EF4444"), getString(R.string.traffic_status_offline, epDisplay));
             trafficEmptyTitle.setText(R.string.traffic_err_offline_title);
-            trafficEmptyHint.setText(getString(R.string.traffic_err_offline_hint, epDisplay));
-            showEmptyAction(getString(R.string.traffic_btn_retry), false);
+            if (!briefErr.isEmpty()) {
+                trafficEmptyHint.setText(getString(R.string.traffic_err_offline_detail, epDisplay, briefErr, attemptTime));
+            } else {
+                trafficEmptyHint.setText(getString(R.string.traffic_err_offline_hint, epDisplay));
+            }
+            showEmptyAction(getString(R.string.traffic_btn_retry), false, true);
         } else {
             setTrafficStatus(Color.parseColor("#EF4444"), getString(R.string.traffic_status_error));
             trafficEmptyTitle.setText(R.string.traffic_err_api_title);
-            trafficEmptyHint.setText(res.errorMessage != null && !res.errorMessage.isEmpty()
-                    ? res.errorMessage
-                    : getString(R.string.traffic_err_offline_hint, epDisplay));
-            showEmptyAction(getString(R.string.traffic_btn_retry), false);
+            String apiMsg = !briefErr.isEmpty()
+                    ? getString(R.string.traffic_err_api_detail, briefErr, attemptTime)
+                    : getString(R.string.traffic_err_offline_hint, epDisplay);
+            trafficEmptyHint.setText(apiMsg);
+            showEmptyAction(getString(R.string.traffic_btn_retry), false, true);
         }
     }
 
@@ -1247,8 +1381,13 @@ public class MainActivity extends Activity {
         trafficStatusText.setText(text);
     }
 
-    private void showEmptyAction(String label, final boolean openConfig) {
-        trafficEmptyActionBtn.setText(label);
+    private void showEmptyAction(String label, final boolean openConfig, boolean showSecondaryConfig) {
+        if (!openConfig && manualTrafficRetryActive) {
+            styleButton(trafficEmptyActionBtn, getString(R.string.traffic_btn_retrying),
+                    disabledBg, disabledText, Color.TRANSPARENT, false);
+        } else {
+            styleButton(trafficEmptyActionBtn, label, accentColor, Color.WHITE, Color.TRANSPARENT, true);
+        }
         trafficEmptyActionBtn.setVisibility(View.VISIBLE);
         trafficEmptyActionBtn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1256,10 +1395,11 @@ public class MainActivity extends Activity {
                 if (openConfig) {
                     openTrafficConfigDialog();
                 } else {
-                    triggerTrafficPollNow(true);
+                    triggerTrafficPollNow(true, true);
                 }
             }
         });
+        trafficEmptySecondaryBtn.setVisibility(showSecondaryConfig ? View.VISIBLE : View.GONE);
     }
 
     private void toggleTrafficPause() {
@@ -1285,7 +1425,7 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 Context appCtx = getApplicationContext();
-                String endpoint = resolveTrafficEndpoint(appCtx);
+                String endpoint = effectiveTrafficEndpoint(appCtx);
                 String token = GuardPrefs.getApiToken(appCtx);
                 final TrafficClient.ClearResult res = TrafficClient.clearFlows(endpoint, token);
                 mainHandler.post(new Runnable() {
@@ -1419,11 +1559,12 @@ public class MainActivity extends Activity {
                         }
                     }
                     String tok = tokenInput.getText() != null ? tokenInput.getText().toString().trim() : "";
+                    stickyLoopbackEndpoint = "";
                     GuardPrefs.setCustomTrafficEndpoint(MainActivity.this, normalized);
                     GuardPrefs.setApiToken(MainActivity.this, tok);
                     Toast.makeText(MainActivity.this, R.string.toast_traffic_config_saved, Toast.LENGTH_SHORT).show();
                     dialog.dismiss();
-                    triggerTrafficPollNow(true);
+                    triggerTrafficPollNow(true, true);
                 }
             });
         }
@@ -1434,11 +1575,12 @@ public class MainActivity extends Activity {
                 @Override
                 public void onClick(View v) {
                     String tok = tokenInput.getText() != null ? tokenInput.getText().toString().trim() : "";
+                    stickyLoopbackEndpoint = "";
                     GuardPrefs.setCustomTrafficEndpoint(MainActivity.this, "");
                     GuardPrefs.setApiToken(MainActivity.this, tok);
                     Toast.makeText(MainActivity.this, R.string.toast_traffic_config_saved, Toast.LENGTH_SHORT).show();
                     dialog.dismiss();
-                    triggerTrafficPollNow(true);
+                    triggerTrafficPollNow(true, true);
                 }
             });
         }
@@ -1639,7 +1781,7 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 Context appCtx = getApplicationContext();
-                String endpoint = resolveTrafficEndpoint(appCtx);
+                String endpoint = effectiveTrafficEndpoint(appCtx);
                 String token = GuardPrefs.getApiToken(appCtx);
                 final TrafficClient.FlowDetailResult res = TrafficClient.fetchFlowDetail(endpoint, token, summary.id);
                 mainHandler.post(new Runnable() {
@@ -1972,7 +2114,7 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-        return "1.3.1";
+        return "1.3.2";
     }
 
     private void runIo(Runnable task) {
@@ -2061,6 +2203,7 @@ public class MainActivity extends Activity {
             snap.redirPort = GuardPrefs.getRedirPort(appCtx);
         }
 
+        snap.customEndpoint = GuardPrefs.getCustomTrafficEndpoint(appCtx);
         snap.missCount = GuardPrefs.getMissCount(appCtx);
         snap.missThreshold = GuardPrefs.getMissThreshold(appCtx);
         snap.lastCleanupTs = GuardPrefs.getLastCleanupTs(appCtx);
@@ -2170,16 +2313,18 @@ public class MainActivity extends Activity {
         if (serviceCleanupBusy && !snap.serviceRunning && !ProxyGuardService.isCleanupInProgress()) {
             serviceCleanupBusy = false;
         }
-        boolean busy = localCleanupBusy || serviceCleanupBusy || ProxyGuardService.isCleanupInProgress();
+        boolean busy = localCleanupBusy || serviceCleanupBusy || proxyConnectBusy || ProxyGuardService.isCleanupInProgress();
         if (busy) {
             startWatchdogBtn.setVisibility(View.GONE);
-            styleButton(proxyActionBtn, getString(R.string.btn_working), disabledBg, disabledText, Color.TRANSPARENT, false);
+            String busyLabel = getString(proxyConnectBusy ? R.string.btn_reconnecting_proxy : R.string.btn_working);
+            styleButton(proxyActionBtn, busyLabel, disabledBg, disabledText, Color.TRANSPARENT, false);
         } else if (snap.serviceRunning) {
             startWatchdogBtn.setVisibility(View.GONE);
             styleButton(proxyActionBtn, getString(R.string.btn_stop_and_clean),
                     Color.parseColor("#EF4444"), Color.WHITE, Color.TRANSPARENT, true);
         } else if (hasActiveTrafficRouting) {
-            boolean canStartWatchdog = hasProxy && ProxyCleaner.parseProxyHostPort(snap.globalProxy) != null;
+            boolean canStartWatchdog = (hasProxy && ProxyCleaner.parseProxyHostPort(snap.globalProxy) != null)
+                    || (snap.staleVpn && !snap.guardHost.isEmpty() && snap.guardPort > 0);
             startWatchdogBtn.setVisibility(canStartWatchdog ? View.VISIBLE : View.GONE);
             if (canStartWatchdog) {
                 styleButton(startWatchdogBtn, getString(R.string.btn_start_watchdog),
@@ -2189,8 +2334,15 @@ public class MainActivity extends Activity {
                     Color.parseColor("#EF4444"), Color.WHITE, Color.TRANSPARENT, true);
         } else {
             startWatchdogBtn.setVisibility(View.GONE);
-            styleButton(proxyActionBtn, getString(R.string.btn_proxy_idle),
-                    disabledBg, disabledText, borderColor, false);
+            boolean canReconnect = snap.hasSecureSettings
+                    && (!snap.customEndpoint.isEmpty() || (!snap.guardHost.isEmpty() && snap.guardPort > 0));
+            if (canReconnect) {
+                styleButton(proxyActionBtn, getString(R.string.btn_reconnect_proxy),
+                        accentColor, Color.WHITE, Color.TRANSPARENT, true);
+            } else {
+                styleButton(proxyActionBtn, getString(R.string.btn_proxy_idle),
+                        disabledBg, disabledText, borderColor, false);
+            }
         }
 
         // 3. Card 2 — CA Certificate
@@ -2281,10 +2433,17 @@ public class MainActivity extends Activity {
 
     private void onStartWatchdogClicked() {
         UiSnapshot snap = latestSnapshot;
-        if (snap == null || snap.globalProxy.isEmpty()) {
+        if (snap == null) {
             return;
         }
-        ProxyCleaner.HostPort hp = ProxyCleaner.parseProxyHostPort(snap.globalProxy);
+        ProxyCleaner.HostPort hp = null;
+        String mode = "proxy";
+        if (!snap.globalProxy.isEmpty()) {
+            hp = ProxyCleaner.parseProxyHostPort(snap.globalProxy);
+        } else if (snap.staleVpn && !snap.guardHost.isEmpty() && snap.guardPort > 0) {
+            hp = new ProxyCleaner.HostPort(snap.guardHost, snap.guardPort);
+            mode = "vpn";
+        }
         if (hp == null) {
             return;
         }
@@ -2293,7 +2452,10 @@ public class MainActivity extends Activity {
             startIntent.setAction(ProxyGuardService.ACTION_START);
             startIntent.putExtra(ProxyGuardService.EXTRA_PROXY_HOST, hp.host);
             startIntent.putExtra(ProxyGuardService.EXTRA_PROXY_PORT, hp.port);
-            startIntent.putExtra(ProxyGuardService.EXTRA_MODE, "proxy");
+            startIntent.putExtra(ProxyGuardService.EXTRA_MODE, mode);
+            if ("vpn".equals(mode) && snap.redirPort != null && !snap.redirPort.isEmpty()) {
+                startIntent.putExtra(ProxyGuardService.EXTRA_REDIR_PORT, snap.redirPort);
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(startIntent);
             } else {
@@ -2301,6 +2463,14 @@ public class MainActivity extends Activity {
             }
             Toast.makeText(this, getString(R.string.toast_watchdog_started, hp.host + ":" + hp.port), Toast.LENGTH_SHORT).show();
             requestRefresh(false, false);
+            mainHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!isFinishing() && !isDestroyed()) {
+                        requestRefresh(false, false);
+                    }
+                }
+            }, 300L);
         } catch (Throwable t) {
             String errMsg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
             Toast.makeText(this, getString(R.string.toast_watchdog_start_failed, errMsg), Toast.LENGTH_LONG).show();
@@ -2308,7 +2478,7 @@ public class MainActivity extends Activity {
     }
 
     private void onProxyActionClicked() {
-        if (localCleanupBusy || serviceCleanupBusy || ProxyGuardService.isCleanupInProgress()) {
+        if (localCleanupBusy || serviceCleanupBusy || proxyConnectBusy || ProxyGuardService.isCleanupInProgress()) {
             return;
         }
         UiSnapshot snap = latestSnapshot;
@@ -2317,6 +2487,7 @@ public class MainActivity extends Activity {
         }
         boolean hasWork = snap.serviceRunning || !snap.globalProxy.isEmpty() || snap.staleVpn;
         if (!hasWork) {
+            onReconnectProxyClicked();
             return;
         }
 
@@ -2366,6 +2537,111 @@ public class MainActivity extends Activity {
                                 message,
                                 res.ok ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
                         requestRefresh(false, false);
+                    }
+                });
+            }
+        });
+    }
+
+    private void onReconnectProxyClicked() {
+        UiSnapshot snap = latestSnapshot;
+        if (snap == null || !snap.hasSecureSettings) {
+            return;
+        }
+        final String customEp = snap.customEndpoint != null ? snap.customEndpoint.trim() : "";
+        final String primaryHost;
+        final int primaryPort;
+        final boolean allowLoopbackFallback;
+        if (!customEp.isEmpty()) {
+            ProxyCleaner.HostPort parsed = ProxyCleaner.parseProxyHostPort(customEp);
+            if (parsed == null) {
+                return;
+            }
+            primaryHost = parsed.host;
+            primaryPort = parsed.port;
+            allowLoopbackFallback = false;
+        } else if (!snap.guardHost.isEmpty() && snap.guardPort > 0) {
+            primaryHost = snap.guardHost;
+            primaryPort = snap.guardPort;
+            allowLoopbackFallback = true;
+        } else {
+            return;
+        }
+
+        proxyConnectBusy = true;
+        renderSnapshot(snap);
+
+        runIo(new Runnable() {
+            @Override
+            public void run() {
+                Context appCtx = getApplicationContext();
+                final ProxyCleaner.HostPort reachable = ProxyCleaner.findReachableProxy(
+                        primaryHost, primaryPort, allowLoopbackFallback, 1800);
+                final boolean applied = reachable != null
+                        && ProxyCleaner.setGlobalProxy(appCtx, reachable.host, reachable.port);
+
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
+                        proxyConnectBusy = false;
+                        if (reachable == null) {
+                            String tried = primaryHost + ":" + primaryPort;
+                            if (allowLoopbackFallback && !ProxyCleaner.isLoopbackHost(primaryHost)) {
+                                tried = tried + ", 127.0.0.1:" + primaryPort;
+                            }
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    getString(R.string.toast_proxy_reconnect_unreachable, tried),
+                                    Toast.LENGTH_LONG).show();
+                            requestRefresh(false, false);
+                            return;
+                        }
+
+                        String targetAddr = reachable.host + ":" + reachable.port;
+                        if (!applied) {
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    getString(R.string.toast_proxy_reconnect_failed, targetAddr),
+                                    Toast.LENGTH_LONG).show();
+                            requestRefresh(false, false);
+                            return;
+                        }
+
+                        stickyLoopbackEndpoint = ProxyCleaner.isLoopbackHost(reachable.host) ? targetAddr : "";
+                        try {
+                            Intent startIntent = new Intent(MainActivity.this, ProxyGuardService.class);
+                            startIntent.setAction(ProxyGuardService.ACTION_START);
+                            startIntent.putExtra(ProxyGuardService.EXTRA_PROXY_HOST, reachable.host);
+                            startIntent.putExtra(ProxyGuardService.EXTRA_PROXY_PORT, reachable.port);
+                            startIntent.putExtra(ProxyGuardService.EXTRA_MODE, "proxy");
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                startForegroundService(startIntent);
+                            } else {
+                                startService(startIntent);
+                            }
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    getString(R.string.toast_proxy_reconnected, targetAddr),
+                                    Toast.LENGTH_SHORT).show();
+                        } catch (Throwable t) {
+                            String errMsg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    getString(R.string.toast_watchdog_start_failed, errMsg),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                        requestRefresh(false, false);
+                        mainHandler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (!isFinishing() && !isDestroyed()) {
+                                    requestRefresh(false, false);
+                                }
+                            }
+                        }, 300L);
                     }
                 });
             }

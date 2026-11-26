@@ -76,15 +76,31 @@ type Options struct {
 	// Larger payloads forward intact and are reported with Truncated=true.
 	// It defaults to 256 KiB.
 	MaxStreamPayloadBytes int64
+
+	// CompanionToken overrides the per-host token stored in
+	// <CertDir>/companion.token for authenticating /_cap/companion/* requests.
+	// When empty and DisableCompanionAPI is false, EnsureCompanionToken loads
+	// or generates <CertDir>/companion.token automatically.
+	CompanionToken string
+
+	// DisableCompanionAPI disables the direct /_cap/companion/* HTTP traffic
+	// API served on the proxy listener. By default (false) it is enabled.
+	DisableCompanionAPI bool
+
+	// CompanionBufferSize configures the in-memory ring buffer size for the
+	// Companion Live Traffic API. Defaults to 200 and is clamped to 10..1000.
+	CompanionBufferSize int
 }
 
 // Proxy is a MITM HTTP(S) proxy that captures every completed request/
 // response pair as a types.Flow.
 type Proxy struct {
-	opts     Options
-	gp       *goproxy.ProxyHttpServer
-	listener net.Listener
-	server   *http.Server
+	opts           Options
+	gp             *goproxy.ProxyHttpServer
+	listener       net.Listener
+	server         *http.Server
+	companion      *companionFeed
+	companionToken string
 
 	idSeq atomic.Int64
 
@@ -137,12 +153,43 @@ func New(opts Options) (*Proxy, error) {
 		gp.Tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit opt-in, documented on Options.
 	}
 
+	var (
+		companionToken string
+		feed           *companionFeed
+	)
+	if !opts.DisableCompanionAPI {
+		companionToken = strings.TrimSpace(opts.CompanionToken)
+		if companionToken == "" {
+			tok, err := EnsureCompanionToken(certDir)
+			if err != nil {
+				ln.Close()
+				return nil, err
+			}
+			companionToken = tok
+		}
+		feed = newCompanionFeed(ln.Addr().String(), opts.CompanionBufferSize)
+	}
+
 	p := &Proxy{
-		opts:     opts,
-		gp:       gp,
-		listener: ln,
-		server:   &http.Server{Handler: gp},
-		pending:  make(map[*http.Request]*pendingFlow),
+		opts:           opts,
+		gp:             gp,
+		listener:       ln,
+		server:         &http.Server{},
+		companion:      feed,
+		companionToken: companionToken,
+		pending:        make(map[*http.Request]*pendingFlow),
+	}
+
+	if opts.DisableCompanionAPI {
+		p.server.Handler = gp
+	} else {
+		p.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isCompanionAPIRequest(r) {
+				p.serveCompanionAPI(w, r)
+				return
+			}
+			gp.ServeHTTP(w, r)
+		})
 	}
 
 	// Perform MITM on every CONNECT (i.e. every HTTPS request), signing
@@ -184,6 +231,12 @@ func (p *Proxy) Stop() error {
 // including the actual OS-assigned port when Options.Addr used ":0".
 func (p *Proxy) Addr() string {
 	return p.listener.Addr().String()
+}
+
+// CompanionToken returns the active X-Cap-Token authenticating requests to
+// /_cap/companion/*, or an empty string when DisableCompanionAPI is true.
+func (p *Proxy) CompanionToken() string {
+	return p.companionToken
 }
 
 // onRequest is the goproxy request hook: it stashes the request start time
@@ -233,6 +286,19 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 	}
 
 	if resp == nil {
+		if p.companion != nil {
+			errMsg := "upstream request failed"
+			if ctx != nil && ctx.Error != nil {
+				errMsg = ctx.Error.Error()
+			}
+			p.companion.recordError(
+				fmt.Sprintf("f%d", p.idSeq.Add(1)),
+				req,
+				meta.start,
+				meta.reqBody,
+				errMsg,
+			)
+		}
 		// The round trip to the upstream server failed outright (dial
 		// error, timeout, ...) — there's no status/body to report.
 		return resp
@@ -263,13 +329,13 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 
 	if isWebSocketUpgrade(resp) {
 		resp.Body = p.websocketBody(resp.Body, flow)
-		p.emitFlow(flow)
+		p.recordAndEmitFlow(flow, req, resp)
 		return resp
 	}
 
 	if isServerSentEvent(resp) && resp.Body != nil {
 		resp.Body = p.sseBody(resp.Body, flow)
-		p.emitFlow(flow)
+		p.recordAndEmitFlow(flow, req, resp)
 		return resp
 	}
 
@@ -280,9 +346,16 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 		}
 	}
 
-	p.emitFlow(flow)
+	p.recordAndEmitFlow(flow, req, resp)
 
 	return resp
+}
+
+func (p *Proxy) recordAndEmitFlow(flow *types.Flow, req *http.Request, resp *http.Response) {
+	if p.companion != nil {
+		p.companion.recordFlow(flow, req, resp)
+	}
+	p.emitFlow(flow)
 }
 
 func (p *Proxy) emitFlow(flow *types.Flow) {

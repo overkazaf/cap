@@ -125,4 +125,94 @@
     <string name="toast_cert_failed">Failed to open certificate installer: %1$s</string>
 
     <string name="footer_hint">Cap Guard monitors desktop proxy reachability and automatically clears Android proxy settings if USB unplugs, Wi-Fi drops, or Cap exits unexpectedly.</string>
+
+    <!-- 2-Tab Navigation -->
+    <string name="tab_guard">Guard</string>
+    <string name="tab_traffic">Traffic</string>
+
+    <!-- Traffic Live Status & Metrics -->
+    <string name="traffic_status_live">Live · %1$s</string>
+    <string name="traffic_status_paused">Paused · %1$s</string>
+    <string name="traffic_status_offline">Proxy offline · %1$s</string>
+    <string name="traffic_status_unauth">Token not paired</string>
+    <string name="traffic_status_no_endpoint">No proxy endpoint</string>
+    <string name="traffic_status_error">API error</string>
+    <string name="traffic_status_connecting">Connecting…</string>
+
+    <string name="traffic_metric_flows">Flows</string>
+    <string name="traffic_metric_rps">Req/s</string>
+    <string name="traffic_metric_bytes">Volume</string>
+
+    <string name="traffic_btn_pause">Pause</string>
+    <string name="traffic_btn_resume">Resume</string>
+    <string name="traffic_btn_clear">Clear</string>
+    <string name="traffic_btn_config">Config</string>
+
+    <!-- Traffic Search & Filter Chips -->
+    <string name="traffic_search_hint">Search host, path, method…</string>
+    <string name="traffic_chip_all">All</string>
+    <string name="traffic_chip_get">GET</string>
+    <string name="traffic_chip_post">POST</string>
+    <string name="traffic_chip_errors">4xx/5xx</string>
+    <string name="traffic_chip_https">HTTPS</string>
+
+    <!-- Traffic Empty & Error States -->
+    <string name="traffic_empty_title">No captured flows yet</string>
+    <string name="traffic_empty_filtered_title">No matching flows</string>
+    <string name="traffic_empty_hint">Listening on %1$s. Browse or open an app to see live requests.</string>
+    <string name="traffic_empty_filtered_hint">Clear the search query or switch filter chips to view all flows.</string>
+    <string name="traffic_err_no_endpoint_title">Proxy endpoint not found</string>
+    <string name="traffic_err_no_endpoint_hint">Start Android proxy from desktop Cap or configure a manual proxy host:port.</string>
+    <string name="traffic_err_unauth_title">Companion token not paired</string>
+    <string name="traffic_err_unauth_hint">Reconnect from desktop Cap to auto-sync X-Cap-Token, or enter it manually below.</string>
+    <string name="traffic_err_offline_title">Cannot reach Cap proxy</string>
+    <string name="traffic_err_offline_hint">Unable to connect to %1$s. Verify desktop Cap is running and USB reverse or Wi-Fi is active.</string>
+    <string name="traffic_err_api_title">Traffic API error</string>
+    <string name="traffic_btn_open_config">Configure Endpoint &amp; Token</string>
+    <string name="traffic_btn_retry">Retry Now</string>
+
+    <!-- Traffic Config Dialog -->
+    <string name="dialog_traffic_config_title">Traffic Endpoint &amp; Token</string>
+    <string name="dialog_traffic_auto_endpoint">Auto-detected: %1$s</string>
+    <string name="dialog_traffic_endpoint_label">Manual Proxy Override (host:port, optional)</string>
+    <string name="dialog_traffic_endpoint_hint">e.g. 127.0.0.1:8080</string>
+    <string name="dialog_traffic_token_label">X-Cap-Token (auto-synced from desktop Cap)</string>
+    <string name="dialog_traffic_token_hint">Paste companion token…</string>
+    <string name="dialog_traffic_save">Save</string>
+    <string name="dialog_traffic_reset">Auto</string>
+    <string name="dialog_cancel">Cancel</string>
+
+    <string name="toast_traffic_config_saved">Traffic settings saved</string>
+    <string name="toast_traffic_endpoint_invalid">Invalid proxy endpoint — use host:port (e.g. 127.0.0.1:8080)</string>
+    <string name="toast_traffic_cleared">Captured traffic cleared</string>
+    <string name="toast_traffic_clear_failed">Failed to clear traffic: %1$s</string>
+
+    <!-- Flow Detail Dialog -->
+    <string name="detail_tab_overview">Overview</string>
+    <string name="detail_tab_request">Request</string>
+    <string name="detail_tab_response">Response</string>
+    <string name="detail_loading">Loading flow details…</string>
+    <string name="detail_load_failed">Failed to load details: %1$s</string>
+    <string name="detail_section_req_headers">Request Headers</string>
+    <string name="detail_section_resp_headers">Response Headers</string>
+    <string name="detail_section_req_body">Request Body</string>
+    <string name="detail_section_resp_body">Response Body</string>
+    <string name="detail_empty_headers">(no headers)</string>
+    <string name="detail_empty_body">(empty body)</string>
+    <string name="detail_badge_truncated">TRUNCATED</string>
+    <string name="detail_badge_binary">BINARY</string>
+    <string name="detail_btn_copy_url">Copy URL</string>
+    <string name="detail_btn_copy_curl">Copy cURL</string>
+    <string name="detail_field_url">URL</string>
+    <string name="detail_field_method">Method</string>
+    <string name="detail_field_status">Status</string>
+    <string name="detail_field_scheme">Protocol</string>
+    <string name="detail_field_host">Host</string>
+    <string name="detail_field_path">Path</string>
+    <string name="detail_field_content_type">Content-Type</string>
+    <string name="detail_field_latency">Latency</string>
+    <string name="detail_field_req_size">Request Size</string>
+    <string name="detail_field_resp_size">Response Size</string>
+    <string name="detail_field_time">Time</string>
+    <string name="detail_field_error">Error</string>
 </resources>

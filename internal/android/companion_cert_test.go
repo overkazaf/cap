@@ -277,7 +277,7 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 			case strings.Contains(sh, "===CAP_PKG==="):
 				pkgSection := "Unable to find package: " + CompanionPackage
 				if companionInstalled {
-					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=4\n  versionName=1.2.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
+					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=5\n  versionName=1.3.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
 				}
 				svcSection := "  (nothing)"
 				if watchdogStarted {
@@ -406,7 +406,7 @@ func TestInstallCACertNonRootedCompanionFlow(t *testing.T) {
 				return "su: not found", os.ErrNotExist
 			}
 			if strings.HasPrefix(sh, "dumpsys package "+CompanionPackage) {
-				return "Package [" + CompanionPackage + "]\n  versionCode=4\n  versionName=1.2.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
+				return "Package [" + CompanionPackage + "]\n  versionCode=5\n  versionName=1.3.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
 			}
 			if strings.Contains(sh, CompanionActivity) && strings.Contains(sh, "--ez install_cert true") {
 				launchedCompanion = true
@@ -834,8 +834,8 @@ func TestInstallCompanionAutoUpgradesOlderVersionCode(t *testing.T) {
 		case "shell":
 			sh := strings.Join(cmdArgs[1:], " ")
 			if strings.Contains(sh, "===CAP_PKG===") {
-				// Installed v1.2.0 (versionCode=3) < CompanionVersionCode (4) must trigger upgrade
-				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=3 minSdk=24 targetSdk=34\n  versionName=1.2.0\n===CAP_SVC===\n===CAP_WL===\n", nil
+				// Installed v1.2.1 (versionCode=4) < CompanionVersionCode (5) must trigger upgrade
+				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=4 minSdk=24 targetSdk=34\n  versionName=1.2.1\n===CAP_SVC===\n===CAP_WL===\n", nil
 			}
 			return "", nil
 		case "install":
@@ -849,7 +849,7 @@ func TestInstallCompanionAutoUpgradesOlderVersionCode(t *testing.T) {
 		t.Fatalf("InstallCompanion auto-upgrade failed: %v", err)
 	}
 	if !installCalled {
-		t.Fatalf("expected InstallCompanion to upgrade versionCode=3 -> %d", CompanionVersionCode)
+		t.Fatalf("expected InstallCompanion to upgrade versionCode=4 -> %d", CompanionVersionCode)
 	}
 }
 
@@ -914,5 +914,101 @@ func TestParseProxySettingEdgeCases(t *testing.T) {
 		if h != tt.wantHost || p != tt.wantPort {
 			t.Errorf("ParseProxySetting(%q) = (%q, %q), want (%q, %q)", tt.raw, h, p, tt.wantHost, tt.wantPort)
 		}
+	}
+}
+
+func TestCompanionVersionAndAPITokenSync(t *testing.T) {
+	if CompanionVersionCode != 5 || CompanionVersionName != "1.3.0" {
+		t.Fatalf("CompanionVersion = (%d, %q), want (5, \"1.3.0\")", CompanionVersionCode, CompanionVersionName)
+	}
+
+	certPath := filepath.Join("testdata", "test-ca.crt")
+	if _, err := os.Stat(certPath); err != nil {
+		t.Skip("testdata/test-ca.crt not available")
+	}
+
+	// Verify real EnsureCompanionToken integration under an isolated HOME dir.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	tok := companionAPIToken()
+	if len(tok) != 64 {
+		t.Fatalf("companionAPIToken() len = %d, want 64 hex chars (%q)", len(tok), tok)
+	}
+
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	var startCmd, certSyncCmd, configSyncCmd, installSyncCmd string
+	adbExecFunc = func(args ...string) (string, error) {
+		if len(args) == 1 && args[0] == "devices" {
+			return "List of devices attached\nTOKDEV\tdevice\n", nil
+		}
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		if len(cmdArgs) > 0 && cmdArgs[0] == "shell" {
+			sh := strings.Join(cmdArgs[1:], " ")
+			switch {
+			case strings.Contains(sh, "===CAP_PKG==="):
+				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=5\n  versionName=1.3.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n===CAP_SVC===\n===CAP_WL===\n", nil
+			case strings.Contains(sh, companionActionStart):
+				startCmd = sh
+				return "Starting service", nil
+			case strings.Contains(sh, companionActionSyncCert):
+				if strings.Contains(sh, "--es expected_hash") {
+					certSyncCmd = sh
+				} else if strings.Contains(sh, "--es proxy_host") {
+					configSyncCmd = sh
+				} else {
+					installSyncCmd = sh
+				}
+				return `Broadcast completed: result=-1`, nil
+			}
+		}
+		return "", nil
+	}
+
+	if err := InstallCompanion("TOKDEV"); err != nil {
+		t.Fatalf("InstallCompanion: %v", err)
+	}
+	wantTokenArg := "--es api_token '" + tok + "'"
+	if !strings.Contains(installSyncCmd, wantTokenArg) || !strings.Contains(installSyncCmd, "--include-stopped-packages") {
+		t.Errorf("InstallCompanion did not sync api_token via ACTION_SYNC_CERT: %q", installSyncCmd)
+	}
+
+	if err := StartCompanionGuardWithConfig("TOKDEV", "192.168.1.50", "8080", "proxy", "9999", 3000, 3); err != nil {
+		t.Fatalf("StartCompanionGuardWithConfig: %v", err)
+	}
+	if !strings.Contains(startCmd, wantTokenArg) {
+		t.Errorf("StartCompanionGuardWithConfig missing api_token extra: %q", startCmd)
+	}
+
+	if err := SyncCompanionCert("TOKDEV", certPath); err != nil {
+		t.Fatalf("SyncCompanionCert: %v", err)
+	}
+	if !strings.Contains(certSyncCmd, wantTokenArg) {
+		t.Errorf("SyncCompanionCert missing api_token extra: %q", certSyncCmd)
+	}
+
+	if err := SyncCompanionConfig("TOKDEV", "192.168.1.50", "8080"); err != nil {
+		t.Fatalf("SyncCompanionConfig: %v", err)
+	}
+	if !strings.Contains(configSyncCmd, wantTokenArg) ||
+		!strings.Contains(configSyncCmd, "--es proxy_host '192.168.1.50'") ||
+		!strings.Contains(configSyncCmd, "--es proxy_port '8080'") {
+		t.Errorf("SyncCompanionConfig missing expected extras: %q", configSyncCmd)
+	}
+
+	// Empty token fallback must never block StartCompanionGuardWithConfig or SyncCompanionCert.
+	origTokFn := companionAPITokenFunc
+	t.Cleanup(func() { companionAPITokenFunc = origTokFn })
+	companionAPITokenFunc = func() string { return "" }
+	startCmd = ""
+	if err := StartCompanionGuardWithConfig("TOKDEV", "192.168.1.50", "8080", "proxy", "9999", 3000, 3); err != nil {
+		t.Fatalf("StartCompanionGuardWithConfig with empty token failed: %v", err)
+	}
+	if strings.Contains(startCmd, "api_token") {
+		t.Errorf("expected api_token extra omitted when token is empty: %q", startCmd)
 	}
 }

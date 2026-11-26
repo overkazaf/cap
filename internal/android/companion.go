@@ -6,15 +6,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/overkazaf/cap/internal/proxy"
 )
 
 const (
 	// CompanionPackage is the Android application ID of the embedded Cap Guard APK.
 	CompanionPackage = "com.overkazaf.cap.companion"
 	// CompanionVersionCode is the versionCode baked into the embedded APK.
-	CompanionVersionCode = 4
+	CompanionVersionCode = 5
 	// CompanionVersionName is the versionName baked into the embedded APK.
-	CompanionVersionName = "1.2.1"
+	CompanionVersionName = "1.3.0"
 	// CompanionService is the full component name of ProxyGuardService.
 	CompanionService = CompanionPackage + "/.ProxyGuardService"
 	// CompanionActivity is the full component name of MainActivity.
@@ -113,6 +115,70 @@ func InstallCompanion(serial string) error {
 	_, _ = AdbShell(serial, "appops set "+CompanionPackage+" RUN_ANY_IN_BACKGROUND allow 2>/dev/null || true")
 	_, _ = AdbShell(serial, "dumpsys deviceidle whitelist +"+CompanionPackage+" 2>/dev/null || true")
 
+	// Best-effort sync of the host companion API token so newly installed or
+	// upgraded devices can authenticate with /_cap/companion/* immediately.
+	_ = syncCompanionConfig(serial, "", "")
+
+	return nil
+}
+
+// companionAPITokenFunc resolves the host's companion API token. Overridden in
+// tests to avoid touching the real user's ~/.cap directory when needed.
+var companionAPITokenFunc = func() string {
+	tok, err := proxy.EnsureCompanionToken("")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(tok)
+}
+
+func companionAPIToken() string {
+	if companionAPITokenFunc == nil {
+		return ""
+	}
+	return strings.TrimSpace(companionAPITokenFunc())
+}
+
+// SyncCompanionConfig pushes the host's companion API token (and optional
+// proxyHost/proxyPort) silently into the Companion APK via ACTION_SYNC_CERT
+// so the Traffic tab stays paired with the host proxy.
+func SyncCompanionConfig(serial, proxyHost, proxyPort string) error {
+	resolved, err := GetDeviceSerial(serial)
+	if err != nil {
+		return err
+	}
+	return syncCompanionConfig(resolved, proxyHost, proxyPort)
+}
+
+func syncCompanionConfig(serial, proxyHost, proxyPort string) error {
+	tok := companionAPIToken()
+	proxyHost = strings.TrimSpace(proxyHost)
+	proxyPort = strings.TrimSpace(proxyPort)
+	if tok == "" && proxyHost == "" && proxyPort == "" {
+		return nil
+	}
+
+	var extras strings.Builder
+	if tok != "" {
+		extras.WriteString(" --es api_token " + shellQuote(tok))
+	}
+	if proxyHost != "" {
+		extras.WriteString(" --es proxy_host " + shellQuote(proxyHost))
+	}
+	if proxyPort != "" {
+		extras.WriteString(" --es proxy_port " + shellQuote(proxyPort))
+	}
+
+	cmd := fmt.Sprintf(
+		"am broadcast --include-stopped-packages -n %s -a %s%s",
+		CompanionCertReceiver,
+		companionActionSyncCert,
+		extras.String(),
+	)
+	out, err := AdbShell(serial, cmd)
+	if err != nil || strings.Contains(out, "Error:") {
+		return fmt.Errorf("sync companion config: %v (%s)", err, out)
+	}
 	return nil
 }
 
@@ -162,6 +228,9 @@ func StartCompanionGuardWithConfig(serial, proxyHost, proxyPort, mode, redirPort
 		heartbeatMs,
 		missThreshold,
 	)
+	if tok := companionAPIToken(); tok != "" {
+		extras += " --es api_token " + shellQuote(tok)
+	}
 
 	out, err := AdbShell(serial, "am start-foreground-service "+extras)
 	if err != nil || strings.Contains(out, "Error:") || strings.Contains(out, "Exception") {
@@ -267,6 +336,9 @@ func SyncCompanionCert(serial, certPath string) error {
 	}
 	if certBytes, err := os.ReadFile(certPath); err == nil && len(certBytes) > 0 && len(certBytes) < 32*1024 {
 		extras.WriteString(" --es cert_b64 " + shellQuote(base64.StdEncoding.EncodeToString(certBytes)))
+	}
+	if tok := companionAPIToken(); tok != "" {
+		extras.WriteString(" --es api_token " + shellQuote(tok))
 	}
 	cmd := fmt.Sprintf(
 		"am broadcast --include-stopped-packages -n %s -a %s%s",

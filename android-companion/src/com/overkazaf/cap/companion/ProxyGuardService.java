@@ -266,7 +266,7 @@ public class ProxyGuardService extends Service {
         powerReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                if (Intent.ACTION_POWER_DISCONNECTED.equals(intent.getAction())) {
+                if (intent != null && Intent.ACTION_POWER_DISCONNECTED.equals(intent.getAction())) {
                     // USB unplugged: immediately probe proxy on background thread; if unreachable, clean up at once.
                     new Thread(new Runnable() {
                         @Override
@@ -557,7 +557,11 @@ public class ProxyGuardService extends Service {
                 .setOngoing(false)
                 .setContentIntent(openPi);
 
-        nm.notify(NOTIF_ID_RESTORED, builder.build());
+        try {
+            nm.notify(NOTIF_ID_RESTORED, builder.build());
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed posting restored notification: " + t.getMessage());
+        }
     }
 
     public static void ensureNotificationChannels(Context ctx) {

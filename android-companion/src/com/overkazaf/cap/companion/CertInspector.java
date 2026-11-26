@@ -458,8 +458,15 @@ public final class CertInspector {
             return "";
         }
         X500Principal principal = cert.getSubjectX500Principal();
+        if (principal == null) {
+            return "";
+        }
         String cn = extractRdnValue(principal, "CN");
-        return !cn.isEmpty() ? cn : principal.getName();
+        if (!cn.isEmpty()) {
+            return cn;
+        }
+        String name = principal.getName();
+        return name != null ? name : "";
     }
 
     private static String extractRdnValue(X500Principal principal, String key) {

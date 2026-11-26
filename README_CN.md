@@ -18,12 +18,93 @@
 
 ## 产品界面预览
 
+> 以下界面展示采用内置 **Nordic Aurora（北欧极光）** 暗色主题与原生 **简体中文**（支持 `EN ↔ 简体中文` 与 4 套主题实时热切换）。所有演示数据均采用脱敏合成靶标（`com.novapay.client` / `api.novapay.dev` / `libnovasign.so`）。
+
+### 桌面端逆向分析、算法仿真与 AI 自愈工作台（`cap gui`）
+
+<p align="center">
+  <img src="docs/screenshots/deeptrace-callgraph.png" alt="DeepTrace 6 泳道交互式调用图谱与节点证据检查器" width="100%">
+  <br>
+  <strong>DeepTrace 深度调用追踪 —— HTTP → Java → JNI → Native 全链路交互图谱</strong><br>
+  <em>8 阶段实时可取消流水线，结合纯 Go DEX 字节码 XRef、6 泳道交互式 SVG 调用图（<code>入口/UI → 业务模块 → 网络/API → 加密/签名 → Native JNI → HTTP 请求</code>）、模块架构图与调用时序图；点击任意节点即可在右侧 <strong>节点证据检查器</strong> 查看符号地址、命中关键词与上下游调用链，并一键跳转 Frida Hook、仿真执行或加固审计。</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/re-emulate-ai-heal.png" alt="Unidbg / Qiling / angr 算法仿真与多模型 AI 自动自愈闭环" width="100%">
+  <br>
+  <strong>算法仿真（Unidbg / Qiling / angr）+ 多模型 AI 诊断与自动自愈闭环</strong><br>
+  <em>支持 ARM64/ARM/x86_64 原生算法仿真，自动匹配 JDK / Maven 缓存与独立 Qiling/angr 虚拟环境，内置 Unidbg 自动补环境助手与 Frida 运行时快照。仿真或脚本报错时，全局 <strong>AI 诊断与自愈抽屉</strong>（OpenAI / Anthropic Claude / Gemini / DeepSeek / 通义千问 / 本地 Ollama）自动完成客户端敏感信息脱敏、<code>javac</code>/AST 安全校验、Unified Diff 补丁对比及有界 ≤5 轮自愈重跑。</em>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/recon-workbench.png" alt="站点探测与 Nmap 端口扫描" width="100%"><br>
+      <strong>站点探测与 Nmap 端口扫描</strong><br>
+      <sub>面向授权目标的 DNS / WHOIS / 实时 TLS 1.3 证书链与 SAN 审计、45+ 技术栈与 CDN/WAF 指纹识别、<code>0–100</code> 七项安全响应头仪表盘、泛解析过滤子域名枚举（<code>subfinder</code> + CT 日志）、白名单 Nmap XML + 纯 Go 并发 TCP/Banner 扫描，以及 <em>请求流 → 一键站点探测</em>。</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-static-pro.png" alt="静态逆向分析：radare2、ELF/Mach-O/IPA、JADX Java-JNI 与符号桥接" width="100%"><br>
+      <strong>静态逆向分析（radare2 · JADX↔JNI · iOS · 符号桥接）</strong><br>
+      <sub>集成 <code>radare2</code> + 纯 Go ELF/Mach-O 反汇编、伪 C（<code>pdg</code>/<code>pdc</code>）与交互式只读 <code>r2&gt;</code> 控制台；支持缓存 JADX APK/DEX 工作区、静态导出与动态 <code>RegisterNatives</code> Java↔JNI 交叉关联、iOS Mach-O/IPA FairPlay <code>cryptid</code> 审计，以及 IDA Pro / Ghidra Python 符号桥接导出。</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-exectrace-taint.png" alt="ExecTrace 执行追踪与寄存器+内存双向污点分析" width="100%"><br>
+      <strong>ExecTrace 执行追踪与污点分析</strong><br>
+      <sub>多格式动态指令轨迹解析（Unidbg、Frida Stalker、Qiling、Java/JNI、JSONL、Tenet），支持前向/后向寄存器与内存双向污点切片、加密常量与热点轮循环自动识别、ASLR 归一化双轨迹 Diff，以及 Tenet / JSONL / Markdown 导出。</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-defense-vmp.png" alt="加固对抗、OLLVM、VMP 与现代 TLS/mTLS 诊断" width="100%"><br>
+      <strong>对抗与脱壳（OLLVM / VMP）及 TLS / mTLS 诊断</strong><br>
+      <sub>纯 Go 多层加固审计，覆盖 13+ 商业加固壳、OLLVM 控制流平坦化/虚假控制流、Native/DEX VMP 解释器与 ARM64 内联 <code>SVC #0</code> 检测；按审计结果合成 Frida 反调试隐身 / 内存 DEX 脱壳 / angr 去平坦化 / VMP Stalker 脚本；内置 6 套 TLS/JA3 指纹、APK 证书与 Pin 扫描、mTLS 校验及 Flutter/Cronet 代理诊断脚本。</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-crypto-dfa.png" alt="算法实验室与白盒 AES-128 第 9 轮 DFA 主密钥求解器" width="100%"><br>
+      <strong>算法实验室与白盒 AES-128 DFA 求解</strong><br>
+      <sub>34+ CyberChef 风格可编排编解码与加解密管线（自定义码表 Base64、魔改 IV MD5/SHA、纯 Go SM4 / AES / ChaCha20 / RC4）、无 Schema Protobuf 二进制 AST 解码与无损重编码，以及亚毫秒级（<code>0.31ms</code>）<strong>白盒 AES-128 第 9 轮 DFA</strong> 主密钥还原引擎与 Unidbg/Qiling 故障注入脚本生成。</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/gateway-pro.png" alt="生产级服务化网关 Open API 中心" width="100%"><br>
+      <strong>生产级服务化网关（Open API 中心）</strong><br>
+      <sub>抓包流量一键发布为标准化 <code>/gw/&lt;slug&gt;</code> REST 接口，内置代理 IP 池故障切换、虚拟/ADB 设备指纹池、多账号池（单飞 <code>401/403</code> 自动续期）、托管签名 Worker 进程池（<code>1..8</code> Unidbg/Qiling/脚本实例）、路由级 LRU 缓存、熔断器、6 套 TLS/JA3 指纹 + mTLS、Prometheus 指标、OpenAPI 3.0.3 与 Docker/Compose 一键部署导出。</sub>
+    </td>
+  </tr>
+</table>
+
+### 手机端 Cap 代理守护伴侣 APK（`v1.3.2`）—— 断网守护与端内实时抓包
+
+<table>
+  <tr>
+    <td width="33.3%" valign="top" align="center">
+      <img src="docs/screenshots/android-companion-guard.png" alt="Cap 代理守护 APK v1.3.2 守护总览页" width="100%"><br>
+      <strong>守护看门狗与 CA 信任审计</strong><br>
+      <sub>支持免 Root <code>WRITE_SECURE_SETTINGS</code> 与 Root VPN/iptables 双路径断网自动清理，兼容 USB <code>adb reverse</code> + <code>127.0.0.1</code> 回环兜底、一键连通性预检重连代理，以及零 Root <code>AndroidCAStore</code> + Android 14+ APEX Conscrypt 证书校验。</sub>
+    </td>
+    <td width="33.3%" valign="top" align="center">
+      <img src="docs/screenshots/android-companion-traffic.png" alt="Cap 代理守护 APK v1.3.2 实时流量页" width="100%"><br>
+      <strong>手机端实时流量查看器</strong><br>
+      <sub>通过 <code>X-Cap-Token</code> 鉴权直连桌面代理回环接口，在手机端直接查看实时 <code>总流量 / Req/s / 流量大小</code> 指标、暂停/清空/配置端点，支持关键词检索与 <code>全部 / GET / POST / 4xx/5xx / HTTPS</code> 快速筛选。</sub>
+    </td>
+    <td width="33.3%" valign="top" align="center">
+      <img src="docs/screenshots/android-companion-detail.png" alt="Cap 代理守护 APK v1.3.2 流量详情弹窗" width="100%"><br>
+      <strong>三栏结构化请求详情弹窗</strong><br>
+      <sub>内置 <code>概览 / 请求 / 响应</code> 三段式检查器，支持完整请求/响应头查看、Pretty JSON 高亮排版、二进制与截断标识，以及一键 <strong>复制 URL</strong> 与 <strong>复制 cURL</strong>。</sub>
+    </td>
+  </tr>
+</table>
+
+<details>
+<summary><strong>更多界面预览 —— 抓包控制中心、Flows + 插件单页联调、多标签终端与陶瓷浅色主题</strong></summary>
+<br>
 <p align="center">
   <img src="docs/screenshots/flows-detail.png" alt="cap 请求流与插件单页联调工作台（Obsidian 暗黑主题）" width="100%">
   <br>
   <em>请求流 + 插件单页联调工作台 —— 左侧实时浏览抓包请求，右侧内嵌 <code>PluginWorkbench</code> 即时查看解析后的 <code>query_params</code> 变量、匹配状态并按 <code>⌘Enter</code> 运行 Python 3 / Node / Shell 脚本草稿。</em>
 </p>
-
 <table>
   <tr>
     <td width="50%" align="center">
@@ -37,21 +118,16 @@
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/screenshots/deeptrace-tab.png" alt="DeepTrace 8 阶段实时追踪" width="100%"><br>
-      <strong>DeepTrace 8 阶段实时流水线</strong> —— HTTP → Java → JNI → Native 调用链与 APK/JADX 缓存
-    </td>
-    <td width="50%" align="center">
       <img src="docs/screenshots/terminal-tab.png" alt="多标签内嵌终端" width="100%"><br>
       <strong>工作台多标签终端</strong> —— 结构化诊断命令块，无缝执行 ADB、Frida 与 CLI 工具
     </td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center">
-      <img src="docs/screenshots/light-zh-preview.png" alt="Porcelain 陶瓷浅色主题 + 简体中文" width="88%"><br>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/light-zh-preview.png" alt="Porcelain 陶瓷浅色主题 + 简体中文" width="100%"><br>
       <strong>Porcelain 陶瓷浅色主题 + 原生简体中文</strong> —— 4 套主题与中英双语零延迟热切换
     </td>
   </tr>
 </table>
+</details>
 
 ---
 
@@ -319,18 +395,19 @@ cap tui --lang zh                    # 直接以简体中文界面启动
   - *注*：`cap export` 命令上的 `-l` / `--lang` 参数用于指定生成代码的编程语言（`curl`、`python`、`go`、`java`、`js`、`all`）。
 - **Android 守护伴侣 APK**：内置 Android 原生双语资源（`Cap Guard` / `Cap 代理守护`），自动跟随手机系统语言显示。
 
-### 强化版 Android 抓包与 Cap 代理守护 APK
+### 强化版 Android 抓包与 Cap 代理守护伴侣 APK（`v1.3.2`）
 
 让抓包后的手机**永不因为拔掉数据线、切 Wi-Fi 或桌面端意外退出而断网**。
 
-`cap` 将一个仅 33 KB、零第三方依赖、纯 Android SDK 离线编译并签名的守护 APK（`com.overkazaf.cap.companion`，`minSdk=24`，`targetSdk=34`）直接嵌入 Go 二进制（`internal/android/bin/cap-companion.apk`）：
+`cap` 将一个轻量、零第三方依赖、纯 Android SDK 离线编译签名的守护伴侣 APK（`com.overkazaf.cap.companion`，`v1.3.2`，`minSdk=24`，`targetSdk=34`）直接嵌入 Go 二进制（`internal/android/bin/cap-companion.apk`）：
 
-- **无感自动部署**：执行 `cap android connect`（可用 `--no-companion` 跳过）或在 GUI 点击连接时自动安装并拉起守护服务。
-- **免 Root 自主清理代理**：连接时通过 ADB 自动授予 `WRITE_SECURE_SETTINGS` 与后台/电池白名单 —— **无需 Root 权限**即可由手机端自主还原系统代理。
+- **无感自动部署与 USB `adb reverse` 回环兜底**：执行 `cap android connect`（可用 `--no-companion` 跳过）或在 GUI 点击连接时自动安装并拉起守护服务；同时支持 Wi-Fi 局域网代理与 USB `adb reverse`（`127.0.0.1:8080`）本地回环隧道，隔离网络环境下也能稳定抓包。
+- **免 Root 自主清理代理与一键预检重连**：连接时通过 ADB 自动授予 `WRITE_SECURE_SETTINGS` 与后台/电池白名单 —— **无需 Root 权限**即可由手机端自主还原系统代理；内置「重试连接代理」按钮，写入系统代理前自动探测桌面端连通性，防止误配导致断网。
 - **前台心跳看门狗（`ProxyGuardService`）**：每 3 秒主动探测 `proxy_host:proxy_port` 连通性。连续失败 3 次、拔掉 USB（`ACTION_POWER_DISCONNECTED`）、设备重启（`BootReceiver`）或点击通知栏**「恢复网络」**按钮时，自动清除全局 `http_proxy`（在 Root `--vpn` 模式下同时清理 `cap-redir` 与 iptables 规则），并弹出「代理已自动清理，网络已恢复」通知。
-- **全版本 CA 证书管理（Android 7–15）**：
+- **零 Root `AndroidCAStore` 与 Android 14+ APEX 证书审计**：
   - **Root 设备**：支持 HTTP Toolkit 方案的 Android 14+ APEX Conscrypt 命名空间注入（`mount --bind` + `TRUST_STORE_CHANGED` 实时重载信任库）、Android 10–13 `mount --bind`、Magisk 持久化模块与 Android 9 及以下 `/system` 重挂，并提供 `cap android cert --check` 验证与 `--remove` 移除。
-  - **非 Root 设备**：守护 App 内置 `MainActivity` 一键调起系统 `KeyChain` 安装 `/sdcard/Download/cap-ca.crt`，配合 GUI 状态向导快速校验。
+  - **非 Root 设备**：内置 `CertInspector` 免 Root 校验 `AndroidCAStore` 与 APEX Conscrypt 信任状态及 SHA-256 指纹，并通过 `MainActivity` 一键调起系统 `KeyChain` 安装 `/sdcard/Download/cap-ca.crt`。
+- **手机端 Token 鉴权实时流量查看器与三栏详情弹窗**：原生双标签工作台（`守护 | 流量`）通过自动同步的 `X-Cap-Token` 直连桌面代理回环接口，实时展示 `总流量 / Req/s / 流量大小` 指标，支持暂停/清空/自定义端点、关键词检索与 `全部 / GET / POST / 4xx/5xx / HTTPS` 筛选；点击任意请求即可打开 `概览 / 请求 / 响应` 三栏详情弹窗，支持 Pretty JSON 排版、完整 Header 检查及一键**复制 URL** / **复制 cURL**。
 - **桌面端自动收尾**：`cap start --auto-disconnect`、`cap tui --live --auto-disconnect` 以及桌面 GUI 的 `StopProxy()` / `App.Shutdown()` 都会在停止代理前自动断开并恢复已追踪的 Android 设备。
 
 ### Frida 动态逆向工作室（`cap frida` 与桌面端 `⌘7`）

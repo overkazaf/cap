@@ -68,6 +68,8 @@
     <string name="btn_stop_and_clean">Stop Guard &amp; Clear Proxy</string>
     <string name="btn_clear_proxy">Clear Proxy</string>
     <string name="btn_start_watchdog">Start Watchdog</string>
+    <string name="btn_reconnect_proxy">Retry Proxy Connection</string>
+    <string name="btn_reconnecting_proxy">Connecting Proxy…</string>
     <string name="btn_proxy_idle">No Active Proxy</string>
     <string name="btn_working">Working…</string>
 
@@ -120,6 +122,9 @@
     <string name="toast_clean_failed_detail">Could not clear proxy: %1$s</string>
     <string name="toast_watchdog_started">Watchdog started for %1$s</string>
     <string name="toast_watchdog_start_failed">Could not start watchdog: %1$s</string>
+    <string name="toast_proxy_reconnected">Proxy reconnected: %1$s</string>
+    <string name="toast_proxy_reconnect_unreachable">Cap proxy unreachable (%1$s) — verify desktop Cap is running and USB reverse or Wi-Fi is active</string>
+    <string name="toast_proxy_reconnect_failed">Could not apply system proxy (%1$s) — check WRITE_SECURE_SETTINGS</string>
     <string name="toast_copied">Copied to clipboard</string>
     <string name="toast_root_grant_ok">WRITE_SECURE_SETTINGS granted via root</string>
     <string name="toast_root_grant_failed">Root grant failed — grant via ADB instead</string>
@@ -143,6 +148,7 @@
     <string name="traffic_status_no_endpoint">No proxy endpoint</string>
     <string name="traffic_status_error">API error</string>
     <string name="traffic_status_connecting">Connecting…</string>
+    <string name="traffic_status_retrying">Retrying · %1$s…</string>
 
     <string name="traffic_metric_flows">Flows</string>
     <string name="traffic_metric_rps">Req/s</string>
@@ -172,9 +178,12 @@
     <string name="traffic_err_unauth_hint">Reconnect from desktop Cap to auto-sync X-Cap-Token, or enter it manually below.</string>
     <string name="traffic_err_offline_title">Cannot reach Cap proxy</string>
     <string name="traffic_err_offline_hint">Unable to connect to %1$s. Verify desktop Cap is running and USB reverse or Wi-Fi is active.</string>
+    <string name="traffic_err_offline_detail">Unable to connect to %1$s.\nError: %2$s · Last check %3$s\nVerify desktop Cap is running and USB reverse or Wi-Fi is active.</string>
     <string name="traffic_err_api_title">Traffic API error</string>
+    <string name="traffic_err_api_detail">%1$s · Last check %2$s</string>
     <string name="traffic_btn_open_config">Configure Endpoint &amp; Token</string>
     <string name="traffic_btn_retry">Retry Now</string>
+    <string name="traffic_btn_retrying">Retrying…</string>
 
     <!-- Traffic Config Dialog -->
     <string name="dialog_traffic_config_title">Traffic Endpoint &amp; Token</string>
@@ -191,6 +200,8 @@
     <string name="toast_traffic_endpoint_invalid">Invalid proxy endpoint — use host:port (e.g. 127.0.0.1:8080)</string>
     <string name="toast_traffic_cleared">Captured traffic cleared</string>
     <string name="toast_traffic_clear_failed">Failed to clear traffic: %1$s</string>
+    <string name="toast_traffic_connected">Connected to Cap proxy: %1$s</string>
+    <string name="toast_traffic_retry_failed">Still unreachable (%1$s): %2$s</string>
 
     <!-- Flow Detail Dialog -->
     <string name="detail_tab_overview">Overview</string>

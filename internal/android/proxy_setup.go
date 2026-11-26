@@ -136,6 +136,10 @@ func SetupDetailed(opts SetupOptions) (*SetupResult, error) {
 		fmt.Printf("device %s: proxy set to %s\n", serial, proxySetting)
 	}
 
+	// Step 3.5: Best-effort USB reverse tunnel so Companion Live Traffic and loopback
+	// proxy retry work over USB even if device Wi-Fi drops or has AP client isolation.
+	_ = SetupADBReverse(serial, port)
+
 	// Step 4: Start Companion Guard watchdog pointing at host:port & sync CA cert metadata
 	if !opts.NoCompanion && companionReady {
 		if opts.CACertPath != "" {

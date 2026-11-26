@@ -277,7 +277,7 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 			case strings.Contains(sh, "===CAP_PKG==="):
 				pkgSection := "Unable to find package: " + CompanionPackage
 				if companionInstalled {
-					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=2\n  versionName=1.1.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
+					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=3\n  versionName=1.2.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
 				}
 				svcSection := "  (nothing)"
 				if watchdogStarted {
@@ -406,7 +406,7 @@ func TestInstallCACertNonRootedCompanionFlow(t *testing.T) {
 				return "su: not found", os.ErrNotExist
 			}
 			if strings.HasPrefix(sh, "dumpsys package "+CompanionPackage) {
-				return "Package [" + CompanionPackage + "]\n  versionCode=2\n  versionName=1.1.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
+				return "Package [" + CompanionPackage + "]\n  versionCode=3\n  versionName=1.2.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
 			}
 			if strings.Contains(sh, CompanionActivity) && strings.Contains(sh, "--ez install_cert true") {
 				launchedCompanion = true
@@ -814,5 +814,105 @@ func TestSuShellMountMasterFallbackVariants(t *testing.T) {
 				t.Fatalf("expected fallback to SuShell on %q, got out=%q err=%v fallback=%v", errMsg, out, err, fallbackCalled)
 			}
 		})
+	}
+}
+
+func TestInstallCompanionAutoUpgradesOlderVersionCode(t *testing.T) {
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	installCalled := false
+	adbExecFunc = func(args ...string) (string, error) {
+		if len(args) == 1 && args[0] == "devices" {
+			return "List of devices attached\nUPG1\tdevice\n", nil
+		}
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		switch cmdArgs[0] {
+		case "shell":
+			sh := strings.Join(cmdArgs[1:], " ")
+			if strings.Contains(sh, "===CAP_PKG===") {
+				// Installed v1.1.0 (versionCode=2) < CompanionVersionCode (3) must trigger upgrade
+				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=2 minSdk=24 targetSdk=34\n  versionName=1.1.0\n===CAP_SVC===\n===CAP_WL===\n", nil
+			}
+			return "", nil
+		case "install":
+			installCalled = true
+			return "Success", nil
+		}
+		return "", nil
+	}
+
+	if err := InstallCompanion("UPG1"); err != nil {
+		t.Fatalf("InstallCompanion auto-upgrade failed: %v", err)
+	}
+	if !installCalled {
+		t.Fatalf("expected InstallCompanion to upgrade versionCode=2 -> %d", CompanionVersionCode)
+	}
+}
+
+func TestInstallCACertAlreadyInstalledSyncsCompanion(t *testing.T) {
+	certPath := filepath.Join("testdata", "test-ca.crt")
+	if _, err := os.Stat(certPath); err != nil {
+		t.Skip("testdata/test-ca.crt not available")
+	}
+
+	origExec := adbExecFunc
+	t.Cleanup(func() { adbExecFunc = origExec })
+
+	syncCalled := false
+	adbExecFunc = func(args ...string) (string, error) {
+		if len(args) == 1 && args[0] == "devices" {
+			return "List of devices attached\nSYNC1\tdevice\n", nil
+		}
+		cmdArgs := args
+		if len(cmdArgs) >= 2 && cmdArgs[0] == "-s" {
+			cmdArgs = cmdArgs[2:]
+		}
+		if cmdArgs[0] == "shell" {
+			sh := strings.Join(cmdArgs[1:], " ")
+			if strings.Contains(sh, "echo HAS_APEX_DIR") {
+				return "HAS_APEX_DIR\nAPEX\n", nil
+			}
+			if strings.Contains(sh, companionActionSyncCert) {
+				syncCalled = true
+				return `Broadcast completed: result=-1, data="installed=true;store=system"`, nil
+			}
+		}
+		return "", nil
+	}
+
+	res, err := InstallCACert("SYNC1", certPath)
+	if err != nil {
+		t.Fatalf("InstallCACert failed: %v", err)
+	}
+	if !res.Success || res.Method != "already_installed" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if !syncCalled {
+		t.Errorf("expected SyncCompanionCert to be called on already_installed path")
+	}
+}
+
+func TestParseProxySettingEdgeCases(t *testing.T) {
+	tests := []struct {
+		raw      string
+		wantHost string
+		wantPort string
+	}{
+		{"", "", ""},
+		{"null", "", ""},
+		{"NULL", "", ""},
+		{":0", "", ""},
+		{":", "", ""},
+		{"  192.168.3.193:8080  ", "192.168.3.193", "8080"},
+	}
+	for _, tt := range tests {
+		h, p := ParseProxySetting(tt.raw)
+		if h != tt.wantHost || p != tt.wantPort {
+			t.Errorf("ParseProxySetting(%q) = (%q, %q), want (%q, %q)", tt.raw, h, p, tt.wantHost, tt.wantPort)
+		}
 	}
 }

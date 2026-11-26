@@ -71,7 +71,7 @@ func ParseDeviceList(output string) []Device {
 // Any other value is expected to be "host:port".
 func ParseProxySetting(setting string) (host, port string) {
 	setting = strings.TrimSpace(setting)
-	if setting == "" || setting == "null" || setting == ":0" {
+	if setting == "" || strings.EqualFold(setting, "null") || setting == ":0" || setting == ":" {
 		return "", ""
 	}
 	idx := strings.LastIndex(setting, ":")

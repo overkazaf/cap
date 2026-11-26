@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Cap 代理守护</string>
-    <string name="app_subtitle">MITM 代理心跳监控与断网保护</string>
+    <string name="app_subtitle">v%1$s · MITM 代理守护与断网保护</string>
 
     <string name="channel_active_name">代理守护服务</string>
     <string name="channel_active_desc">显示 Cap 代理守护运行状态与一键恢复按钮</string>
@@ -10,56 +10,119 @@
 
     <string name="status_protected">守护中</string>
     <string name="status_idle">待机</string>
-    <string name="status_stale">存在代理（未受托管）</string>
+    <string name="status_stale">未受保护</string>
 
-    <string name="label_proxy_target">目标代理地址</string>
-    <string name="label_global_proxy">系统全局代理</string>
+    <string name="section_proxy">代理与看门狗</string>
+    <string name="section_cert">CA 证书</string>
+    <string name="section_env">权限与运行环境</string>
+
+    <string name="label_global_proxy">系统代理</string>
+    <string name="label_watchdog">守护看门狗</string>
     <string name="label_mode">抓包模式</string>
+    <string name="label_last_cleanup">上次清理</string>
+    <string name="label_cert_status">信任状态</string>
     <string name="label_permission">安全设置权限</string>
-    <string name="label_watchdog">心跳看门狗</string>
-    <string name="label_cert">CA 证书</string>
-    <string name="label_last_cleanup">上次自动恢复</string>
+    <string name="label_battery">后台电池白名单</string>
+    <string name="label_notifications">通知权限</string>
+    <string name="label_root">Root 环境</string>
 
-    <string name="mode_proxy">Wi-Fi 代理</string>
-    <string name="mode_vpn">VPN / iptables</string>
+    <string name="mode_proxy">Wi-Fi 全局代理</string>
+    <string name="mode_vpn">VPN / iptables (:%1$s)</string>
+    <string name="mode_vpn_short">VPN / iptables</string>
     <string name="value_none">无</string>
-    <string name="value_granted">已授权 (ADB)</string>
-    <string name="value_missing_perm">未授权 — 请通过 Cap 重新连接</string>
-    <string name="value_watchdog_running">运行中（失联计数 %1$d/%2$d）</string>
-    <string name="value_watchdog_stopped">未运行</string>
-    <string name="value_cert_system">已安装 · 系统级信任 (%1$s)</string>
-    <string name="value_cert_system_plain">已安装 · 系统级信任</string>
-    <string name="value_cert_user">已安装 · 用户级证书 (%1$s)</string>
-    <string name="value_cert_user_plain">已安装 · 用户级证书</string>
-    <string name="value_cert_mismatch">检测到旧版证书（指纹不匹配），请重新安装</string>
-    <string name="value_cert_legacy_only">仅在旧版 /system（未注入 Android 14+ APEX）</string>
-    <string name="value_cert_ready">未安装 · 证书已就绪，点击下方安装</string>
-    <string name="value_cert_missing">未安装（系统/用户信任库均未检测到）</string>
+    <string name="value_direct">直连（未设置代理）</string>
+    <string name="value_proxy_vpn_transparent">VPN 透明代理转发 (:%1$s)</string>
+    <string name="value_proxy_mismatch_note">系统：%1$s · 守护目标：%2$s</string>
+    <string name="value_cleanup_none">暂无记录</string>
+    <string name="value_cleanup_ok">✓ %1$s · %2$s</string>
+    <string name="value_cleanup_fail">✗ %1$s · %2$s</string>
 
-    <string name="btn_restore_network">断开并清理代理</string>
+    <string name="value_watchdog_running_ok">运行中 · 正在监控 %1$s</string>
+    <string name="value_watchdog_running_miss">运行中 · 失联重试 %1$s（%2$d/%3$d）</string>
+    <string name="value_watchdog_interrupted">守护已中断 — 可在下方重启或清理</string>
+    <string name="value_watchdog_stopped">未运行</string>
+
+    <string name="value_granted">✓ 已授权 (ADB)</string>
+    <string name="value_missing_perm">✗ 未授权 · 点击修复</string>
+    <string name="value_battery_ok">✓ 已放行（后台保活）</string>
+    <string name="value_battery_restricted">▲ 受限 · 点击放行</string>
+    <string name="value_notif_ok">✓ 已开启</string>
+    <string name="value_notif_off">▲ 未开启 · 点击开启</string>
+    <string name="value_root_detected">已检测到 su</string>
+    <string name="value_root_none">未检测到（免 Root 模式）</string>
+
+    <string name="value_cert_system">✓ 已生效 · 系统级信任</string>
+    <string name="value_cert_system_apex_detail">%1$s · Android 14+ APEX Conscrypt</string>
+    <string name="value_cert_system_detail">%1$s · 系统根证书库</string>
+    <string name="value_cert_user">● 已安装 · 用户级证书</string>
+    <string name="value_cert_user_detail">%1$s · 用户证书库（部分 App 需系统级信任）</string>
+    <string name="value_cert_mismatch">▲ 证书指纹不匹配</string>
+    <string name="value_cert_mismatch_detail">当前设备证书与桌面端 Cap 不一致，请重新安装</string>
+    <string name="value_cert_legacy_only">▲ 仅在旧版 /system 目录</string>
+    <string name="value_cert_legacy_detail">未注入 Android 14+ APEX Conscrypt，请在桌面端重新安装</string>
+    <string name="value_cert_ready">○ 未安装 · 证书已缓存</string>
+    <string name="value_cert_ready_detail">点击下方按钮完成安装（%1$s）</string>
+    <string name="value_cert_missing">○ 未安装</string>
+    <string name="value_cert_missing_detail">请先在桌面端 Cap 推送或安装 CA 证书</string>
+
+    <string name="btn_stop_and_clean">停止守护并清理代理</string>
+    <string name="btn_clear_proxy">清理残留代理</string>
+    <string name="btn_start_watchdog">启动代理守护</string>
+    <string name="btn_proxy_idle">当前无活跃代理</string>
+    <string name="btn_working">处理中…</string>
+
+    <string name="btn_cert_details">查看证书详情</string>
     <string name="btn_install_cert">安装 CA 证书</string>
+    <string name="btn_reinstall_cert">重新安装 CA 证书</string>
+    <string name="btn_cert_fix_guide">查看修复说明</string>
+    <string name="btn_cert_settings">打开系统证书设置</string>
+
     <string name="btn_refresh">刷新状态</string>
+    <string name="btn_refreshing">刷新中…</string>
+
+    <string name="dialog_cert_title">CA 证书详情</string>
+    <string name="dialog_cert_copy_fp">复制 SHA-256</string>
+    <string name="dialog_cert_reinstall">重新安装用户证书</string>
+    <string name="dialog_cert_open_settings">系统凭证设置</string>
+    <string name="dialog_cert_legacy_title">Android 14+ APEX 证书库说明</string>
+    <string name="dialog_cert_legacy_body">当前证书仅存在于旧版 /system/etc/security/cacerts，Android 14+ Conscrypt 不会读取该目录。\n\n请在桌面端 Cap 使用 Root 方式重新注入至 /apex/com.android.conscrypt/cacerts，或安装为用户级证书。</string>
+
+    <string name="dialog_perm_title">授予安全设置权限</string>
+    <string name="dialog_perm_body">Cap 代理守护需要 WRITE_SECURE_SETTINGS 权限以在免 Root 模式下清理系统代理。\n\n请在电脑端执行 ADB 命令：\n%1$s</string>
+    <string name="dialog_perm_copy">复制 ADB 命令</string>
+    <string name="dialog_perm_grant_root">使用 Root 授权</string>
+    <string name="dialog_close">关闭</string>
 
     <string name="notif_active_title">Cap 代理守护中 · %1$s</string>
     <string name="notif_active_text">正在监控 %1$s · 断开连接时自动恢复网络</string>
+    <string name="notif_active_text_miss">代理 %1$s 暂时不可达（重试 %2$d/%3$d）…</string>
+    <string name="notif_stopping_title">Cap 代理守护</string>
+    <string name="notif_stopping_text">正在停止守护服务…</string>
     <string name="notif_action_restore">恢复网络</string>
 
     <string name="notif_restored_title">网络已恢复</string>
-    <string name="notif_restored_text">代理已自动清理（%1$s），设备已恢复正常联网。</string>
+    <string name="notif_restored_text">代理已清理（%1$s），设备已恢复正常联网。</string>
 
     <string name="reason_heartbeat">桌面端代理不可达</string>
     <string name="reason_usb">USB 已断开</string>
-    <string name="reason_manual">手动恢复</string>
+    <string name="reason_manual">手动清理</string>
     <string name="reason_stop">桌面端已停止抓包</string>
     <string name="reason_boot">开机自动清理残留代理</string>
+    <string name="reason_update">应用更新后清理残留代理</string>
 
+    <string name="toast_refreshed">状态已刷新</string>
     <string name="toast_cleaned">代理已清理，网络已恢复</string>
-    <string name="toast_clean_failed">无法清理代理（缺少 WRITE_SECURE_SETTINGS 权限）</string>
-    <string name="toast_cert_not_found">未找到待安装证书文件，请通过桌面端 Cap 推送或安装</string>
+    <string name="toast_clean_failed">无法清理代理（请授予安全设置权限或 Root）</string>
+    <string name="toast_watchdog_started">已启动守护：%1$s</string>
+    <string name="toast_watchdog_start_failed">启动守护失败：%1$s</string>
+    <string name="toast_copied">已复制到剪贴板</string>
+    <string name="toast_root_grant_ok">已通过 Root 授予安全设置权限</string>
+    <string name="toast_root_grant_failed">Root 授权失败，请改用 ADB 命令授权</string>
+    <string name="toast_cert_not_found">未找到待安装证书文件，请先通过桌面端 Cap 推送</string>
     <string name="toast_cert_already_installed">Cap MITM CA 证书已在信任库生效</string>
-    <string name="toast_cert_verified">已检测到 Cap MITM CA 证书安装生效</string>
+    <string name="toast_cert_verified">已检测到 Cap MITM CA 证书生效</string>
     <string name="toast_cert_launched">请按系统提示完成 Cap MITM CA 证书安装</string>
-    <string name="toast_cert_failed">启动证书安装失败：%1$s</string>
+    <string name="toast_cert_failed">打开证书安装界面失败：%1$s</string>
 
-    <string name="footer_hint">Cap 代理守护会持续检测桌面端代理连通性。当 USB 拔出、Wi-Fi 断开或桌面端异常退出时，将自动清理手机代理设置，防止断网。</string>
+    <string name="footer_hint">Cap 代理守护持续监测桌面端代理连通性。当 USB 拔出、Wi-Fi 断开或桌面端异常退出时，将自动清理手机代理，防止断网。</string>
 </resources>

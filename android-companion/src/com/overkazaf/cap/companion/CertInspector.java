@@ -45,6 +45,8 @@ public final class CertInspector {
         public boolean fingerprintMismatch;
         public boolean certFileReady;
         public String certFilePath = "";
+        public String expectedHash = "";
+        public String expectedFingerprint = "";
 
         public String toKeyValueString() {
             return "installed=" + installed
@@ -90,13 +92,15 @@ public final class CertInspector {
 
         // 2. Resolve expected hash & SHA-256 fingerprint from args -> GuardPrefs -> staged cert file
         String targetHash = normalizeHash(expectedHash);
-        String targetFp = normalizeFingerprint(expectedFingerprint);
+        String rawTargetFp = expectedFingerprint != null ? expectedFingerprint.trim() : "";
+        String targetFp = normalizeFingerprint(rawTargetFp);
         if (ctx != null) {
             if (targetHash.isEmpty()) {
                 targetHash = normalizeHash(GuardPrefs.getCertHash(ctx));
             }
             if (targetFp.isEmpty()) {
-                targetFp = normalizeFingerprint(GuardPrefs.getCertFingerprint(ctx));
+                rawTargetFp = GuardPrefs.getCertFingerprint(ctx);
+                targetFp = normalizeFingerprint(rawTargetFp);
             }
         }
         if ((targetHash.isEmpty() || targetFp.isEmpty()) && certFile != null) {
@@ -106,10 +110,13 @@ public final class CertInspector {
                     targetHash = normalizeHash(computeSubjectHashOld(stagedCert));
                 }
                 if (targetFp.isEmpty()) {
-                    targetFp = normalizeFingerprint(computeSha256Fingerprint(stagedCert));
+                    rawTargetFp = computeSha256Fingerprint(stagedCert);
+                    targetFp = normalizeFingerprint(rawTargetFp);
                 }
             }
         }
+        result.expectedHash = targetHash;
+        result.expectedFingerprint = rawTargetFp;
 
         // 3. Primary check: AndroidCAStore (exact same trust store used by Android apps & Conscrypt)
         inspectAndroidCAStore(result, targetHash, targetFp);
@@ -161,21 +168,29 @@ public final class CertInspector {
                 boolean isSystem = alias.startsWith("system:");
                 boolean isUser = alias.startsWith("user:");
                 String aliasHash = extractAliasHash(alias);
-                String certHash = normalizeHash(computeSubjectHashOld(x509));
-                String certFp = computeSha256Fingerprint(x509);
-                String normFp = normalizeFingerprint(certFp);
                 boolean isCapSubject = isCapMitmCA(x509);
 
-                boolean hashMatches = !targetHash.isEmpty()
-                        && (hashBaseEquals(aliasHash, targetHash) || hashBaseEquals(certHash, targetHash));
+                // Avoid computing MD5/SHA-256 on all 150+ unrelated root certs unless needed
+                String certHash = aliasHash;
+                boolean hashMatches = !targetHash.isEmpty() && hashBaseEquals(aliasHash, targetHash);
+                if (!hashMatches && !targetHash.isEmpty() && aliasHash.isEmpty()) {
+                    certHash = normalizeHash(computeSubjectHashOld(x509));
+                    hashMatches = hashBaseEquals(certHash, targetHash);
+                }
 
+                String certFp = "";
                 int score = 0;
                 if (!targetFp.isEmpty()) {
+                    certFp = computeSha256Fingerprint(x509);
+                    String normFp = normalizeFingerprint(certFp);
                     if (normFp.equals(targetFp)) {
                         score = isSystem ? 100 : (isUser ? 90 : 80);
                     } else if (isCapSubject || hashMatches) {
                         sawMismatch = true;
-                        mismatchHash = !aliasHash.isEmpty() ? aliasHash : certHash;
+                        if (certHash.isEmpty()) {
+                            certHash = normalizeHash(computeSubjectHashOld(x509));
+                        }
+                        mismatchHash = certHash;
                         mismatchFp = certFp;
                         mismatchSubject = extractCommonName(x509);
                     }
@@ -190,12 +205,18 @@ public final class CertInspector {
                 }
 
                 if (score > 0 && (bestMatch == null || score > bestMatch.score)) {
+                    if (certHash.isEmpty()) {
+                        certHash = normalizeHash(computeSubjectHashOld(x509));
+                    }
+                    if (certFp.isEmpty()) {
+                        certFp = computeSha256Fingerprint(x509);
+                    }
                     bestMatch = new Match();
                     bestMatch.score = score;
                     bestMatch.store = isSystem ? "system" : (isUser ? "user" : "system");
                     bestMatch.method = isSystem ? "android_ca_store_system" : (isUser ? "android_ca_store_user" : "android_ca_store_system");
                     bestMatch.alias = alias;
-                    bestMatch.hash = !aliasHash.isEmpty() ? aliasHash : certHash;
+                    bestMatch.hash = certHash;
                     bestMatch.fingerprint = certFp;
                     bestMatch.subject = extractCommonName(x509);
                 }

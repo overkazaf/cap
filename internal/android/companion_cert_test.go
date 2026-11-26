@@ -277,7 +277,7 @@ func TestSetupAndTeardownWithMockADB(t *testing.T) {
 			case strings.Contains(sh, "===CAP_PKG==="):
 				pkgSection := "Unable to find package: " + CompanionPackage
 				if companionInstalled {
-					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=3\n  versionName=1.2.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
+					pkgSection = "Package [" + CompanionPackage + "]\n  versionCode=4\n  versionName=1.2.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true"
 				}
 				svcSection := "  (nothing)"
 				if watchdogStarted {
@@ -406,7 +406,7 @@ func TestInstallCACertNonRootedCompanionFlow(t *testing.T) {
 				return "su: not found", os.ErrNotExist
 			}
 			if strings.HasPrefix(sh, "dumpsys package "+CompanionPackage) {
-				return "Package [" + CompanionPackage + "]\n  versionCode=3\n  versionName=1.2.0\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
+				return "Package [" + CompanionPackage + "]\n  versionCode=4\n  versionName=1.2.1\n  android.permission.WRITE_SECURE_SETTINGS: granted=true\n", nil
 			}
 			if strings.Contains(sh, CompanionActivity) && strings.Contains(sh, "--ez install_cert true") {
 				launchedCompanion = true
@@ -834,8 +834,8 @@ func TestInstallCompanionAutoUpgradesOlderVersionCode(t *testing.T) {
 		case "shell":
 			sh := strings.Join(cmdArgs[1:], " ")
 			if strings.Contains(sh, "===CAP_PKG===") {
-				// Installed v1.1.0 (versionCode=2) < CompanionVersionCode (3) must trigger upgrade
-				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=2 minSdk=24 targetSdk=34\n  versionName=1.1.0\n===CAP_SVC===\n===CAP_WL===\n", nil
+				// Installed v1.2.0 (versionCode=3) < CompanionVersionCode (4) must trigger upgrade
+				return "===CAP_PKG===\nPackage [" + CompanionPackage + "]\n  versionCode=3 minSdk=24 targetSdk=34\n  versionName=1.2.0\n===CAP_SVC===\n===CAP_WL===\n", nil
 			}
 			return "", nil
 		case "install":
@@ -849,7 +849,7 @@ func TestInstallCompanionAutoUpgradesOlderVersionCode(t *testing.T) {
 		t.Fatalf("InstallCompanion auto-upgrade failed: %v", err)
 	}
 	if !installCalled {
-		t.Fatalf("expected InstallCompanion to upgrade versionCode=2 -> %d", CompanionVersionCode)
+		t.Fatalf("expected InstallCompanion to upgrade versionCode=3 -> %d", CompanionVersionCode)
 	}
 }
 

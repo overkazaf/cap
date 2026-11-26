@@ -46,6 +46,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -163,8 +164,8 @@ public class MainActivity extends Activity {
         int nightMode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
         isDarkTheme = (nightMode == Configuration.UI_MODE_NIGHT_YES);
         initPalette();
-        applySystemBarColors();
         setContentView(buildContentView());
+        applySystemBarColors();
         handleIntentExtras(getIntent());
     }
 
@@ -223,22 +224,30 @@ public class MainActivity extends Activity {
         if (window == null) {
             return;
         }
-        window.setStatusBarColor(bgColor);
-        window.setNavigationBarColor(bgColor);
-        if (Build.VERSION.SDK_INT >= 30) {
-            WindowInsetsController controller = window.getInsetsController();
-            if (controller != null) {
-                int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-                controller.setSystemBarsAppearance(isDarkTheme ? 0 : mask, mask);
-            }
-        } else if (!isDarkTheme && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        try {
+            window.setStatusBarColor(bgColor);
+            window.setNavigationBarColor(bgColor);
+            // Ensure PhoneWindow's DecorView is installed before calling getInsetsController()
+            // on API 30+ (calling getInsetsController() with null mDecor throws NPE on Android 11-15).
             View decor = window.getDecorView();
-            int flags = decor.getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            if (decor == null) {
+                return;
             }
-            decor.setSystemUiVisibility(flags);
+            if (Build.VERSION.SDK_INT >= 30) {
+                WindowInsetsController controller = window.getInsetsController();
+                if (controller != null) {
+                    int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                    controller.setSystemBarsAppearance(isDarkTheme ? 0 : mask, mask);
+                }
+            } else if (!isDarkTheme && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                int flags = decor.getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                }
+                decor.setSystemUiVisibility(flags);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -260,6 +269,9 @@ public class MainActivity extends Activity {
         scroll.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                if (insets == null) {
+                    return null;
+                }
                 int top = 0;
                 int bottom = 0;
                 int left = 0;
@@ -559,7 +571,17 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-        return "1.2.0";
+        return "1.2.1";
+    }
+
+    private void runIo(Runnable task) {
+        if (isFinishing() || isDestroyed() || ioExecutor.isShutdown()) {
+            return;
+        }
+        try {
+            ioExecutor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+        }
     }
 
     // ==================== Async Inspection & Rendering ====================
@@ -573,7 +595,7 @@ public class MainActivity extends Activity {
             styleButton(refreshBtn, getString(R.string.btn_refreshing), cardColor, textMuted, borderColor, false);
         }
 
-        ioExecutor.execute(new Runnable() {
+        runIo(new Runnable() {
             @Override
             public void run() {
                 final UiSnapshot snap = collectSnapshot(certPathSnapshot);
@@ -869,7 +891,8 @@ public class MainActivity extends Activity {
             Toast.makeText(this, getString(R.string.toast_watchdog_started, hp.host + ":" + hp.port), Toast.LENGTH_SHORT).show();
             requestRefresh(false, false);
         } catch (Throwable t) {
-            Toast.makeText(this, getString(R.string.toast_watchdog_start_failed, t.getMessage()), Toast.LENGTH_LONG).show();
+            String errMsg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            Toast.makeText(this, getString(R.string.toast_watchdog_start_failed, errMsg), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -909,7 +932,7 @@ public class MainActivity extends Activity {
         renderSnapshot(snap);
         final String modeToClean = snap.staleVpn ? "vpn" : "proxy";
         final String redirPort = snap.redirPort;
-        ioExecutor.execute(new Runnable() {
+        runIo(new Runnable() {
             @Override
             public void run() {
                 final boolean ok = ProxyCleaner.cleanup(MainActivity.this, modeToClean, redirPort);
@@ -1022,7 +1045,9 @@ public class MainActivity extends Activity {
                 }
             });
         }
-        builder.show();
+        if (!isFinishing() && !isDestroyed()) {
+            builder.show();
+        }
     }
 
     private void showLegacyApexDialog(final CertInspector.CertCheckResult cs) {
@@ -1038,7 +1063,9 @@ public class MainActivity extends Activity {
                 }
             });
         }
-        builder.show();
+        if (!isFinishing() && !isDestroyed()) {
+            builder.show();
+        }
     }
 
     private void openCredentialSettings() {
@@ -1079,11 +1106,13 @@ public class MainActivity extends Activity {
                 }
             });
         }
-        builder.show();
+        if (!isFinishing() && !isDestroyed()) {
+            builder.show();
+        }
     }
 
     private void grantSecureSettingsViaRootAsync() {
-        ioExecutor.execute(new Runnable() {
+        runIo(new Runnable() {
             @Override
             public void run() {
                 final boolean ok = ProxyCleaner.grantWriteSecureSettingsViaRoot(MainActivity.this);
@@ -1200,7 +1229,7 @@ public class MainActivity extends Activity {
         }
 
         final String pathSnapshot = pendingCertPath;
-        ioExecutor.execute(new Runnable() {
+        runIo(new Runnable() {
             @Override
             public void run() {
                 if (!certHash.isEmpty() || (certFp != null && !certFp.trim().isEmpty())) {
@@ -1275,7 +1304,7 @@ public class MainActivity extends Activity {
     }
 
     private void launchCertInstallAsync(final String preferredPath) {
-        ioExecutor.execute(new Runnable() {
+        runIo(new Runnable() {
             @Override
             public void run() {
                 File certFile = ProxyCleaner.findCertFile(MainActivity.this, preferredPath);
@@ -1319,7 +1348,8 @@ public class MainActivity extends Activity {
             startActivityForResult(installIntent, REQ_INSTALL_CERT);
             Toast.makeText(this, R.string.toast_cert_launched, Toast.LENGTH_SHORT).show();
         } catch (Throwable t) {
-            Toast.makeText(this, getString(R.string.toast_cert_failed, t.getMessage()), Toast.LENGTH_LONG).show();
+            String errMsg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            Toast.makeText(this, getString(R.string.toast_cert_failed, errMsg), Toast.LENGTH_LONG).show();
         }
     }
 

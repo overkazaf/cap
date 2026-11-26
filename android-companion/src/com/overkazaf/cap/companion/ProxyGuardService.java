@@ -11,15 +11,25 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Foreground service that monitors reachability of the desktop cap MITM proxy
  * and autonomously restores Android network connectivity if the proxy becomes
  * unreachable, USB disconnects, or the user taps "Restore Network".
+ *
+ * Threading invariant: all startForeground/stopForeground/stopSelf calls and
+ * inForeground/lastStartId mutations run strictly on the main thread, while
+ * ProxyCleaner I/O runs on cleanupExecutor guarded by a monotonic sessionGen.
  */
 public class ProxyGuardService extends Service {
     private static final String TAG = "CapGuardService";
@@ -37,6 +47,8 @@ public class ProxyGuardService extends Service {
     public static final String EXTRA_MISS_THRESHOLD = "miss_threshold";
     public static final String EXTRA_CERT_HASH = "cert_hash";
     public static final String EXTRA_CERT_FP = "cert_fp";
+    public static final String EXTRA_CLEANUP_DONE = "cleanup_done";
+    public static final String EXTRA_CLEANUP_OK = "cleanup_ok";
 
     public static final String CHANNEL_ACTIVE = "cap_guard_active";
     public static final String CHANNEL_EVENTS = "cap_guard_events";
@@ -48,9 +60,17 @@ public class ProxyGuardService extends Service {
     private static final int DEFAULT_MISS_THRESHOLD = 3;
 
     private static volatile boolean sRunning = false;
+    private static volatile boolean sCleanupInProgress = false;
+    private static volatile String sProxyHost = "";
+    private static volatile int sProxyPort = 8080;
+    private static volatile String sMode = "proxy";
+    private static volatile String sRedirPort = "9999";
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AtomicInteger sessionGen = new AtomicInteger(0);
     private final AtomicBoolean watchdogRunning = new AtomicBoolean(false);
     private final AtomicBoolean cleanedUp = new AtomicBoolean(false);
+    private final ExecutorService cleanupExecutor = Executors.newSingleThreadExecutor();
     private Thread watchdogThread;
     private BroadcastReceiver powerReceiver;
 
@@ -61,8 +81,32 @@ public class ProxyGuardService extends Service {
     private volatile int heartbeatMs = DEFAULT_HEARTBEAT_MS;
     private volatile int missThreshold = DEFAULT_MISS_THRESHOLD;
 
+    // Main-thread-only FGS lifecycle state
+    private boolean inForeground = false;
+    private int lastStartId = -1;
+
     public static boolean isServiceRunning() {
         return sRunning;
+    }
+
+    public static boolean isCleanupInProgress() {
+        return sCleanupInProgress;
+    }
+
+    public static String getRunningHost() {
+        return sRunning ? sProxyHost : "";
+    }
+
+    public static int getRunningPort() {
+        return sProxyPort;
+    }
+
+    public static String getRunningMode() {
+        return sMode;
+    }
+
+    public static String getRunningRedirPort() {
+        return sRedirPort;
     }
 
     @Override
@@ -73,13 +117,35 @@ public class ProxyGuardService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        lastStartId = startId;
         String action = intent != null ? intent.getAction() : null;
-        if (ACTION_STOP.equals(action) || "STOP".equalsIgnoreCase(action)) {
-            performCleanupAndStop(getString(R.string.reason_stop));
-            return START_NOT_STICKY;
-        }
-        if (ACTION_RESTORE.equals(action) || "RESTORE".equalsIgnoreCase(action)) {
-            performCleanupAndStop(getString(R.string.reason_manual));
+        boolean isStop = ACTION_STOP.equals(action) || "STOP".equalsIgnoreCase(action);
+        boolean isRestore = ACTION_RESTORE.equals(action) || "RESTORE".equalsIgnoreCase(action);
+
+        if (isStop || isRestore) {
+            final boolean wasRunning = sRunning;
+            // Android 8-14 FGS contract: if invoked via startForegroundService() while not yet
+            // foreground, promote briefly on the main thread before stopping so
+            // ForegroundServiceDidNotStartInTimeException can never occur.
+            if (!inForeground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    startForegroundCompat(buildStoppingNotification());
+                } catch (Throwable t) {
+                    Log.w(TAG, "Brief stop FGS promotion failed: " + t.getMessage());
+                }
+            }
+            int currentGen = sessionGen.get();
+            if (cleanedUp.get()) {
+                // Duplicate STOP/RESTORE: if cleanup already finished, stop immediately so
+                // the temporary stopping notification can never linger.
+                if (!sCleanupInProgress) {
+                    stopForegroundCompat();
+                    stopSelf(lastStartId);
+                }
+                return START_NOT_STICKY;
+            }
+            String reason = getString(isRestore ? R.string.reason_manual : R.string.reason_stop);
+            scheduleCleanupAndStop(reason, isRestore, wasRunning, currentGen);
             return START_NOT_STICKY;
         }
 
@@ -114,12 +180,26 @@ public class ProxyGuardService extends Service {
 
         if (proxyHost == null || proxyHost.trim().isEmpty()) {
             Log.w(TAG, "No proxy_host provided; stopping guard");
-            stopSelf();
+            if (!inForeground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    startForegroundCompat(buildStoppingNotification());
+                } catch (Throwable ignored) {
+                }
+            }
+            stopForegroundCompat();
+            stopSelf(lastStartId);
             return START_NOT_STICKY;
         }
 
+        // Advance generation so any in-flight cleanup from a prior session becomes a no-op
+        final int gen = sessionGen.incrementAndGet();
         cleanedUp.set(false);
+        sCleanupInProgress = false;
         sRunning = true;
+        sProxyHost = proxyHost;
+        sProxyPort = proxyPort;
+        sMode = mode;
+        sRedirPort = redirPort;
         GuardPrefs.saveSession(this, proxyHost, proxyPort, mode, redirPort, heartbeatMs, missThreshold);
 
         // Cancel any previous "restored" notification when starting a fresh session
@@ -128,20 +208,26 @@ public class ProxyGuardService extends Service {
             nm.cancel(NOTIF_ID_RESTORED);
         }
 
-        startForegroundCompat(buildActiveNotification());
-        registerPowerReceiver();
-        startWatchdogLoop();
-        broadcastStatusChanged();
+        startForegroundCompat(buildActiveNotification(0));
+        registerPowerReceiver(gen);
+        startWatchdogLoop(gen);
+        broadcastStatusChanged(false, false);
 
         return START_REDELIVER_INTENT;
     }
 
     @Override
     public void onDestroy() {
+        sessionGen.incrementAndGet();
         stopWatchdogLoop();
         unregisterPowerReceiver();
         sRunning = false;
-        broadcastStatusChanged();
+        sCleanupInProgress = false;
+        sProxyHost = "";
+        inForeground = false;
+        mainHandler.removeCallbacksAndMessages(null);
+        cleanupExecutor.shutdown();
+        broadcastStatusChanged(false, false);
         super.onDestroy();
     }
 
@@ -150,6 +236,7 @@ public class ProxyGuardService extends Service {
         return null;
     }
 
+    // Main-thread only
     private void startForegroundCompat(Notification notification) {
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTIF_ID_ACTIVE, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
@@ -158,12 +245,24 @@ public class ProxyGuardService extends Service {
         } else {
             startForeground(NOTIF_ID_ACTIVE, notification);
         }
+        inForeground = true;
     }
 
-    private void registerPowerReceiver() {
-        if (powerReceiver != null) {
-            return;
+    // Main-thread only
+    private void stopForegroundCompat() {
+        try {
+            if (Build.VERSION.SDK_INT >= 24) {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } else {
+                stopForeground(true);
+            }
+        } catch (Throwable ignored) {
         }
+        inForeground = false;
+    }
+
+    private void registerPowerReceiver(final int expectedGen) {
+        unregisterPowerReceiver();
         powerReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -172,13 +271,13 @@ public class ProxyGuardService extends Service {
                     new Thread(new Runnable() {
                         @Override
                         public void run() {
-                            if (!watchdogRunning.get()) {
+                            if (!watchdogRunning.get() || sessionGen.get() != expectedGen) {
                                 return;
                             }
                             boolean reachable = ProxyCleaner.isProxyReachable(proxyHost, proxyPort, 1200);
-                            if (!reachable && watchdogRunning.get()) {
+                            if (!reachable && watchdogRunning.get() && sessionGen.get() == expectedGen) {
                                 Log.i(TAG, "USB disconnected and proxy unreachable — restoring network immediately");
-                                performCleanupAndStop(getString(R.string.reason_usb));
+                                scheduleCleanupAndStop(getString(R.string.reason_usb), false, true, expectedGen);
                             }
                         }
                     }, "cap-guard-power-probe").start();
@@ -203,7 +302,7 @@ public class ProxyGuardService extends Service {
         }
     }
 
-    private synchronized void startWatchdogLoop() {
+    private synchronized void startWatchdogLoop(final int expectedGen) {
         stopWatchdogLoop();
         watchdogRunning.set(true);
         watchdogThread = new Thread(new Runnable() {
@@ -214,24 +313,26 @@ public class ProxyGuardService extends Service {
                 if (!sleepInterruptibly(heartbeatMs)) {
                     return;
                 }
-                while (watchdogRunning.get()) {
+                while (watchdogRunning.get() && sessionGen.get() == expectedGen) {
                     boolean ok = ProxyCleaner.isProxyReachable(proxyHost, proxyPort, PROBE_TIMEOUT_MS);
-                    if (!watchdogRunning.get()) {
+                    if (!watchdogRunning.get() || sessionGen.get() != expectedGen) {
                         return;
                     }
                     if (ok) {
                         if (misses != 0) {
                             misses = 0;
                             GuardPrefs.updateMissCount(ProxyGuardService.this, 0);
-                            broadcastStatusChanged();
+                            updateActiveNotification(0, expectedGen);
+                            broadcastStatusChanged(false, false);
                         }
                     } else {
                         misses++;
                         GuardPrefs.updateMissCount(ProxyGuardService.this, misses);
-                        broadcastStatusChanged();
+                        updateActiveNotification(misses, expectedGen);
+                        broadcastStatusChanged(false, false);
                         Log.w(TAG, "Proxy heartbeat miss " + misses + "/" + missThreshold + " for " + proxyHost + ":" + proxyPort);
                         if (misses >= missThreshold) {
-                            performCleanupAndStop(getString(R.string.reason_heartbeat));
+                            scheduleCleanupAndStop(getString(R.string.reason_heartbeat), false, true, expectedGen);
                             return;
                         }
                     }
@@ -262,50 +363,137 @@ public class ProxyGuardService extends Service {
         }
     }
 
-    private void performCleanupAndStop(String reason) {
+    private void scheduleCleanupAndStop(
+            final String reason,
+            final boolean isManualRestore,
+            final boolean wasRunning,
+            final int expectedGen) {
+        if (sessionGen.get() != expectedGen) {
+            return;
+        }
         if (!cleanedUp.compareAndSet(false, true)) {
             return;
         }
         stopWatchdogLoop();
         unregisterPowerReceiver();
-
-        String activeMode = mode;
-        String activeRedir = redirPort;
-        if (activeMode == null || activeMode.isEmpty()) {
-            activeMode = GuardPrefs.getMode(this);
-        }
-        if (activeRedir == null || activeRedir.isEmpty()) {
-            activeRedir = GuardPrefs.getRedirPort(this);
-        }
-
-        boolean ok = ProxyCleaner.cleanup(this, activeMode, activeRedir);
-        GuardPrefs.recordCleanup(this, reason, ok);
+        sCleanupInProgress = true;
         sRunning = false;
-        broadcastStatusChanged();
+        sProxyHost = "";
+
+        final String modeSnapshot = mode;
+        final String redirSnapshot = redirPort;
 
         try {
-            if (Build.VERSION.SDK_INT >= 24) {
-                stopForeground(STOP_FOREGROUND_REMOVE);
-            } else {
-                stopForeground(true);
-            }
-        } catch (Throwable ignored) {
-        }
+            cleanupExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    if (sessionGen.get() != expectedGen) {
+                        return;
+                    }
+                    boolean hasProxy = !ProxyCleaner.getGlobalHttpProxy(ProxyGuardService.this).isEmpty();
+                    boolean hasVpn = ProxyCleaner.hasStaleVpnMarker();
+                    boolean prefsActive = GuardPrefs.isActive(ProxyGuardService.this);
 
-        postRestoredNotification(this, reason);
-        stopSelf();
+                    // If ACTION_STOP arrives when the guard was already idle and no proxy/VPN is active,
+                    // stop silently without forging a redundant cleanup timestamp or notification.
+                    if (!isManualRestore && !wasRunning && !hasProxy && !hasVpn && !prefsActive) {
+                        finishCleanupOnMainThread(expectedGen, false, false);
+                        return;
+                    }
+
+                    String activeMode = modeSnapshot;
+                    String activeRedir = redirSnapshot;
+                    if (activeMode == null || activeMode.isEmpty()) {
+                        activeMode = GuardPrefs.getMode(ProxyGuardService.this);
+                    }
+                    if (activeRedir == null || activeRedir.isEmpty()) {
+                        activeRedir = GuardPrefs.getRedirPort(ProxyGuardService.this);
+                    }
+                    if (!wasRunning && !hasVpn) {
+                        activeMode = "proxy";
+                    }
+
+                    boolean ok = ProxyCleaner.cleanup(ProxyGuardService.this, activeMode, activeRedir);
+                    if (sessionGen.get() != expectedGen) {
+                        return;
+                    }
+                    GuardPrefs.recordCleanup(ProxyGuardService.this, reason, ok);
+                    if (wasRunning || hasProxy || hasVpn) {
+                        postRestoredNotification(ProxyGuardService.this, reason);
+                    }
+                    finishCleanupOnMainThread(expectedGen, true, ok);
+                }
+            });
+        } catch (RejectedExecutionException ree) {
+            Log.w(TAG, "Cleanup executor already shut down: " + ree.getMessage());
+            finishCleanupOnMainThread(expectedGen, false, false);
+        }
     }
 
-    private void broadcastStatusChanged() {
+    private void finishCleanupOnMainThread(final int expectedGen, final boolean didCleanup, final boolean ok) {
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                // If a newer ACTION_START superseded this cleanup, never clobber it.
+                if (sessionGen.get() != expectedGen) {
+                    return;
+                }
+                sCleanupInProgress = false;
+                stopForegroundCompat();
+                broadcastStatusChanged(didCleanup, ok);
+                if (lastStartId >= 0) {
+                    stopSelf(lastStartId);
+                } else {
+                    stopSelf();
+                }
+            }
+        });
+    }
+
+    private void broadcastStatusChanged(boolean cleanupDone, boolean cleanupOk) {
         Intent i = new Intent(ACTION_STATUS_CHANGED);
         i.setPackage(getPackageName());
+        if (cleanupDone) {
+            i.putExtra(EXTRA_CLEANUP_DONE, true);
+            i.putExtra(EXTRA_CLEANUP_OK, cleanupOk);
+        }
         sendBroadcast(i);
     }
 
-    private Notification buildActiveNotification() {
+    private void updateActiveNotification(final int misses, final int expectedGen) {
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!inForeground || !sRunning || sessionGen.get() != expectedGen) {
+                    return;
+                }
+                try {
+                    NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                    if (nm != null) {
+                        nm.notify(NOTIF_ID_ACTIVE, buildActiveNotification(misses));
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+    }
+
+    private Notification buildStoppingNotification() {
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(this, CHANNEL_ACTIVE)
+                : new Notification.Builder(this);
+        return builder.setSmallIcon(R.drawable.ic_shield)
+                .setContentTitle(getString(R.string.notif_stopping_title))
+                .setContentText(getString(R.string.notif_stopping_text))
+                .setOngoing(false)
+                .setOnlyAlertOnce(true)
+                .build();
+    }
+
+    private Notification buildActiveNotification(int misses) {
         String addr = proxyHost + ":" + proxyPort;
         String modeLabel = "vpn".equalsIgnoreCase(mode)
-                ? getString(R.string.mode_vpn)
+                ? getString(R.string.mode_vpn_short)
                 : getString(R.string.mode_proxy);
 
         Intent openIntent = new Intent(this, MainActivity.class);
@@ -315,8 +503,15 @@ public class ProxyGuardService extends Service {
 
         Intent restoreIntent = new Intent(this, ProxyGuardService.class);
         restoreIntent.setAction(ACTION_RESTORE);
-        PendingIntent restorePi = PendingIntent.getService(
-                this, 1, restoreIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent restorePi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? PendingIntent.getForegroundService(
+                        this, 1, restoreIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
+                : PendingIntent.getService(
+                        this, 1, restoreIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        String contentText = misses > 0
+                ? getString(R.string.notif_active_text_miss, addr, misses, missThreshold)
+                : getString(R.string.notif_active_text, addr);
 
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_ACTIVE)
@@ -324,7 +519,7 @@ public class ProxyGuardService extends Service {
 
         builder.setSmallIcon(R.drawable.ic_shield)
                 .setContentTitle(getString(R.string.notif_active_title, modeLabel))
-                .setContentText(getString(R.string.notif_active_text, addr))
+                .setContentText(contentText)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setContentIntent(openPi)

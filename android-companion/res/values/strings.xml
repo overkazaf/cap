@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Cap Guard</string>
-    <string name="app_subtitle">MITM Proxy Watchdog &amp; Network Safety</string>
+    <string name="app_subtitle">v%1$s · Proxy Watchdog &amp; Network Safety</string>
 
     <string name="channel_active_name">Proxy Watchdog</string>
     <string name="channel_active_desc">Shows when Cap Guard is actively protecting device proxy connectivity</string>
@@ -10,56 +10,119 @@
 
     <string name="status_protected">PROTECTED</string>
     <string name="status_idle">IDLE</string>
-    <string name="status_stale">PROXY SET (UNMANAGED)</string>
+    <string name="status_stale">UNGUARDED</string>
 
-    <string name="label_proxy_target">Active Proxy</string>
+    <string name="section_proxy">Proxy &amp; Watchdog</string>
+    <string name="section_cert">CA Certificate</string>
+    <string name="section_env">Permissions &amp; Environment</string>
+
     <string name="label_global_proxy">System Proxy</string>
+    <string name="label_watchdog">Watchdog</string>
     <string name="label_mode">Capture Mode</string>
-    <string name="label_permission">Secure Settings Permission</string>
-    <string name="label_watchdog">Watchdog Heartbeat</string>
-    <string name="label_cert">CA Certificate</string>
-    <string name="label_last_cleanup">Last Auto-Restore</string>
+    <string name="label_last_cleanup">Last Cleanup</string>
+    <string name="label_cert_status">Trust Status</string>
+    <string name="label_permission">Secure Settings</string>
+    <string name="label_battery">Battery Whitelist</string>
+    <string name="label_notifications">Notifications</string>
+    <string name="label_root">Root Environment</string>
 
-    <string name="mode_proxy">Wi-Fi Proxy</string>
-    <string name="mode_vpn">VPN / iptables</string>
+    <string name="mode_proxy">Wi-Fi Global Proxy</string>
+    <string name="mode_vpn">VPN / iptables (:%1$s)</string>
+    <string name="mode_vpn_short">VPN / iptables</string>
     <string name="value_none">None</string>
-    <string name="value_granted">Granted (ADB)</string>
-    <string name="value_missing_perm">Not granted — reconnect via Cap</string>
-    <string name="value_watchdog_running">Active (misses: %1$d/%2$d)</string>
-    <string name="value_watchdog_stopped">Stopped</string>
-    <string name="value_cert_system">Installed · System CA (%1$s)</string>
-    <string name="value_cert_system_plain">Installed · System CA</string>
-    <string name="value_cert_user">Installed · User CA (%1$s)</string>
-    <string name="value_cert_user_plain">Installed · User CA</string>
-    <string name="value_cert_mismatch">Stale CA detected (fingerprint mismatch) — reinstall</string>
-    <string name="value_cert_legacy_only">Legacy /system only — missing from Android 14+ APEX</string>
-    <string name="value_cert_ready">Not installed · Cert file ready (tap below)</string>
-    <string name="value_cert_missing">Not installed (not detected in trust store)</string>
+    <string name="value_direct">Direct (no proxy set)</string>
+    <string name="value_proxy_vpn_transparent">Transparent VPN redirect (:%1$s)</string>
+    <string name="value_proxy_mismatch_note">System: %1$s · Guard target: %2$s</string>
+    <string name="value_cleanup_none">No records yet</string>
+    <string name="value_cleanup_ok">✓ %1$s · %2$s</string>
+    <string name="value_cleanup_fail">✗ %1$s · %2$s</string>
 
-    <string name="btn_restore_network">Disconnect &amp; Clean Proxy</string>
+    <string name="value_watchdog_running_ok">Running · monitoring %1$s</string>
+    <string name="value_watchdog_running_miss">Running · retrying %1$s (%2$d/%3$d)</string>
+    <string name="value_watchdog_interrupted">Stopped unexpectedly — restart or clear below</string>
+    <string name="value_watchdog_stopped">Stopped</string>
+
+    <string name="value_granted">✓ Granted (ADB)</string>
+    <string name="value_missing_perm">✗ Not granted · Tap to fix</string>
+    <string name="value_battery_ok">✓ Unrestricted (background safe)</string>
+    <string name="value_battery_restricted">▲ Restricted · Tap to allow</string>
+    <string name="value_notif_ok">✓ Enabled</string>
+    <string name="value_notif_off">▲ Disabled · Tap to enable</string>
+    <string name="value_root_detected">su binary detected</string>
+    <string name="value_root_none">Not detected (rootless mode)</string>
+
+    <string name="value_cert_system">✓ Trusted · System CA</string>
+    <string name="value_cert_system_apex_detail">%1$s · Android 14+ APEX Conscrypt</string>
+    <string name="value_cert_system_detail">%1$s · System trust store</string>
+    <string name="value_cert_user">● Trusted · User CA</string>
+    <string name="value_cert_user_detail">%1$s · User store (some apps require System CA)</string>
+    <string name="value_cert_mismatch">▲ Fingerprint mismatch</string>
+    <string name="value_cert_mismatch_detail">Installed CA differs from desktop Cap CA — reinstall needed</string>
+    <string name="value_cert_legacy_only">▲ Legacy /system only</string>
+    <string name="value_cert_legacy_detail">Missing from Android 14+ APEX Conscrypt — re-inject from desktop</string>
+    <string name="value_cert_ready">○ Not installed · Cert cached</string>
+    <string name="value_cert_ready_detail">Ready to install (%1$s)</string>
+    <string name="value_cert_missing">○ Not installed</string>
+    <string name="value_cert_missing_detail">Push or install via Cap on desktop first</string>
+
+    <string name="btn_stop_and_clean">Stop Guard &amp; Clear Proxy</string>
+    <string name="btn_clear_proxy">Clear Proxy</string>
+    <string name="btn_start_watchdog">Start Watchdog</string>
+    <string name="btn_proxy_idle">No Active Proxy</string>
+    <string name="btn_working">Working…</string>
+
+    <string name="btn_cert_details">Inspect CA Certificate</string>
     <string name="btn_install_cert">Install CA Certificate</string>
+    <string name="btn_reinstall_cert">Reinstall CA Certificate</string>
+    <string name="btn_cert_fix_guide">View Fix Guide</string>
+    <string name="btn_cert_settings">Open Credential Settings</string>
+
     <string name="btn_refresh">Refresh Status</string>
+    <string name="btn_refreshing">Refreshing…</string>
+
+    <string name="dialog_cert_title">CA Certificate Details</string>
+    <string name="dialog_cert_copy_fp">Copy SHA-256</string>
+    <string name="dialog_cert_reinstall">Reinstall User CA</string>
+    <string name="dialog_cert_open_settings">System Settings</string>
+    <string name="dialog_cert_legacy_title">Android 14+ APEX Trust Store</string>
+    <string name="dialog_cert_legacy_body">This certificate exists only in legacy /system/etc/security/cacerts and is ignored by Android 14+ Conscrypt.\n\nRe-run CA installation in desktop Cap (with root) to inject into /apex/com.android.conscrypt/cacerts, or install a User CA for apps that trust user certificates.</string>
+
+    <string name="dialog_perm_title">Grant WRITE_SECURE_SETTINGS</string>
+    <string name="dialog_perm_body">Cap Guard needs WRITE_SECURE_SETTINGS to clear Android global proxy settings without root.\n\nRun on desktop via ADB:\n%1$s</string>
+    <string name="dialog_perm_copy">Copy ADB Command</string>
+    <string name="dialog_perm_grant_root">Grant via Root</string>
+    <string name="dialog_close">Close</string>
 
     <string name="notif_active_title">Cap Guard Active · %1$s</string>
     <string name="notif_active_text">Monitoring %1$s · Auto-restores network on disconnect</string>
+    <string name="notif_active_text_miss">Proxy %1$s unreachable (retry %2$d/%3$d)…</string>
+    <string name="notif_stopping_title">Cap Guard</string>
+    <string name="notif_stopping_text">Stopping watchdog…</string>
     <string name="notif_action_restore">Restore Network</string>
 
     <string name="notif_restored_title">Network Restored</string>
-    <string name="notif_restored_text">Proxy cleared automatically (%1$s). Normal internet access restored.</string>
+    <string name="notif_restored_text">Proxy cleared (%1$s). Normal internet access restored.</string>
 
     <string name="reason_heartbeat">desktop host unreachable</string>
     <string name="reason_usb">USB disconnected</string>
-    <string name="reason_manual">manual restore</string>
+    <string name="reason_manual">manual cleanup</string>
     <string name="reason_stop">desktop session ended</string>
     <string name="reason_boot">stale proxy cleared on boot</string>
+    <string name="reason_update">stale proxy cleared after update</string>
 
+    <string name="toast_refreshed">Status refreshed</string>
     <string name="toast_cleaned">Proxy cleared — network restored</string>
-    <string name="toast_clean_failed">Could not clear proxy (missing WRITE_SECURE_SETTINGS)</string>
-    <string name="toast_cert_not_found">CA cert file not found — install or push via Cap on desktop</string>
+    <string name="toast_clean_failed">Could not clear proxy (grant WRITE_SECURE_SETTINGS or root)</string>
+    <string name="toast_watchdog_started">Watchdog started for %1$s</string>
+    <string name="toast_watchdog_start_failed">Could not start watchdog: %1$s</string>
+    <string name="toast_copied">Copied to clipboard</string>
+    <string name="toast_root_grant_ok">WRITE_SECURE_SETTINGS granted via root</string>
+    <string name="toast_root_grant_failed">Root grant failed — grant via ADB instead</string>
+    <string name="toast_cert_not_found">CA cert file not found — push via Cap on desktop first</string>
     <string name="toast_cert_already_installed">Cap MITM CA is already trusted on this device</string>
     <string name="toast_cert_verified">Cap MITM CA verified in Android trust store</string>
     <string name="toast_cert_launched">Follow system prompt to install Cap MITM CA</string>
-    <string name="toast_cert_failed">Failed to launch certificate installer: %1$s</string>
+    <string name="toast_cert_failed">Failed to open certificate installer: %1$s</string>
 
-    <string name="footer_hint">Cap Guard monitors your desktop proxy and automatically clears Android proxy settings if USB unplugs, Wi-Fi drops, or Cap exits unexpectedly.</string>
+    <string name="footer_hint">Cap Guard monitors desktop proxy reachability and automatically clears Android proxy settings if USB unplugs, Wi-Fi drops, or Cap exits unexpectedly.</string>
 </resources>

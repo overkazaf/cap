@@ -65,6 +65,13 @@ public final class GuardPrefs {
                 .apply();
     }
 
+    public static void clearActiveFlag(Context ctx) {
+        prefs(ctx).edit()
+                .putBoolean(KEY_ACTIVE, false)
+                .putInt(KEY_MISS_COUNT, 0)
+                .apply();
+    }
+
     public static boolean isActive(Context ctx) {
         return prefs(ctx).getBoolean(KEY_ACTIVE, false);
     }

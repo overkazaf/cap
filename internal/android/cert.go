@@ -307,6 +307,7 @@ func InstallCACert(serial, certPath string) (CertInstallResult, error) {
 	// Short-circuit if already trusted in system store
 	existing := CheckCertStatus(serial, certPath)
 	if existing.Installed && existing.Store == "system" {
+		_ = SyncCompanionCert(serial, certPath)
 		return CertInstallResult{
 			Success: true,
 			Store:   "system",
@@ -358,6 +359,7 @@ func installCACertRootedDetailed(serial, certPath, hashName string) (CertInstall
 	// Strategy 2: Magisk module (persistent across reboots)
 	if HasMagisk(serial) {
 		if err := installMagiskModule(serial, hashName, remotePath); err == nil {
+			_ = SyncCompanionCert(serial, certPath)
 			fmt.Println("CA cert installed as Magisk module (reboot to activate)")
 			return CertInstallResult{
 				Success:     true,
@@ -374,6 +376,7 @@ func installCACertRootedDetailed(serial, certPath, hashName string) (CertInstall
 	if err := installLegacyRemount(serial, hashName, remotePath); err == nil {
 		verified := CheckCertStatus(serial, certPath)
 		if verified.Installed && verified.Store == "system" {
+			_ = SyncCompanionCert(serial, certPath)
 			fmt.Println("CA cert installed via /system remount")
 			return CertInstallResult{
 				Success: true,

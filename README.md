@@ -27,12 +27,93 @@
 
 ## Screenshots
 
+> Shown in the built-in **Nordic Aurora (`nord`)** dark theme with live `EN ↔ 简体中文` hot-switching. All targets below use synthetic demo data (`com.novapay.client` / `api.novapay.dev` / `libnovasign.so`).
+
+### Reverse Engineering, Emulation & AI Auto-Heal Workbench (Desktop GUI)
+
+<p align="center">
+  <img src="docs/screenshots/deeptrace-callgraph.png" alt="DeepTrace Interactive 6-Swimlane Call Graph & Node Evidence Inspector" width="100%">
+  <br>
+  <strong>DeepTrace — Flow → Java → JNI → Native Interactive Call Graph</strong><br>
+  <em>8-stage cancellable trace pipeline with pure-Go DEX bytecode XRefs, 6-swimlane SVG call graph (<code>Entry/UI → Business → Network/API → Crypto/Sign → Native JNI → HTTP</code>), Module Architecture &amp; UML Sequence views, real-time <strong>Node Evidence Inspector</strong>, SVG/Mermaid export, and 1-click handoffs to Frida Studio, Unidbg/Qiling/angr Emulation, and Protection Audit.</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/re-emulate-ai-heal.png" alt="Unidbg / Qiling / angr Algorithm Emulation & Multi-Model AI Auto-Heal Drawer" width="100%">
+  <br>
+  <strong>Algorithm Emulation (Unidbg / Qiling / angr) + Multi-Model AI Auto-Heal Closed Loop</strong><br>
+  <em>Run ARM64/ARM/x86_64 emulation harnesses with JDK-first discovery, Maven classpath caching, isolated Qiling/angr venvs, Unidbg Auto-Stub Assistant, and Frida Env Snapshots. When a run fails, the global <strong>AI Diagnose &amp; Auto-Heal Drawer</strong> (OpenAI / Anthropic Claude / Gemini / DeepSeek / Qwen / Local Ollama) applies client-side secret redaction, syntax/destructive-patch validation, Unified Diff previews, and a bounded ≤5-round self-healing loop.</em>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/recon-workbench.png" alt="Site Recon & Nmap Port Scanner" width="100%"><br>
+      <strong>Site Recon &amp; Nmap Scanner</strong><br>
+      <sub>Authorized DNS / WHOIS / live TLS 1.3 SAN &amp; chain audit, 45+ tech/CDN/WAF fingerprints, <code>0–100</code> 7-header security score gauge, wildcard-aware subdomain enumeration (<code>subfinder</code> + CT logs), allowlisted Nmap XML + built-in pure-Go TCP/banner scanner, and 1-click <em>Flows → Site Recon</em>.</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-static-pro.png" alt="Static RE: radare2, ELF/Mach-O/IPA, JADX Java-JNI & Symbol Bridge" width="100%"><br>
+      <strong>Static RE (radare2 · JADX↔JNI · iOS · Symbol Bridge)</strong><br>
+      <sub><code>radare2</code> + pure-Go ELF/Mach-O static disassembly, pseudo-C (<code>pdg</code>/<code>pdc</code>), interactive read-only <code>r2&gt;</code> console, cached JADX APK/DEX workspace with static &amp; <code>RegisterNatives</code> Java↔JNI cross-linking, iOS Mach-O/IPA FairPlay <code>cryptid</code> audit, and IDA Pro / Ghidra Python Symbol Bridge.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-exectrace-taint.png" alt="ExecTrace & Forward/Backward Register+Memory Taint Analysis" width="100%"><br>
+      <strong>ExecTrace &amp; Taint Analysis</strong><br>
+      <sub>Multi-format dynamic trace parser (Unidbg, Frida Stalker, Qiling, Java/JNI, JSONL, Tenet), forward &amp; backward register + concrete memory taint slicing, crypto constant &amp; hot-loop detection, ASLR-normalized dual-trace Diff, and Tenet / JSONL / Markdown export.</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-defense-vmp.png" alt="Deobfuscation, OLLVM, VMP & Modern TLS/mTLS Diagnostics" width="100%"><br>
+      <strong>Deobf, OLLVM / VMP &amp; TLS / mTLS Diagnostics</strong><br>
+      <sub>Pure-Go hardening audit covering 13+ commercial packers, OLLVM CFF/BCF/SUB, VMP interpreters, and ARM64 inline <code>SVC #0</code> syscalls; composable Frida Stealth / DEX Unpack / angr OLLVM / VMP Stalker generators; plus 6 TLS/JA3 profiles, APK cert/pinning scanner, mTLS validator, and Flutter/Cronet proxy scripts.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/re-crypto-dfa.png" alt="CryptoLab & White-Box AES-128 Round-9 DFA Solver" width="100%"><br>
+      <strong>CryptoLab &amp; White-Box AES-128 DFA</strong><br>
+      <sub>34+ CyberChef-style composable codec &amp; cipher ops (custom-alphabet Base64, custom-IV MD5/SHA, pure-Go SM4 / AES / ChaCha20 / RC4), schema-less Protobuf wire AST decode &amp; lossless re-encode, and a sub-millisecond (<code>0.31ms</code>) <strong>White-Box AES-128 Round-9 DFA</strong> master-key solver with Unidbg/Qiling fault-injection script generators.</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/gateway-pro.png" alt="Service Gateway Pro Open API Hub" width="100%"><br>
+      <strong>Service Gateway Pro (Open API Hub)</strong><br>
+      <sub>1-click Flow-to-Open-API publishing (<code>/gw/&lt;slug&gt;</code>) backed by Proxy IP failover pools, virtual &amp; ADB Device Fingerprints, Multi-Account pools with singleflight <code>401/403</code> auto-refresh, Managed Signer Worker Pools (<code>1..8</code> Unidbg/Qiling/Script instances), per-route LRU TTL cache, Circuit Breaker, 6 TLS/JA3 profiles + mTLS, Prometheus metrics, OpenAPI 3.0.3, and Docker/Compose export.</sub>
+    </td>
+  </tr>
+</table>
+
+### Android Companion Guard APK (`v1.3.2`) — Mobile Watchdog & In-App Live Traffic Viewer
+
+<table>
+  <tr>
+    <td width="33.3%" valign="top" align="center">
+      <img src="docs/screenshots/android-companion-guard.png" alt="Cap Guard APK v1.3.2 Guard Tab" width="100%"><br>
+      <strong>Guard &amp; CA Trust Inspector</strong><br>
+      <sub>Rootless <code>WRITE_SECURE_SETTINGS</code> &amp; Root VPN/iptables auto-cleanup watchdog, USB <code>adb reverse</code> + <code>127.0.0.1</code> loopback fallback, 1-tap Reconnect Proxy with reachability pre-check, and zero-root <code>AndroidCAStore</code> + Android 14+ APEX Conscrypt CA verification.</sub>
+    </td>
+    <td width="33.3%" valign="top" align="center">
+      <img src="docs/screenshots/android-companion-traffic.png" alt="Cap Guard APK v1.3.2 Live Traffic Viewer" width="100%"><br>
+      <strong>In-App Live Traffic Viewer</strong><br>
+      <sub>Token-authenticated (<code>X-Cap-Token</code>) live mobile flow stream directly over the proxy loopback — real-time <code>Flows / Req/s / Volume</code> KPIs, Pause/Clear/Config controls, instant search, and method/status/HTTPS filter chips.</sub>
+    </td>
+    <td width="33.3%" valign="top" align="center">
+      <img src="docs/screenshots/android-companion-detail.png" alt="Cap Guard APK v1.3.2 Flow Detail Sheet" width="100%"><br>
+      <strong>On-Device Flow Detail Sheet</strong><br>
+      <sub>3-pane segmented inspector (<code>Overview / Request / Response</code>) with full headers, syntax-formatted pretty JSON bodies, binary/truncation badges, and 1-tap <strong>Copy URL</strong> &amp; <strong>Copy cURL</strong>.</sub>
+    </td>
+  </tr>
+</table>
+
+<details>
+<summary><strong>More Screenshots — Capture Control, Flows + Plugins Debugger, Multi-Tab Terminal &amp; Light Theme</strong></summary>
+<br>
 <p align="center">
   <img src="docs/screenshots/flows-detail.png" alt="cap Unified Flows + Plugins Single-Page Debugger (Obsidian Dark)" width="100%">
   <br>
   <em>Unified Flows + Plugins Single-Page Debugger — inspect live traffic on the left while writing, matching, and running Python 3 / Node / Shell scripts with live parsed <code>query_params</code> variables on the right.</em>
 </p>
-
 <table>
   <tr>
     <td width="50%" align="center">
@@ -46,21 +127,16 @@
   </tr>
   <tr>
     <td width="50%" align="center">
-      <img src="docs/screenshots/deeptrace-tab.png" alt="DeepTrace 8-Stage Pipeline" width="100%"><br>
-      <strong>DeepTrace 8-Stage Live Pipeline</strong> — HTTP → Java → JNI → Native Call Graph &amp; APK/JADX Cache
-    </td>
-    <td width="50%" align="center">
       <img src="docs/screenshots/terminal-tab.png" alt="Workbench Multi-Tab Terminal" width="100%"><br>
       <strong>Workbench Multi-Tab Terminal</strong> — Structured diagnostic blocks for ADB, Frida &amp; CLI tools
     </td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center">
-      <img src="docs/screenshots/light-zh-preview.png" alt="Porcelain Light Theme + Simplified Chinese" width="88%"><br>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/light-zh-preview.png" alt="Porcelain Light Theme + Simplified Chinese" width="100%"><br>
       <strong>Porcelain Light Theme + Native 简体中文</strong> — Live hot-switching across 4 themes &amp; EN / 中文
     </td>
   </tr>
 </table>
+</details>
 
 ---
 
@@ -330,18 +406,19 @@ Full bilingual localization across every surface of `cap`:
   - *Note*: On `cap export`, `-l` / `--lang` selects the generated code language (`curl`, `python`, `go`, `java`, `js`, `all`).
 - **Android Companion Guard APK**: Native Android bilingual resources (`Cap Guard` / `Cap 代理守护`) adapting automatically to the device system language.
 
-### Hardened Android Capture & Cap Companion Guard APK
+### Hardened Android Capture & Cap Companion Guard APK (`v1.3.2`)
 
 Connecting a phone to a proxy should **never** leave the device stranded without internet when you unplug USB, switch Wi-Fi, or close the proxy.
 
-`cap` embeds a signed, 33 KB, zero-dependency pure Android SDK APK (`com.overkazaf.cap.companion`, `minSdk=24`, `targetSdk=34`) directly inside the `cap` binary (`internal/android/bin/cap-companion.apk`):
+`cap` embeds a signed, lightweight, zero-dependency pure Android SDK APK (`com.overkazaf.cap.companion`, `v1.3.2`, `minSdk=24`, `targetSdk=34`) directly inside the `cap` binary (`internal/android/bin/cap-companion.apk`):
 
-- **Zero-Touch Deployment**: Automatically installed and started on `cap android connect` (skip with `--no-companion`) and GUI Connect.
-- **Rootless Autonomous Proxy Cleanup**: `cap` grants `WRITE_SECURE_SETTINGS` and battery/background whitelisting over ADB on connect — **no root required** for autonomous Wi-Fi proxy restoration.
+- **Zero-Touch Deployment & USB `adb reverse` Loopback Fallback**: Automatically installed and started on `cap android connect` (skip with `--no-companion`) and GUI Connect, supporting both Wi-Fi LAN proxy and USB `adb reverse` (`127.0.0.1:8080`) loopback tunneling across isolated corporate/campus networks.
+- **Rootless Autonomous Proxy Cleanup & 1-Tap Reconnect**: `cap` grants `WRITE_SECURE_SETTINGS` and battery/background whitelisting over ADB on connect — **no root required** for autonomous Wi-Fi proxy restoration. Includes a 1-tap **Reconnect Proxy** action with pre-flight reachability verification before writing system proxy settings.
 - **Active Heartbeat Watchdog (`ProxyGuardService`)**: Foreground service probes `proxy_host:proxy_port` every 3 seconds. After 3 consecutive misses — or on `ACTION_POWER_DISCONNECTED`, reboot (`BootReceiver`), or tapping **Restore Network / 恢复网络** directly in the notification — the APK autonomously clears `http_proxy` (and kills `cap-redir` / iptables rules in `--vpn` root mode) and posts a confirmation notification.
-- **CA Certificate Lifecycle (Android 7–15)**:
+- **Zero-Root `AndroidCAStore` & Android 14+ APEX CA Inspector**:
   - **Rooted devices**: HTTP Toolkit-style Android 14+ APEX Conscrypt namespace injection (`mount --bind` + `TRUST_STORE_CHANGED` live trust reload), Android 10–13 `mount --bind`, persistent Magisk module, or legacy `/system` remount — plus `cap android cert --check` / `--remove`.
-  - **Non-rooted devices**: Built-in `MainActivity` launches Android's `KeyChain` CA installer directly for `/sdcard/Download/cap-ca.crt` with guided verification.
+  - **Non-rooted devices**: Built-in `CertInspector` verifies trust directly via `AndroidCAStore` + APEX Conscrypt status, and `MainActivity` launches Android's `KeyChain` CA installer directly for `/sdcard/Download/cap-ca.crt` with SHA-256 fingerprint inspection.
+- **Token-Authenticated In-App Live Traffic Viewer & Flow Detail Sheet**: Dual-tab mobile workbench (`Guard | Traffic`) authenticated via auto-synced `X-Cap-Token` over the proxy loopback — inspect live `Flows / Req/s / Volume` metrics, Pause/Clear/Configure endpoints, filter by search or `All / GET / POST / 4xx/5xx / HTTPS` chips, and tap any flow to open the 3-pane (`Overview / Request / Response`) detail sheet with pretty-printed JSON, full headers, and 1-tap **Copy URL** / **Copy cURL**.
 - **Desktop Auto-Teardown**: `cap start --auto-disconnect`, `cap tui --live --auto-disconnect`, and Desktop GUI `StopProxy()` / `App.Shutdown()` automatically tear down tracked Android devices before stopping the proxy.
 
 ### Frida Dynamic Instrumentation Studio (`cap frida` & GUI `⌘7`)

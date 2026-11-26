@@ -14,9 +14,9 @@ const (
 	// CompanionPackage is the Android application ID of the embedded Cap Guard APK.
 	CompanionPackage = "com.overkazaf.cap.companion"
 	// CompanionVersionCode is the versionCode baked into the embedded APK.
-	CompanionVersionCode = 5
+	CompanionVersionCode = 6
 	// CompanionVersionName is the versionName baked into the embedded APK.
-	CompanionVersionName = "1.3.0"
+	CompanionVersionName = "1.3.1"
 	// CompanionService is the full component name of ProxyGuardService.
 	CompanionService = CompanionPackage + "/.ProxyGuardService"
 	// CompanionActivity is the full component name of MainActivity.

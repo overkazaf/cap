@@ -181,8 +181,8 @@ func setupVPN(serial, proxyHost, proxyPort, _ string, redirPort string) error {
 		return fmt.Errorf("chmod cap-redir: %w", err)
 	}
 
-	// Kill any existing cap-redir
-	_, _ = SuShell(serial, "pkill -f cap-redir 2>/dev/null || true")
+	// Kill any existing cap-redir by exact process name (never `pkill -f`, which matches `su -c` / `sh -c` and self-kills with exit 143)
+	_, _ = SuShell(serial, "pkill -x cap-redir 2>/dev/null || killall cap-redir 2>/dev/null || true; for p in $(pidof cap-redir 2>/dev/null); do kill \"$p\" 2>/dev/null || true; done")
 
 	proxyAddr := fmt.Sprintf("%s:%s", proxyHost, proxyPort)
 
@@ -241,7 +241,10 @@ func BuildTeardownIptablesScript(ports ...string) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("pkill -f cap-redir 2>/dev/null || true\n")
+	// Match exact process name only — `pkill -f cap-redir` matches the parent `su -c` / `sh -c`
+	// command line (which also contains `/data/local/tmp/cap-redir.port`) and self-kills with SIGTERM (143).
+	b.WriteString("pkill -x cap-redir 2>/dev/null || killall cap-redir 2>/dev/null || true\n")
+	b.WriteString("for p in $(pidof cap-redir 2>/dev/null); do kill \"$p\" 2>/dev/null || true; done\n")
 	b.WriteString("rm -f " + redirPortStateFile + " 2>/dev/null || true\n")
 	for _, p := range ordered {
 		fmt.Fprintf(&b, "while iptables -t nat -D OUTPUT -p tcp --dport 80 -j REDIRECT --to-port %s 2>/dev/null; do :; done\n", p)

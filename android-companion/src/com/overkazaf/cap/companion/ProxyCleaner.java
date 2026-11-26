@@ -10,12 +10,14 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -173,6 +175,90 @@ public final class ProxyCleaner {
         }
     }
 
+    public static final class CleanupResult {
+        public static final int REASON_NONE = 0;
+        public static final int REASON_NO_SECURE_SETTINGS = 1;
+        public static final int REASON_NO_ROOT = 2;
+        public static final int REASON_SU_DENIED = 3;
+        public static final int REASON_SU_TIMEOUT = 4;
+        public static final int REASON_SU_ERROR = 5;
+        public static final int REASON_PROXY_REMAINED = 6;
+        public static final int REASON_VPN_REMAINED = 7;
+
+        public final boolean ok;
+        public final int reasonCode;
+        public final int suExitCode;
+        public final String detail;
+
+        public CleanupResult(boolean ok, int reasonCode, int suExitCode, String detail) {
+            this.ok = ok;
+            this.reasonCode = reasonCode;
+            this.suExitCode = suExitCode;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        public static CleanupResult success() {
+            return new CleanupResult(true, REASON_NONE, 0, "");
+        }
+
+        public String formatFailureMessage(Context ctx) {
+            if (ok) {
+                return ctx.getString(R.string.toast_cleaned);
+            }
+            switch (reasonCode) {
+                case REASON_NO_SECURE_SETTINGS:
+                    return ctx.getString(R.string.toast_clean_failed_perm);
+                case REASON_NO_ROOT:
+                    return ctx.getString(R.string.toast_clean_failed_no_root);
+                case REASON_SU_DENIED:
+                    return ctx.getString(R.string.toast_clean_failed_su_denied);
+                case REASON_SU_TIMEOUT:
+                    return ctx.getString(R.string.toast_clean_failed_su_timeout);
+                case REASON_SU_ERROR: {
+                    String info = detail.isEmpty() ? ("su exit " + suExitCode) : ("su exit " + suExitCode + " (" + detail + ")");
+                    return ctx.getString(R.string.toast_clean_failed_detail, info);
+                }
+                case REASON_PROXY_REMAINED:
+                case REASON_VPN_REMAINED: {
+                    if (!detail.isEmpty()) {
+                        return ctx.getString(R.string.toast_clean_failed_detail, detail);
+                    }
+                    return ctx.getString(R.string.toast_clean_failed);
+                }
+                default:
+                    if (!detail.isEmpty()) {
+                        return ctx.getString(R.string.toast_clean_failed_detail, detail);
+                    }
+                    return ctx.getString(R.string.toast_clean_failed);
+            }
+        }
+    }
+
+    private static final class SuResult {
+        final boolean ok;
+        final boolean timedOut;
+        final int exitCode;
+        final String output;
+
+        SuResult(boolean ok, boolean timedOut, int exitCode, String output) {
+            this.ok = ok;
+            this.timedOut = timedOut;
+            this.exitCode = exitCode;
+            this.output = output == null ? "" : output.trim();
+        }
+
+        boolean isDenied() {
+            if (ok || timedOut) {
+                return false;
+            }
+            String lower = output.toLowerCase(Locale.US);
+            return exitCode == 13
+                    || lower.contains("permission denied")
+                    || lower.contains("not allowed")
+                    || lower.contains("denied");
+        }
+    }
+
     /**
      * Clears global HTTP proxy settings and tears down cap-redir/iptables ONLY
      * when VPN mode is active, a stale cap-redir marker exists, or rootless
@@ -180,37 +266,139 @@ public final class ProxyCleaner {
      * on normal Wi-Fi proxy cleanup).
      */
     public static boolean cleanup(Context ctx, String mode, String redirPort) {
-        boolean cleared = clearGlobalProxy(ctx);
-        boolean rootCleaned = false;
+        return cleanupDetailed(ctx, mode, redirPort).ok;
+    }
 
+    public static CleanupResult cleanupDetailed(Context ctx, String mode, String redirPort) {
+        boolean hadGlobalProxy = !getGlobalHttpProxy(ctx).isEmpty();
+        boolean cleared = clearGlobalProxy(ctx);
         boolean needVpnRoot = "vpn".equalsIgnoreCase(mode) || hasStaleVpnMarker();
         boolean needSettingsRoot = !cleared;
-        if ((needVpnRoot || needSettingsRoot) && isSuAvailable()) {
-            rootCleaned = cleanupRootVpnAndProxy(redirPort, needSettingsRoot);
-            if (needSettingsRoot && rootCleaned) {
-                cleared = getGlobalHttpProxy(ctx).isEmpty();
-            }
+
+        if (!needVpnRoot && !needSettingsRoot) {
+            return CleanupResult.success();
         }
 
-        return needVpnRoot ? (cleared && rootCleaned) : cleared;
+        if (!isSuAvailable()) {
+            if (needVpnRoot) {
+                Log.w(TAG, "Cannot clear VPN/iptables rules: su binary not found");
+                return new CleanupResult(false, CleanupResult.REASON_NO_ROOT, -1, "");
+            }
+            if (!hasWriteSecureSettings(ctx)) {
+                return new CleanupResult(false, CleanupResult.REASON_NO_SECURE_SETTINGS, -1, "");
+            }
+            return new CleanupResult(
+                    false,
+                    CleanupResult.REASON_PROXY_REMAINED,
+                    -1,
+                    hadGlobalProxy ? "Settings.Global write rejected" : "");
+        }
+
+        SuResult suRes = cleanupRootVpnAndProxy(redirPort, needSettingsRoot);
+        if (needSettingsRoot && suRes.ok) {
+            cleared = getGlobalHttpProxy(ctx).isEmpty();
+        }
+
+        boolean vpnMarkerRemaining = needVpnRoot && hasStaleVpnMarker();
+        if (suRes.ok && cleared && !vpnMarkerRemaining) {
+            return CleanupResult.success();
+        }
+
+        if (suRes.timedOut) {
+            return new CleanupResult(false, CleanupResult.REASON_SU_TIMEOUT, suRes.exitCode, suRes.output);
+        }
+        if (suRes.isDenied()) {
+            return new CleanupResult(false, CleanupResult.REASON_SU_DENIED, suRes.exitCode, suRes.output);
+        }
+        if (!suRes.ok) {
+            String shortOut = suRes.output;
+            if (shortOut.length() > 120) {
+                shortOut = shortOut.substring(0, 120);
+            }
+            return new CleanupResult(false, CleanupResult.REASON_SU_ERROR, suRes.exitCode, shortOut);
+        }
+        if (vpnMarkerRemaining) {
+            return new CleanupResult(false, CleanupResult.REASON_VPN_REMAINED, 0, "cap-redir.port still present");
+        }
+        if (!cleared) {
+            if (!hasWriteSecureSettings(ctx)) {
+                return new CleanupResult(false, CleanupResult.REASON_NO_SECURE_SETTINGS, 0, "");
+            }
+            return new CleanupResult(false, CleanupResult.REASON_PROXY_REMAINED, 0, "http_proxy=" + getGlobalHttpProxy(ctx));
+        }
+        return CleanupResult.success();
     }
 
     public static boolean clearGlobalProxy(Context ctx) {
         ContentResolver cr = ctx.getContentResolver();
+        boolean hadProxy = !getGlobalHttpProxy(ctx).isEmpty();
+        if (!hadProxy && !hasWriteSecureSettings(ctx)) {
+            // Global proxy is already unset; avoid throwing SecurityException during VPN-only cleanup.
+            return true;
+        }
+
+        boolean primaryOk = false;
+        SecurityException primarySecErr = null;
         try {
             // Setting ":0" immediately signals ConnectivityService to drop the active proxy.
-            Settings.Global.putString(cr, Settings.Global.HTTP_PROXY, ":0");
-            Settings.Global.putString(cr, "global_http_proxy_host", null);
-            Settings.Global.putString(cr, "global_http_proxy_port", null);
-            Settings.Global.putString(cr, "global_http_proxy_exclusion_list", null);
-            // Reset HTTP_PROXY to null so Android reports clean unset state instead of ":0".
-            Settings.Global.putString(cr, Settings.Global.HTTP_PROXY, null);
-            return getGlobalHttpProxy(ctx).isEmpty();
+            primaryOk = Settings.Global.putString(cr, Settings.Global.HTTP_PROXY, ":0");
         } catch (SecurityException se) {
-            Log.w(TAG, "Missing WRITE_SECURE_SETTINGS permission", se);
+            primarySecErr = se;
+            Log.w(TAG, "Missing WRITE_SECURE_SETTINGS permission while writing http_proxy=:0", se);
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed writing http_proxy=:0: " + t.getMessage(), t);
+        }
+
+        // Clear auxiliary keys independently so OEM SettingsProvider quirks never abort HTTP_PROXY cleanup.
+        clearSingleGlobalKey(cr, "global_http_proxy_host");
+        clearSingleGlobalKey(cr, "global_http_proxy_port");
+        clearSingleGlobalKey(cr, "global_http_proxy_exclusion_list");
+
+        // Reset HTTP_PROXY to null (or "" / delete) so Android reports clean unset state instead of ":0".
+        boolean resetOk = clearSingleGlobalKey(cr, Settings.Global.HTTP_PROXY);
+        if (!resetOk && !getGlobalHttpProxy(ctx).isEmpty()) {
+            try {
+                Settings.Global.putString(cr, Settings.Global.HTTP_PROXY, ":0");
+            } catch (Throwable ignored) {
+            }
+        }
+
+        boolean emptyNow = getGlobalHttpProxy(ctx).isEmpty();
+        if (!emptyNow && primarySecErr != null) {
+            Log.w(TAG, "Global proxy still active after SecurityException: " + getGlobalHttpProxy(ctx));
+            return false;
+        }
+        if (!emptyNow && !primaryOk) {
+            Log.w(TAG, "Global proxy remained set after Settings.Global cleanup: " + getGlobalHttpProxy(ctx));
+        }
+        return emptyNow;
+    }
+
+    private static boolean clearSingleGlobalKey(ContentResolver cr, String key) {
+        try {
+            if (Settings.Global.putString(cr, key, null)) {
+                return true;
+            }
+        } catch (SecurityException se) {
+            Log.w(TAG, "SecurityException clearing global setting " + key + ": " + se.getMessage());
             return false;
         } catch (Throwable t) {
-            Log.e(TAG, "Failed clearing global proxy via Settings.Global", t);
+            Log.w(TAG, "putString(" + key + ", null) failed: " + t.getMessage());
+        }
+        try {
+            if (Settings.Global.putString(cr, key, "")) {
+                return true;
+            }
+        } catch (SecurityException se) {
+            return false;
+        } catch (Throwable t) {
+            Log.w(TAG, "putString(" + key + ", \"\") failed: " + t.getMessage());
+        }
+        try {
+            int deleted = cr.delete(Settings.Global.CONTENT_URI, "name=?", new String[]{key});
+            return deleted >= 0;
+        } catch (Throwable t) {
+            Log.w(TAG, "ContentResolver.delete(" + key + ") failed: " + t.getMessage());
             return false;
         }
     }
@@ -267,9 +455,11 @@ public final class ProxyCleaner {
         return false;
     }
 
-    private static boolean cleanupRootVpnAndProxy(String redirPort, boolean alsoClearSettings) {
+    private static SuResult cleanupRootVpnAndProxy(String redirPort, boolean alsoClearSettings) {
         String sanitizedPort = sanitizePort(redirPort);
         StringBuilder script = new StringBuilder();
+        // Read any recorded port before removing the marker file.
+        script.append("RP=$(cat ").append(REDIR_PORT_FILE).append(" 2>/dev/null | tr -cd '0-9'); ");
         if (alsoClearSettings) {
             script.append("settings put global http_proxy :0 2>/dev/null || true; ");
             script.append("settings delete global global_http_proxy_host 2>/dev/null || true; ");
@@ -277,13 +467,23 @@ public final class ProxyCleaner {
             script.append("settings delete global global_http_proxy_exclusion_list 2>/dev/null || true; ");
             script.append("settings delete global http_proxy 2>/dev/null || true; ");
         }
-        script.append("pkill -f cap-redir 2>/dev/null || true; ");
+        // IMPORTANT: NEVER use `pkill -f cap-redir` here! Because this script runs via
+        // `su -c "<script>"` and references `/data/local/tmp/cap-redir.port`, `pkill -f`
+        // matches the parent `sh -c` / `su -c` cmdline and terminates itself (exit 143)
+        // before `rm -f` and `iptables -D` ever execute. Match exact process name only.
+        script.append("pkill -x cap-redir 2>/dev/null || killall cap-redir 2>/dev/null || true; ");
+        script.append("for p in $(pidof cap-redir 2>/dev/null); do kill \"$p\" 2>/dev/null || true; done; ");
         script.append("rm -f ").append(REDIR_PORT_FILE).append(" 2>/dev/null || true; ");
         appendIptablesCleanup(script, sanitizedPort);
         if (!"9999".equals(sanitizedPort)) {
             appendIptablesCleanup(script, "9999");
         }
-        return runSuCommand(script.toString());
+        // Also flush recorded port if it differs from both sanitizedPort and 9999.
+        script.append("if [ -n \"$RP\" ] && [ \"$RP\" != \"").append(sanitizedPort).append("\" ] && [ \"$RP\" != \"9999\" ]; then ");
+        appendIptablesCleanup(script, "$RP");
+        script.append("fi; ");
+        script.append("true");
+        return runSuCommandDetailed(script.toString());
     }
 
     private static void appendIptablesCleanup(StringBuilder sb, String port) {
@@ -308,17 +508,29 @@ public final class ProxyCleaner {
     }
 
     private static boolean runSuCommand(String cmd) {
+        return runSuCommandDetailed(cmd).ok;
+    }
+
+    private static SuResult runSuCommandDetailed(String cmd) {
         Process proc = null;
         try {
             proc = new ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start();
             final InputStream is = proc.getInputStream();
+            final ByteArrayOutputStream captured = new ByteArrayOutputStream();
+            final int maxCapture = 2048;
             Thread drainer = new Thread(new Runnable() {
                 @Override
                 public void run() {
                     byte[] buf = new byte[1024];
+                    int total = 0;
                     try {
-                        while (is.read(buf) != -1) {
-                            // discard output so child never blocks on full pipe buffer
+                        int n;
+                        while ((n = is.read(buf)) != -1) {
+                            if (total < maxCapture) {
+                                int toWrite = Math.min(n, maxCapture - total);
+                                captured.write(buf, 0, toWrite);
+                                total += toWrite;
+                            }
                         }
                     } catch (Throwable ignored) {
                     }
@@ -327,20 +539,35 @@ public final class ProxyCleaner {
             drainer.setDaemon(true);
             drainer.start();
 
+            int code;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 boolean finished = proc.waitFor(SU_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                 if (!finished) {
                     Log.w(TAG, "su command timed out after " + SU_TIMEOUT_SECONDS + "s");
                     proc.destroyForcibly();
-                    return false;
+                    try {
+                        drainer.join(200);
+                    } catch (InterruptedException ignored) {
+                    }
+                    return new SuResult(false, true, -1, new String(captured.toByteArray(), "UTF-8"));
                 }
-                return proc.exitValue() == 0;
+                code = proc.exitValue();
+            } else {
+                code = proc.waitFor();
             }
-            int code = proc.waitFor();
-            return code == 0;
+            try {
+                drainer.join(500);
+            } catch (InterruptedException ignored) {
+            }
+            String out = new String(captured.toByteArray(), "UTF-8").trim();
+            if (code != 0) {
+                Log.w(TAG, "su command failed with exit=" + code + (out.isEmpty() ? "" : (" output=" + out)));
+            }
+            return new SuResult(code == 0, false, code, out);
         } catch (Throwable t) {
-            Log.d(TAG, "su command unavailable or failed: " + t.getMessage());
-            return false;
+            String msg = t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName();
+            Log.w(TAG, "su command unavailable or failed: " + msg);
+            return new SuResult(false, false, -1, msg);
         } finally {
             if (proc != null) {
                 try {

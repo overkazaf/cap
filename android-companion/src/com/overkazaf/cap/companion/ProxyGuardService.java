@@ -50,6 +50,7 @@ public class ProxyGuardService extends Service {
     public static final String EXTRA_API_TOKEN = "api_token";
     public static final String EXTRA_CLEANUP_DONE = "cleanup_done";
     public static final String EXTRA_CLEANUP_OK = "cleanup_ok";
+    public static final String EXTRA_CLEANUP_DETAIL = "cleanup_detail";
 
     public static final String CHANNEL_ACTIVE = "cap_guard_active";
     public static final String CHANNEL_EVENTS = "cap_guard_events";
@@ -402,7 +403,7 @@ public class ProxyGuardService extends Service {
                     // If ACTION_STOP arrives when the guard was already idle and no proxy/VPN is active,
                     // stop silently without forging a redundant cleanup timestamp or notification.
                     if (!isManualRestore && !wasRunning && !hasProxy && !hasVpn && !prefsActive) {
-                        finishCleanupOnMainThread(expectedGen, false, false);
+                        finishCleanupOnMainThread(expectedGen, false, false, "");
                         return;
                     }
 
@@ -418,24 +419,27 @@ public class ProxyGuardService extends Service {
                         activeMode = "proxy";
                     }
 
-                    boolean ok = ProxyCleaner.cleanup(ProxyGuardService.this, activeMode, activeRedir);
+                    ProxyCleaner.CleanupResult res = ProxyCleaner.cleanupDetailed(
+                            ProxyGuardService.this, activeMode, activeRedir);
                     if (sessionGen.get() != expectedGen) {
                         return;
                     }
-                    GuardPrefs.recordCleanup(ProxyGuardService.this, reason, ok);
-                    if (wasRunning || hasProxy || hasVpn) {
+                    GuardPrefs.recordCleanup(ProxyGuardService.this, reason, res.ok);
+                    if (res.ok && (wasRunning || hasProxy || hasVpn)) {
                         postRestoredNotification(ProxyGuardService.this, reason);
                     }
-                    finishCleanupOnMainThread(expectedGen, true, ok);
+                    String detail = res.ok ? "" : res.formatFailureMessage(ProxyGuardService.this);
+                    finishCleanupOnMainThread(expectedGen, true, res.ok, detail);
                 }
             });
         } catch (RejectedExecutionException ree) {
             Log.w(TAG, "Cleanup executor already shut down: " + ree.getMessage());
-            finishCleanupOnMainThread(expectedGen, false, false);
+            finishCleanupOnMainThread(expectedGen, false, false, "");
         }
     }
 
-    private void finishCleanupOnMainThread(final int expectedGen, final boolean didCleanup, final boolean ok) {
+    private void finishCleanupOnMainThread(
+            final int expectedGen, final boolean didCleanup, final boolean ok, final String detail) {
         mainHandler.post(new Runnable() {
             @Override
             public void run() {
@@ -445,7 +449,7 @@ public class ProxyGuardService extends Service {
                 }
                 sCleanupInProgress = false;
                 stopForegroundCompat();
-                broadcastStatusChanged(didCleanup, ok);
+                broadcastStatusChanged(didCleanup, ok, detail);
                 if (lastStartId >= 0) {
                     stopSelf(lastStartId);
                 } else {
@@ -456,11 +460,18 @@ public class ProxyGuardService extends Service {
     }
 
     private void broadcastStatusChanged(boolean cleanupDone, boolean cleanupOk) {
+        broadcastStatusChanged(cleanupDone, cleanupOk, "");
+    }
+
+    private void broadcastStatusChanged(boolean cleanupDone, boolean cleanupOk, String cleanupDetail) {
         Intent i = new Intent(ACTION_STATUS_CHANGED);
         i.setPackage(getPackageName());
         if (cleanupDone) {
             i.putExtra(EXTRA_CLEANUP_DONE, true);
             i.putExtra(EXTRA_CLEANUP_OK, cleanupOk);
+            if (cleanupDetail != null && !cleanupDetail.isEmpty()) {
+                i.putExtra(EXTRA_CLEANUP_DETAIL, cleanupDetail);
+            }
         }
         sendBroadcast(i);
     }
